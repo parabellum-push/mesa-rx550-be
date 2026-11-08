@@ -513,7 +513,7 @@ static nir_def *radv_native_atomic_value(nir_builder *b, nir_atomic_op op,
    case nir_atomic_op_dec_wrap:
       return nir_bcsel(b, nir_ior(b, nir_ieq_imm(b, old, 0), nir_ult(b, data, old)),
                         data, nir_iadd_imm(b, old, -1));
-   default: unreachable("unexpected native atomic operation");
+   default: UNREACHABLE("unexpected native atomic operation");
    }
 }
 
@@ -575,7 +575,7 @@ static bool radv_lower_native_be_global(nir_builder *b, nir_intrinsic_instr *int
          return false;
       b->cursor = nir_after_instr(&intr->instr);
       nir_def *value = radv_nir_native_bswap(b, &intr->def);
-      nir_def_rewrite_uses_after(&intr->def, value, value->parent_instr);
+      nir_def_rewrite_uses_after(&intr->def, value);
       return true;
    }
    case nir_intrinsic_store_global:
@@ -696,7 +696,7 @@ static bool radv_lower_native_be_buffers(nir_builder *b, nir_intrinsic_instr *in
          return false;
       b->cursor = nir_after_instr(&intr->instr);
       nir_def *value = radv_nir_native_bswap(b, &intr->def);
-      nir_def_rewrite_uses_after(&intr->def, value, value->parent_instr);
+      nir_def_rewrite_uses_after(&intr->def, value);
       return true;
    }
    case nir_intrinsic_store_ssbo:
@@ -1073,7 +1073,7 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
     * retain the driver's LE data ABI; GPU-generated constant data is lowered
     * after this pass and also retains its internal representation.
     */
-   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && !nir->info.internal)
+   if (UTIL_ARCH_BIG_ENDIAN && compiler_info->ac->gfx_level == GFX8 && !nir->info.internal)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, radv_lower_native_be_buffers,
                nir_metadata_none, NULL);
 
@@ -1100,7 +1100,7 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
    }
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global | nir_var_mem_constant, nir_address_format_64bit_global);
-   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && !nir->info.internal)
+   if (UTIL_ARCH_BIG_ENDIAN && compiler_info->ac->gfx_level == GFX8 && !nir->info.internal)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, radv_lower_native_be_global, nir_metadata_none, NULL);
 
    /* Lower large variables that are always constant with load_constant
@@ -1108,7 +1108,7 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
     * section next to the shader.
     */
    NIR_PASS(_, nir, nir_opt_large_constants, glsl_get_natural_size_align_bytes, 16);
-   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8)
+   if (UTIL_ARCH_BIG_ENDIAN && compiler_info->ac->gfx_level == GFX8)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, radv_lower_native_be_constant, nir_metadata_block_index | nir_metadata_dominance, NULL);
 
    /* Lower primitive shading rate to match HW requirements. */

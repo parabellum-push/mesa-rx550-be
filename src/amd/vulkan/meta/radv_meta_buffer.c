@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "nir/nir_builder.h"
 #include "nir/radv_meta_nir.h"
 #include "tools/radv_debug_hang.h"
 #include "radv_cp_dma.h"

@@ -834,14 +834,13 @@ static nir_def *si_native_tbo_values(nir_builder *b, nir_def *desc, nir_def *coo
    return nir_vec4(b, values[0], values[1], values[2], values[3]);
 }
 
-static bool si_lower_native_tbo(nir_builder *b, nir_tex_instr *tex, nir_def *desc)
+/* Decode one element of a big-endian texel buffer from raw loads. The format comes from
+ * descriptor word 3, so this serves texture buffers and image buffers alike.
+ */
+static nir_def *si_native_formatted_buffer_load(nir_builder *b, nir_def *desc, nir_def *coord,
+                                                nir_alu_type dest_type, nir_variable_mode modes,
+                                                enum gl_access_qualifier access)
 {
-   if (tex->op != nir_texop_txf || desc->num_components != 4)
-      return false;
-   int coord_src = nir_tex_instr_src_index(tex, nir_tex_src_coord);
-   if (coord_src < 0)
-      return false;
-   nir_def *coord = tex->src[coord_src].src.ssa;
    nir_def *word = nir_channel(b, desc, 3);
    unsigned fmt_shift = util_logbase2(S_008F0C_DATA_FORMAT(1));
    unsigned num_shift = util_logbase2(S_008F0C_NUM_FORMAT(1));
@@ -865,19 +864,38 @@ static bool si_lower_native_tbo(nir_builder *b, nir_tex_instr *tex, nir_def *des
       nir_bcsel(b, two, nir_imm_int(b, 2),
          nir_bcsel(b, nir_ieq_imm(b, fmt, V_008F0C_BUF_DATA_FORMAT_32_32_32),
                      nir_imm_int(b, 3), nir_imm_int(b, 1))));
+   bool floating = nir_alu_type_get_base_type(dest_type) == nir_type_float;
+   nir_def *is1010102 = nir_ieq_imm(b, fmt, V_008F0C_BUF_DATA_FORMAT_2_10_10_10);
    nir_if *if8 = nir_push_if(b, is8);
-   nir_def *value8 = si_native_tbo_values(b, desc, coord, num, channels, tex->dest_type, 8, 0, 0);
+   nir_def *value8 = si_native_tbo_values(b, desc, coord, num, channels, dest_type, 8, modes, access);
    nir_push_else(b, if8);
    nir_if *if16 = nir_push_if(b, is16);
-   nir_def *value16 = si_native_tbo_values(b, desc, coord, num, channels, tex->dest_type, 16, 0, 0);
+   nir_def *value16 = si_native_tbo_values(b, desc, coord, num, channels, dest_type, 16, modes, access);
    nir_push_else(b, if16);
-   nir_def *value32 = si_native_tbo_values(b, desc, coord, num, channels, tex->dest_type, 32, 0, 0);
+   nir_if *if10 = nir_push_if(b, is1010102);
+   nir_def *value10;
+   {
+      nir_def *zero = nir_imm_int(b, 0);
+      nir_def *packed = si_tbo_bswap(b, nir_load_buffer_amd(b, 1, 32, desc, zero, zero, coord,
+                                                            .memory_modes = modes, .access = access));
+      nir_def *parts[4];
+      for (unsigned i = 0; i < 4; i++) {
+         unsigned bits = i == 3 ? 2 : 10, max = (1u << bits) - 1;
+         parts[i] = nir_ubfe_imm(b, packed, i * 10, bits);
+         if (floating)
+            parts[i] = nir_fmul_imm(b, nir_u2f32(b, parts[i]), 1.0 / max);
+      }
+      value10 = nir_vec(b, parts, 4);
+   }
+   nir_push_else(b, if10);
+   nir_def *value32 = si_native_tbo_values(b, desc, coord, num, channels, dest_type, 32, modes, access);
+   nir_pop_if(b, if10);
+   nir_def *value_wide = nir_if_phi(b, value10, value32);
    nir_pop_if(b, if16);
-   nir_def *wide = nir_if_phi(b, value16, value32);
+   nir_def *wide = nir_if_phi(b, value16, value_wide);
    nir_pop_if(b, if8);
    nir_def *value = nir_if_phi(b, value8, wide);
    nir_def *swizzled[4];
-   bool floating = nir_alu_type_get_base_type(tex->dest_type) == nir_type_float;
    nir_def *one = floating ? nir_imm_float(b, 1) : nir_imm_int(b, 1);
    for (unsigned i = 0; i < 4; i++) {
       nir_def *sel = nir_ubfe_imm(b, word, 3 * i, 3);
@@ -891,9 +909,32 @@ static bool si_lower_native_tbo(nir_builder *b, nir_tex_instr *tex, nir_def *des
    nir_def *stride = nir_ubfe_imm(b, nir_channel(b, desc, 1), 16, 14);
    nir_def *valid = nir_iand(b, nir_ine_imm(b, stride, 0),
                               nir_ult(b, coord, nir_udiv(b, nir_channel(b, desc, 2), stride)));
-   value = nir_bcsel(b, valid, value, nir_imm_ivec4(b, 0, 0, 0, 0));
-   nir_def_rewrite_uses(&tex->def, value);
-   nir_instr_remove(&tex->instr);
+   return nir_bcsel(b, valid, value, nir_imm_ivec4(b, 0, 0, 0, 0));
+}
+
+/* Texel-buffer txf and image-buffer loads arrive here as formatted load_buffer_amd
+ * (ac_nir_lower_image_tex); the hardware format conversion would read host-order data
+ * as little-endian, so replace them with raw loads and a native decode.
+ */
+static bool si_lower_native_formatted_load(nir_builder *b, nir_intrinsic_instr *intrin)
+{
+   unsigned access = nir_intrinsic_access(intrin);
+   /* Only texel/image buffers (see ac_nir_lower_image_tex); vertex fetch has its own path. */
+   if (!(nir_intrinsic_memory_modes(intrin) & (nir_var_uniform | nir_var_image)) ||
+       (nir_intrinsic_memory_modes(intrin) & nir_var_shader_in))
+      return false;
+   if (!(access & ACCESS_USES_FORMAT_AMD) || (access & ACCESS_SPARSE) ||
+       intrin->def.bit_size != 32 || intrin->src[0].ssa->num_components != 4 ||
+       !nir_src_is_const(intrin->src[1]) || nir_src_as_uint(intrin->src[1]) != 0 ||
+       !nir_src_is_const(intrin->src[2]) || nir_src_as_uint(intrin->src[2]) != 0)
+      return false;
+   b->cursor = nir_before_instr(&intrin->instr);
+   nir_def *value = si_native_formatted_buffer_load(b, intrin->src[0].ssa, intrin->src[3].ssa,
+                                                    nir_intrinsic_dest_type(intrin),
+                                                    nir_intrinsic_memory_modes(intrin),
+                                                    access & ~(ACCESS_USES_FORMAT_AMD));
+   value = nir_trim_vector(b, value, intrin->def.num_components);
+   nir_def_replace(&intrin->def, value);
    return true;
 }
 
@@ -1034,10 +1075,6 @@ static bool lower_resource_tex(nir_builder *b, nir_tex_instr *tex,
 
    nir_def *image = load_tex_descriptor(b, texture_deref, texture_handle, desc_type, s,
                                         !tex->texture_non_uniform, tex->backend_flags);
-   if (UTIL_ARCH_BIG_ENDIAN && s->shader->selector->screen->info.gfx_level == GFX8 &&
-       !b->shader->info.internal && tex->sampler_dim == GLSL_SAMPLER_DIM_BUF &&
-       !tex->texture_non_uniform && si_lower_native_tbo(b, tex, image))
-      return true;
 
    nir_def *sampler = NULL;
    if (sampler_deref || sampler_handle) {
@@ -1368,6 +1405,9 @@ static bool lower_resource_instr(nir_builder *b, nir_instr *instr, void *state)
    switch (instr->type) {
    case nir_instr_type_intrinsic: {
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+      if (UTIL_ARCH_BIG_ENDIAN && intrin->intrinsic == nir_intrinsic_load_buffer_amd &&
+          s->shader->selector->screen->info.gfx_level == GFX8 && !b->shader->info.internal)
+         return si_lower_native_formatted_load(b, intrin);
       return lower_resource_intrinsic(b, intrin, s);
    }
    case nir_instr_type_tex: {

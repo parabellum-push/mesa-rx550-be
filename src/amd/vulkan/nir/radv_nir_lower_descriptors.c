@@ -782,7 +782,7 @@ texel_decode(nir_builder *b, nir_def *bits, unsigned size, nir_def *num_format)
                       result);
    if (size == 16)
       result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_FLOAT),
-                         nir_unpack_half_2x16_split_x(b, bits), result);
+                         nir_channel(b, nir_unpack_half_2x16(b, bits), 0), result);
    return result;
 }
 
@@ -800,7 +800,7 @@ texel_encode(nir_builder *b, nir_def *value, unsigned size, nir_def *num_format)
    result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SNORM), snorm, result);
    if (size == 16)
       result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_FLOAT),
-                         nir_pack_half_2x16_split(b, value, nir_imm_float(b, 0.0f)), result);
+                         nir_pack_half_2x16(b, nir_vec2(b, value, nir_imm_float(b, 0.0f))), result);
    return result;
 }
 
@@ -846,10 +846,10 @@ texel_native_fetch(nir_builder *b, nir_def *desc, nir_def *index)
       nir_push_if(b, nir_ieq_imm(b, data_format, V_008F0C_BUF_DATA_FORMAT_10_11_11));
       nir_def *r = nir_ubfe_imm(b, word, 0, 11), *g = nir_ubfe_imm(b, word, 11, 11), *bl = nir_ubfe_imm(b, word, 22, 10);
       /* Small floats share the half-float layout once aligned to its mantissa. */
-      nir_def *packed = nir_unpack_half_2x16_split_x(b, nir_ishl_imm(b, r, 4));
+      nir_def *packed = nir_channel(b, nir_unpack_half_2x16(b, nir_ishl_imm(b, r, 4)), 0);
       nir_store_var(b, var,
-                    nir_vec4(b, packed, nir_unpack_half_2x16_split_x(b, nir_ishl_imm(b, g, 4)),
-                             nir_unpack_half_2x16_split_x(b, nir_ishl_imm(b, bl, 5)), nir_imm_int(b, 0)),
+                    nir_vec4(b, packed, nir_channel(b, nir_unpack_half_2x16(b, nir_ishl_imm(b, g, 4)), 0),
+                             nir_channel(b, nir_unpack_half_2x16(b, nir_ishl_imm(b, bl, 5)), 0), nir_imm_int(b, 0)),
                     0xf);
       nir_push_else(b, NULL);
       for (unsigned i = 0; i < 4; i++) {
@@ -955,11 +955,24 @@ lower_native_texel_buffer(nir_builder *b, nir_instr *instr, UNUSED void *data)
    } else if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
       switch (intr->intrinsic) {
+      case nir_intrinsic_load_buffer_amd:
+         /* Since Mesa 25, ac_nir_lower_image_tex turns texel buffer fetches and image loads
+          * into formatted buffer loads before descriptor lowering.
+          * TODO: R64 texel buffers arrive as 32-bit pairs here and are not half-swapped.
+          */
+         if (!(nir_intrinsic_access(intr) & ACCESS_USES_FORMAT_AMD) ||
+             (nir_intrinsic_access(intr) & ACCESS_SPARSE) ||
+             (nir_intrinsic_memory_modes(intr) & nir_var_shader_in) || intr->def.bit_size != 32)
+            return false;
+         desc = intr->src[0].ssa;
+         index = intr->src[3].ssa;
+         def = &intr->def;
+         break;
       case nir_intrinsic_bindless_image_load:
          if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF && intr->def.bit_size == 64) {
             b->cursor = nir_after_instr(instr);
             nir_def *swapped = texel_swap_r64(b, &intr->def);
-            nir_def_rewrite_uses_after(&intr->def, swapped, swapped->parent_instr);
+            nir_def_rewrite_uses_after(&intr->def, swapped);
             return true;
          }
          if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF || intr->def.bit_size != 32)
@@ -1056,7 +1069,7 @@ lower_native_texel_buffer(nir_builder *b, nir_instr *instr, UNUSED void *data)
    /* Uses move to the merged result before the original instruction is reinserted. */
    nir_def *result_placeholder = nir_load_var(b, var);
    nir_def_rewrite_uses(def, nir_trim_vector(b, result_placeholder, def->num_components));
-   b->cursor = nir_before_instr(result_placeholder->parent_instr);
+   b->cursor = nir_before_instr(nir_def_instr(result_placeholder));
 
    nir_def *data_format = TEXEL_DATA_FORMAT(nir_channel(b, desc, 3));
    nir_push_if(b, texel_needs_native(b, data_format));

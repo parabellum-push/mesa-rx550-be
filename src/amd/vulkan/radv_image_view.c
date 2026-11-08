@@ -703,6 +703,7 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
 
    if (!extra_create_info || !extra_create_info->from_client)
       assert(pCreateInfo->flags & VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA);
+   const bool from_client = extra_create_info && extra_create_info->from_client;
 
    memset(iview, 0, sizeof(*iview));
    vk_image_view_init(&device->vk, &iview->vk, pCreateInfo);

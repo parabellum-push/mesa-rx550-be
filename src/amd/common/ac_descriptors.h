@@ -8,6 +8,7 @@
 #ifndef AC_DESCRIPTORS_H
 #define AC_DESCRIPTORS_H
 
+#include "util/u_endian.h"
 #include "ac_gpu_info.h"
 #include "ac_surface.h"
 
@@ -106,6 +107,37 @@ enum {
 };
 
 typedef union {
+#if UTIL_ARCH_BIG_ENDIAN
+   /* Big endian: compilers allocate bit-fields from the most significant bit, so list the
+    * fields in reverse to keep the hardware's dword layout.
+    */
+   struct {
+      unsigned maxz : 14;
+      unsigned minz : 14;
+      unsigned zmask : 4;
+   } z;
+
+   struct {
+      unsigned zbase : 14;
+      unsigned zdelta : 6;
+      unsigned unused : 2;
+      unsigned smem : 2;
+      unsigned sr1 : 2;
+      unsigned sr0 : 2;
+      unsigned zmask : 4;
+   } zs;
+
+   struct {
+      unsigned zbase : 14;
+      unsigned zdelta : 6;
+      unsigned vrs_y : 2;
+      unsigned smem : 2;
+      unsigned vrs_x : 2;
+      unsigned sr0 : 2;
+      unsigned zmask : 4;
+   } zs_vrs;
+
+#else
    /* Z only */
    struct {
       unsigned zmask : 4;
@@ -138,6 +170,7 @@ typedef union {
       unsigned zbase : 14;
    } zs_vrs;
 
+#endif
    uint32_t dword;
 } ac_htile_dword;
 

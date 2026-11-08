@@ -3630,6 +3630,7 @@ void si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf
          },
       .stride = stride,
       .gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED_WITH_OFFSET,
+      .be_desc = desc == &numeric ? desc : NULL,
       .has_desc_resource_level = screen->info.compiler_info.has_desc_resource_level,
    };
 

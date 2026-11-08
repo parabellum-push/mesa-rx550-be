@@ -958,7 +958,7 @@ radv_create_gfx_preamble(struct radv_device *device)
    /* Big endian GFX8: this reusable IB bypasses winsys CS finalization. Match the GPU
     * command representation used for ordinary graphics/compute command buffers.
     */
-   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+   if (UTIL_ARCH_BIG_ENDIAN && radv_device_physical(device)->info.gfx_level == GFX8) {
       uint32_t *words = map;
       for (unsigned i = 0; i < cs->b->cdw; ++i)
          words[i] = util_cpu_to_le32(cs->b->buf[i]);

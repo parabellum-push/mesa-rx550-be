@@ -73,6 +73,9 @@ static inline unsigned si_gfx8_be_texture_swap_bytes(enum amd_gfx_level gfx_leve
       return 0;
    if (si_gfx8_be_packed_texture(gfx_level, format))
       return util_format_get_blocksize(format);
+   /* util_format reads these packed floats as host-order words (Mesa 25+). */
+   if (format == PIPE_FORMAT_R11G11B10_FLOAT || format == PIPE_FORMAT_R9G9B9E5_FLOAT)
+      return 4;
    /* Gallium depth/stencil maps contain native CPU words, while DB and
     * depth staging resources use little-endian component words. */
    switch (format) {

@@ -1812,7 +1812,8 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
 #ifdef ANDROID_STRICT
       .apiVersion = RADV_API_VERSION,
 #else
-      .apiVersion = pdev->info.gfx_level >= GFX8 ? RADV_API_VERSION : RADV_API_VERSION_1_3,
+      /* Big endian GFX8: only a Vulkan 1.3 CTS has validated this port. */
+      .apiVersion = pdev->info.gfx_level >= GFX8 && !UTIL_ARCH_BIG_ENDIAN ? RADV_API_VERSION : RADV_API_VERSION_1_3,
 #endif
       .driverVersion = vk_get_driver_version(),
       .vendorID = ATI_VENDOR_ID,

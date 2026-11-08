@@ -399,7 +399,10 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo, ac_sh
    uint32_t attrib_mask = BITFIELD_MASK(pinfo->num_attributes);
    bool has_nontrivial_divisors = pinfo->nontrivial_divisors;
 
-   /* Big-endian GFX8 attributes hold host-order data, which typed fetches would
+   /* Raw fetches below use the instruction offset (as Mesa 24 did); a soffset inline constant
+    * returned nothing on GFX8 with idxen.
+    *
+    * Big-endian GFX8 attributes hold host-order data, which typed fetches would
     * decode wrongly. Everything wider than a byte is fetched raw and decoded below.
     * (RADV routes every attribute through the misaligned path on big endian.)
     */
@@ -564,23 +567,23 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo, ac_sh
 
                if (vtx_info->chan_byte_size == 2) {
                   bld.mtbuf(aco_opcode::tbuffer_load_format_x, Definition(dest.advance(j * 4u), v1),
-                            Operand(cur_desc, s4), fetch_index, Operand::c32(offset),
-                            V_008F0C_BUF_DATA_FORMAT_16, V_008F0C_BUF_NUM_FORMAT_UINT, 0u, false,
+                            Operand(cur_desc, s4), fetch_index, Operand::c32(0u),
+                            V_008F0C_BUF_DATA_FORMAT_16, V_008F0C_BUF_NUM_FORMAT_UINT, offset, false,
                             true);
                } else if (vtx_info->chan_byte_size == 4) {
                   bld.mubuf(aco_opcode::buffer_load_dword, Definition(dest.advance(j * 4u), v1),
-                            Operand(cur_desc, s4), fetch_index, Operand::c32(offset), 0u, false,
+                            Operand(cur_desc, s4), fetch_index, Operand::c32(0u), offset, false,
                             true);
                } else {
                   /* Host doubles store their high word first. Keep that memory order: since
                    * Mesa 25, nir_lower_io swaps the 32-bit halves of 64-bit IO on big endian.
                    */
                   bld.mubuf(aco_opcode::buffer_load_dword, Definition(dest.advance(j * 8u), v1),
-                            Operand(cur_desc, s4), fetch_index, Operand::c32(offset), 0u, false,
+                            Operand(cur_desc, s4), fetch_index, Operand::c32(0u), offset, false,
                             true);
                   bld.mubuf(aco_opcode::buffer_load_dword,
                             Definition(dest.advance(j * 8u + 4u), v1), Operand(cur_desc, s4),
-                            fetch_index, Operand::c32(offset + 4u), 0u, false, true);
+                            fetch_index, Operand::c32(0u), offset + 4u, false, true);
                }
             }
 

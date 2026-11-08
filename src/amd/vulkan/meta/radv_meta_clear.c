@@ -8,7 +8,6 @@
 #include "util/format/u_format.h"
 #include "util/format_srgb.h"
 #include "nir/nir_builder.h"
-#include "radv_debug.h"
 #include "radv_entrypoints.h"
 #include "radv_formats.h"
 #include "radv_meta.h"

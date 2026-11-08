@@ -7121,7 +7121,8 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer)
 
    /* Big endian GFX8: the GPU reads descriptors as little-endian words. */
    if (UTIL_ARCH_BIG_ENDIAN && radv_device_physical(radv_cmd_buffer_device(cmd_buffer))->info.gfx_level == GFX8)
-      util_memcpy_cpu_to_le32(vb_ptr, vb_ptr, vb_desc_alloc_size);
+      for (unsigned i = 0; i < (vb_desc_alloc_size) / 4; i++)
+         ((uint32_t *)vb_ptr)[i] = util_cpu_to_le32(((uint32_t *)vb_ptr)[i]);
 
    va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
    va += vb_offset;
@@ -7224,7 +7225,8 @@ radv_flush_streamout_descriptors(struct radv_cmd_buffer *cmd_buffer)
    }
 
    if (UTIL_ARCH_BIG_ENDIAN && radv_device_physical(radv_cmd_buffer_device(cmd_buffer))->info.gfx_level == GFX8)
-      util_memcpy_cpu_to_le32(so_ptr, so_ptr, MAX_SO_BUFFERS * 16);
+      for (unsigned i = 0; i < (MAX_SO_BUFFERS * 16) / 4; i++)
+         ((uint32_t *)so_ptr)[i] = util_cpu_to_le32(((uint32_t *)so_ptr)[i]);
 
    desc_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
    desc_va += so_offset;
@@ -8318,7 +8320,11 @@ radv_CmdBindVertexBuffers3KHR(VkCommandBuffer commandBuffer, uint32_t firstBindi
 
       /* If setStride=false, it shouldn't overwrite the strides specified by CmdSetVertexInputEXT */
       if (binding_info->setStride)
-         radv_cmd_set_vertex_binding_strides(cmd_buffer, idx, 1, (uint16_t *)&stride);
+      {
+         /* A uint16_t view of a wider stride would read its high half on big endian. */
+         const uint16_t stride16 = stride;
+         radv_cmd_set_vertex_binding_strides(cmd_buffer, idx, 1, &stride16);
+      }
 
       uint32_t bit = BITFIELD_BIT(idx);
       if (size) {
@@ -9723,7 +9729,9 @@ radv_CmdSetVertexInputEXT(VkCommandBuffer commandBuffer, uint32_t vertexBindingD
          }
       }
 
-      radv_cmd_set_vertex_binding_strides(cmd_buffer, attrib->binding, 1, (uint16_t *)&binding->stride);
+      /* A uint16_t view of the 32-bit stride would read its high half on big endian. */
+      const uint16_t stride16 = binding->stride;
+      radv_cmd_set_vertex_binding_strides(cmd_buffer, attrib->binding, 1, &stride16);
       vertex_input->offsets[loc] = attrib->offset;
 
       enum pipe_format format = vk_format_map[attrib->format];

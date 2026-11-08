@@ -34,9 +34,11 @@
 bool
 _mesa_packed_float_needs_swap(GLenum type)
 {
-   return UTIL_ARCH_BIG_ENDIAN &&
-          (type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
-           type == GL_UNSIGNED_INT_5_9_9_9_REV);
+   /* Since Mesa 25, util_format packs and unpacks R11G11B10/R9G9B9E5 as host-order words,
+    * as GL clients store them, and drivers map them that way. Nothing to swap.
+    */
+   (void)type;
+   return false;
 }
 
 enum {
