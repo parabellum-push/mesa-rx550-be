@@ -1475,7 +1475,30 @@ vtn_handle_bitcast(struct vtn_builder *b, const uint32_t *w, unsigned count)
                glsl_get_vector_elements(type->type) * glsl_get_bit_size(type->type),
                "Source (%%%u) and destination (%%%u) of OpBitcast must have the same "
                "total number of bits", w[3], w[2]);
-   nir_def *val =
-      nir_bitcast_vector(&b->nb, src, glsl_get_bit_size(type->type));
+   const unsigned dst_bits = glsl_get_bit_size(type->type);
+   nir_def *val;
+   if (b->options->bitcast_big_endian && dst_bits != src->bit_size) {
+      /* Big-endian memory order: the first component of a group is the most
+       * significant part. Reverse each group on the narrow side around the
+       * little-endian bitcast.
+       */
+      const bool narrowing = dst_bits < src->bit_size;
+      const unsigned group = narrowing ? src->bit_size / dst_bits : dst_bits / src->bit_size;
+      if (!narrowing) {
+         unsigned swz[NIR_MAX_VEC_COMPONENTS];
+         for (unsigned i = 0; i < src->num_components; i++)
+            swz[i] = (i / group) * group + (group - 1 - i % group);
+         src = nir_swizzle(&b->nb, src, swz, src->num_components);
+      }
+      val = nir_bitcast_vector(&b->nb, src, dst_bits);
+      if (narrowing) {
+         unsigned swz[NIR_MAX_VEC_COMPONENTS];
+         for (unsigned i = 0; i < val->num_components; i++)
+            swz[i] = (i / group) * group + (group - 1 - i % group);
+         val = nir_swizzle(&b->nb, val, swz, val->num_components);
+      }
+   } else {
+      val = nir_bitcast_vector(&b->nb, src, dst_bits);
+   }
    vtn_push_nir_ssa(b, w[2], val);
 }

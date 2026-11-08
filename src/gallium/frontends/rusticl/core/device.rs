@@ -1412,6 +1412,7 @@ impl DeviceBase {
             caps: &self.spirv_caps,
             address_bits: self.address_bits(),
             float_controls: spirv_float_controls,
+            bitcast_big_endian: !self.little_endian(),
         }
     }
 
@@ -1532,6 +1533,8 @@ impl Device {
         spirv_caps.Int64 = true;
         spirv_caps.GenericPointer = true;
         spirv_to_nir_opts.caps = &spirv_caps;
+        // libclc is written for little-endian targets (e.g. as_uint2(double).y is the high word).
+        spirv_to_nir_opts.bitcast_big_endian = false;
 
         let lib_clc = spirv::SPIRVBin::get_lib_clc(dev_base.screen(), spirv_to_nir_opts);
         match &lib_clc {

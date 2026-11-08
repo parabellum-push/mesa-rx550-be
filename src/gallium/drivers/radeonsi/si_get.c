@@ -161,7 +161,9 @@ void si_init_screen_caps(struct si_screen *sscreen)
 
    caps->native_fence_fd = sscreen->info.has_fence_to_handle;
 
-   caps->endianness = PIPE_ENDIAN_LITTLE;
+   /* Big endian: rusticl kernels see host-order memory (si_lower_native_be_kernel_mem). */
+   caps->endianness = UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 ? PIPE_ENDIAN_BIG
+                                                                             : PIPE_ENDIAN_LITTLE;
    caps->vendor_id = ATI_VENDOR_ID;
    caps->device_id = sscreen->info.pci_id;
    caps->video_memory = sscreen->info.vram_size_kb >> 10;

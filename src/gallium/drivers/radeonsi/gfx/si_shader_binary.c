@@ -752,6 +752,9 @@ bool si_can_dump_shader(struct si_screen *sscreen, mesa_shader_stage stage,
    };
    assert(dump_type < ARRAY_SIZE(filter));
 
+   /* OpenCL kernels are dumped with the compute shaders (AMD_DEBUG=cs). */
+   if (stage == MESA_SHADER_KERNEL)
+      stage = MESA_SHADER_COMPUTE;
    return sscreen->shader_debug_flags & (1 << stage) &&
           sscreen->shader_debug_flags & filter[dump_type];
 }

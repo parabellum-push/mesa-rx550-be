@@ -100,6 +100,8 @@ pub struct SPIRVToNirOptions<'a> {
     pub caps: &'a spirv_capabilities,
     pub address_bits: u32,
     pub float_controls: float_controls,
+    /// as_typen between different component sizes follows big-endian memory order.
+    pub bitcast_big_endian: bool,
 }
 
 impl SPIRVBin {
@@ -318,6 +320,7 @@ impl SPIRVBin {
             environment: nir_spirv_execution_environment::NIR_SPIRV_OPENCL,
             clc_shader: clc_shader,
             float_controls_execution_mode: options.float_controls.0,
+            bitcast_big_endian: options.bitcast_big_endian,
             printf: true,
             capabilities: options.caps,
             constant_addr_format: global_addr_format,
@@ -379,6 +382,23 @@ impl SPIRVBin {
     }
 
     pub fn from_bin(bin: &[u8]) -> Self {
+        // SPIR-V may come in either byte order (the magic number tells which); SPIRV-Tools and
+        // clc expect host-order words. Big-endian hosts commonly get little-endian modules, e.g.
+        // the built-in kernels compiled by mesa_clc on the build machine.
+        const SPIRV_MAGIC: u32 = 0x07230203;
+        let swapped;
+        let bin = if bin.len() >= 4
+            && bin.len() % 4 == 0
+            && u32::from_ne_bytes(bin[0..4].try_into().unwrap()) == SPIRV_MAGIC.swap_bytes()
+        {
+            swapped = bin
+                .chunks_exact(4)
+                .flat_map(|w| u32::from_ne_bytes(w.try_into().unwrap()).swap_bytes().to_ne_bytes())
+                .collect::<Vec<u8>>();
+            &swapped[..]
+        } else {
+            bin
+        };
         unsafe {
             let ptr = malloc(bin.len());
             ptr::copy_nonoverlapping(bin.as_ptr(), ptr.cast(), bin.len());

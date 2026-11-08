@@ -247,11 +247,15 @@ mesa_spirv_debug_init(void)
    call_once(&initialized_debug_flag, initialize_mesa_spirv_debug);
 }
 
-#ifndef NDEBUG
 static enum nir_spirv_debug_level
 vtn_default_log_level(void)
 {
+#ifdef NDEBUG
+   /* Release builds stay quiet unless MESA_SPIRV_LOG_LEVEL is set. */
+   enum nir_spirv_debug_level level = NIR_SPIRV_DEBUG_LEVEL_INVALID;
+#else
    enum nir_spirv_debug_level level = NIR_SPIRV_DEBUG_LEVEL_WARNING;
+#endif
    const char *vtn_log_level_strings[] = {
       [NIR_SPIRV_DEBUG_LEVEL_WARNING] = "warning",
       [NIR_SPIRV_DEBUG_LEVEL_INFO]  = "info",
@@ -271,7 +275,6 @@ vtn_default_log_level(void)
 
    return level;
 }
-#endif
 
 void
 vtn_log(struct vtn_builder *b, enum nir_spirv_debug_level level,
@@ -282,16 +285,13 @@ vtn_log(struct vtn_builder *b, enum nir_spirv_debug_level level,
                              level, spirv_offset, message);
    }
 
-#ifndef NDEBUG
-   static enum nir_spirv_debug_level default_level =
-      NIR_SPIRV_DEBUG_LEVEL_INVALID;
+   static int default_level = -2;
 
-   if (default_level == NIR_SPIRV_DEBUG_LEVEL_INVALID)
+   if (default_level == -2)
       default_level = vtn_default_log_level();
 
-   if (level >= default_level)
+   if (default_level != NIR_SPIRV_DEBUG_LEVEL_INVALID && (int)level >= default_level)
       fprintf(stderr, "%s\n", message);
-#endif
 }
 
 void

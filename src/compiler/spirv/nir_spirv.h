@@ -47,6 +47,12 @@ struct spirv_to_nir_options {
    /* Create a nir library. */
    bool create_library;
 
+   /* OpBitcast between vectors of different component sizes maps components
+    * in big-endian memory order (OpenCL as_typen on a big-endian device)
+    * instead of SPIR-V's little-endian order.
+    */
+   bool bitcast_big_endian;
+
    /* Initial value for shader_info::float_controls_execution_mode,
     * indicates hardware requirements rather than shader author intent
     */

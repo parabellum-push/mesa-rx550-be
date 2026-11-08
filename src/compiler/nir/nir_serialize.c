@@ -1747,14 +1747,28 @@ write_instr(write_ctx *ctx, const nir_instr *instr)
    case nir_instr_type_jump:
       write_jump(ctx, nir_instr_as_jump(instr));
       break;
-   case nir_instr_type_call:
-      blob_write_uint32(ctx->blob, instr->type);
+   case nir_instr_type_call: {
+      /* A raw type number only matches header.any.instr_type when bitfields
+       * are allocated from the least significant bit (little endian).
+       */
+      union packed_instr header;
+      header.u32 = 0;
+      header.any.instr_type = instr->type;
+      blob_write_uint32(ctx->blob, header.u32);
       write_call(ctx, nir_instr_as_call(instr));
       break;
-   case nir_instr_type_cmat_call:
-      blob_write_uint32(ctx->blob, instr->type);
+   }
+   case nir_instr_type_cmat_call: {
+      /* A raw type number only matches header.any.instr_type when bitfields
+       * are allocated from the least significant bit (little endian).
+       */
+      union packed_instr header;
+      header.u32 = 0;
+      header.any.instr_type = instr->type;
+      blob_write_uint32(ctx->blob, header.u32);
       write_cmat_call(ctx, nir_instr_as_cmat_call(instr));
       break;
+   }
    default:
       UNREACHABLE("bad instr type");
    }

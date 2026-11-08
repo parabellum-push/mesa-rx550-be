@@ -52,7 +52,12 @@ impl Meta {
 
                 let prog = Program::from_spirv_with_devs(devs.clone(), Arc::clone(&ctx), spirv);
                 let options = CompileOptions::new(c"", -1).unwrap();
-                prog.build(devs, options, None).unwrap();
+                if let Err(err) = prog.build(devs.clone(), options, None) {
+                    for dev in &devs {
+                        eprintln!("rusticl: built-in kernels failed to build ({err}):\n{}", prog.build_info().log(dev).to_string_lossy());
+                    }
+                    panic!("rusticl: built-in kernels failed to build: {err}");
+                }
                 let build = prog.build_info();
 
                 for kernel in build.kernels() {

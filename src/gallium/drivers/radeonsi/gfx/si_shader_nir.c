@@ -262,6 +262,80 @@ static void si_be_keep_image_loops(struct exec_list *list)
    }
 }
 
+/* OpenCL kernels on big endian GFX8 (rusticl reports a big-endian device):
+ * kernel arguments, global, local and private memory hold host-order data,
+ * so every access is byte-swapped at its own width. Atomics run as
+ * compare/exchange loops on the swapped values.
+ */
+static nir_def *si_be_mem_atomic_swap(nir_builder *b, nir_intrinsic_instr *intr, unsigned bits,
+                                      nir_def *cmp, nir_def *data)
+{
+   if (intr->intrinsic == nir_intrinsic_global_atomic || intr->intrinsic == nir_intrinsic_global_atomic_swap)
+      return nir_global_atomic_swap(b, bits, intr->src[0].ssa, cmp, data, .atomic_op = nir_atomic_op_cmpxchg);
+   return nir_shared_atomic_swap(b, bits, intr->src[0].ssa, cmp, data, .base = nir_intrinsic_base(intr),
+                                 .atomic_op = nir_atomic_op_cmpxchg);
+}
+
+static bool si_lower_native_be_kernel_mem(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_constant:
+   case nir_intrinsic_load_shared:
+   case nir_intrinsic_load_scratch: {
+      if (intr->def.bit_size <= 8)
+         return false;
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def_rewrite_uses_after(&intr->def, si_nir_bswap_scalar(b, &intr->def));
+      return true;
+   }
+   case nir_intrinsic_store_global:
+   case nir_intrinsic_store_shared:
+   case nir_intrinsic_store_scratch:
+      if (intr->src[0].ssa->bit_size <= 8)
+         return false;
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_src_rewrite(&intr->src[0], si_nir_bswap_scalar(b, intr->src[0].ssa));
+      return true;
+   case nir_intrinsic_global_atomic:
+   case nir_intrinsic_global_atomic_swap:
+   case nir_intrinsic_shared_atomic:
+   case nir_intrinsic_shared_atomic_swap: {
+      const unsigned bits = intr->def.bit_size;
+      if (bits <= 8)
+         return false;
+      const bool is_swap = intr->intrinsic == nir_intrinsic_global_atomic_swap ||
+                           intr->intrinsic == nir_intrinsic_shared_atomic_swap;
+      nir_atomic_op op = nir_intrinsic_atomic_op(intr);
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_def *result;
+      if (is_swap) {
+         result = si_be_mem_atomic_swap(b, intr, bits, si_nir_bswap_scalar(b, intr->src[1].ssa),
+                                        si_nir_bswap_scalar(b, intr->src[2].ssa));
+      } else {
+         nir_def *zero = nir_imm_intN_t(b, 0, bits);
+         nir_variable *raw = nir_local_variable_create(b->impl, glsl_uintN_t_type(bits), "native_atomic");
+         nir_store_var(b, raw, si_be_mem_atomic_swap(b, intr, bits, zero, zero), 1);
+         nir_loop *loop = nir_push_loop(b);
+         nir_def *old = nir_load_var(b, raw);
+         nir_def *native_new = si_native_atomic_value(b, op, si_nir_bswap_scalar(b, old), intr->src[1].ssa);
+         nir_def *observed = si_be_mem_atomic_swap(b, intr, bits, old, si_nir_bswap_scalar(b, native_new));
+         nir_store_var(b, raw, observed, 1);
+         nir_if *done = nir_push_if(b, nir_ieq(b, observed, old));
+         nir_jump(b, nir_jump_break);
+         nir_pop_if(b, done);
+         nir_pop_loop(b, loop);
+         result = nir_load_var(b, raw);
+      }
+      nir_def_replace(&intr->def, si_nir_bswap_scalar(b, result));
+      return true;
+   }
+   default:
+      return false;
+   }
+}
+
 static bool si_lower_native_be_ssbo(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
 {
    switch (intr->intrinsic) {
@@ -331,8 +405,15 @@ void si_finalize_nir(struct pipe_screen *screen, struct nir_shader *nir,
       NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
    }
 
-   /* Big endian GFX8: buffer objects hold native CPU scalars (see si_lower_native_be_ssbo). */
-   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && !nir->info.internal)
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && nir->info.stage == MESA_SHADER_KERNEL)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, si_lower_native_be_kernel_mem,
+               nir_metadata_none, NULL);
+
+   /* Big endian GFX8: buffer objects hold native CPU scalars (see si_lower_native_be_ssbo).
+    * Kernels are handled by si_lower_native_be_kernel_mem above.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && !nir->info.internal &&
+       nir->info.stage != MESA_SHADER_KERNEL)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, si_lower_native_be_ssbo,
                nir_metadata_none, NULL);
    if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && !nir->info.internal) {

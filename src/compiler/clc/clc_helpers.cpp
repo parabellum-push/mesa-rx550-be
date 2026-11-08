@@ -77,6 +77,9 @@
 #include "util/ralloc.h"
 #include "util/set.h"
 #include "util/u_dl.h"
+#include "util/u_endian.h"
+#include "util/u_math.h"
+#include "spirv/spirv.h"
 #include "glsl_types.h"
 
 #include "spirv.h"
@@ -145,6 +148,24 @@ public:
    unsigned typeQualifier;
 };
 
+/* SPIR-V literal strings pack four octets per word, first octet in the
+ * lowest-order bits (SPIR-V spec 2.2.1). Reading the words as raw memory only
+ * works on little-endian hosts.
+ */
+static std::string
+spirv_literal_string(const uint32_t *words)
+{
+   std::string str;
+   for (;; words++) {
+      for (unsigned i = 0; i < 4; i++) {
+         char c = (char)((*words >> (8 * i)) & 0xff);
+         if (!c)
+            return str;
+         str += c;
+      }
+   }
+}
+
 class SPIRVKernelInfo {
 public:
    SPIRVKernelInfo(uint32_t fid, const char *nm)
@@ -188,9 +209,9 @@ public:
 
       op = &ins->operands[2];
       assert(op->type == SPV_OPERAND_TYPE_LITERAL_STRING);
-      const char *name = reinterpret_cast<const char *>(ins->words + op->offset);
+      std::string name = spirv_literal_string(ins->words + op->offset);
 
-      kernels.push_back(SPIRVKernelInfo(funcId, name));
+      kernels.push_back(SPIRVKernelInfo(funcId, name.c_str()));
    }
 
    void parseFunction(const spv_parsed_instruction_t *ins)
@@ -232,7 +253,7 @@ public:
    void parseName(const spv_parsed_instruction_t *ins)
    {
       const spv_parsed_operand_t *op;
-      const char *name;
+      std::string name;
       uint32_t id;
 
       assert(ins->num_operands == 2);
@@ -242,7 +263,7 @@ public:
       id = ins->words[op->offset];
       op = &ins->operands[1];
       assert(op->type == SPV_OPERAND_TYPE_LITERAL_STRING);
-      name = reinterpret_cast<const char *>(ins->words + op->offset);
+      name = spirv_literal_string(ins->words + op->offset);
 
       for (auto &kernel : kernels) {
          for (auto &arg : kernel.args) {
@@ -304,7 +325,7 @@ public:
 
       op = &ins->operands[1];
       assert(op->type == SPV_OPERAND_TYPE_LITERAL_STRING);
-      str = reinterpret_cast<const char *>(ins->words + op->offset);
+      str = spirv_literal_string(ins->words + op->offset);
 
       size_t start = 0;
       enum class string_type {
@@ -1141,6 +1162,69 @@ spirv_version_to_llvm_spirv_translator_version(enum clc_spirv_version version)
    }
 }
 
+#if UTIL_ARCH_BIG_ENDIAN
+/* SPIRV-LLVM-Translator writes words in host order but literal strings as a
+ * plain byte stream. SPIR-V (and SPIRV-Tools, spirv_to_nir) expect four
+ * octets per word with the first octet in the lowest-order bits, so on a
+ * big-endian host every string word must be byte-swapped.
+ */
+static unsigned
+spirv_string_words_be(const uint32_t *w, unsigned avail)
+{
+   /* In byte-stream form the string ends in the first word holding a 0 byte. */
+   for (unsigned i = 0; i < avail; i++) {
+      uint32_t v = w[i];
+      if (!(v & 0xff) || !(v & 0xff00) || !(v & 0xff0000) || !(v & 0xff000000))
+         return i + 1;
+   }
+   return avail;
+}
+
+static void
+spirv_fix_translator_strings_be(uint32_t *words, size_t count)
+{
+   size_t i = 5; /* skip the header */
+   while (i < count) {
+      unsigned n = words[i] >> 16, op = words[i] & 0xffff;
+      if (n == 0 || i + n > count)
+         return;
+      int first = -1; /* word index (after the opcode word) of the string */
+      switch (op) {
+      case SpvOpSourceContinued: case SpvOpSourceExtension: case SpvOpExtension:
+      case SpvOpModuleProcessed:
+         first = 0; break;
+      case SpvOpName: case SpvOpString: case SpvOpExtInstImport: case SpvOpTypeOpaque:
+         first = 1; break;
+      case SpvOpMemberName: case SpvOpEntryPoint: case SpvOpDecorateString:
+         first = 2; break;
+      case SpvOpMemberDecorateString:
+         first = 3; break;
+      case SpvOpSource:
+         if (n > 4) first = 3;
+         break;
+      case SpvOpDecorate:
+         if (n > 3 && (words[i + 2] == SpvDecorationLinkageAttributes ||
+                       words[i + 2] == SpvDecorationUserSemantic))
+            first = 2;
+         break;
+      case SpvOpMemberDecorate:
+         if (n > 4 && words[i + 3] == SpvDecorationUserSemantic)
+            first = 3;
+         break;
+      default:
+         break;
+      }
+      if (first >= 0 && (unsigned)first + 1 < n) {
+         uint32_t *str = &words[i + 1 + first];
+         unsigned len = spirv_string_words_be(str, n - 1 - first);
+         for (unsigned k = 0; k < len; k++)
+            str[k] = util_bswap32(str[k]);
+      }
+      i += n;
+   }
+}
+#endif
+
 static int
 llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
                   LLVMContext &context,
@@ -1237,6 +1321,9 @@ llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
    out_spirv->size = spv_out.size();
    out_spirv->data = malloc(out_spirv->size);
    memcpy(out_spirv->data, spv_out.data(), out_spirv->size);
+#if UTIL_ARCH_BIG_ENDIAN
+   spirv_fix_translator_strings_be((uint32_t *)out_spirv->data, out_spirv->size / 4);
+#endif
 
    return 0;
 }

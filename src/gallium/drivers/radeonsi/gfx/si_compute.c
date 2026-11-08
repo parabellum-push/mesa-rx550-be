@@ -238,6 +238,16 @@ static void si_set_global_binding(struct pipe_context *ctx, unsigned first, unsi
       pipe_resource_reference(&sctx->global_buffers[first + i], resources[i]);
       util_range_add(&res->b.b, &res->valid_buffer_range, 0, res->b.b.width0);
       va = res->gpu_address;
+      if (UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8) {
+         /* The device is big endian (see caps.endianness): the 64-bit pointer
+          * argument holds a host-order offset and must hold a host-order address.
+          */
+         uint64_t offset64;
+         memcpy(&offset64, handles[i], sizeof(offset64));
+         va += offset64;
+         memcpy(handles[i], &va, sizeof(va));
+         continue;
+      }
       offset = util_le32_to_cpu(*handles[i]);
       va += offset;
       va = util_cpu_to_le64(va);
