@@ -962,11 +962,10 @@ static void rvce_get_feedback(struct pipe_video_codec *encoder, void *feedback, 
    uint32_t *ptr = enc->ws->buffer_map(enc->ws, fb->res->buf, NULL,
                                        PIPE_MAP_READ_WRITE | RADEON_MAP_TEMPORARY);
 
-   if (ptr[1]) {
-      *size = ptr[4] - ptr[9];
-   } else {
-      *size = 0;
-   }
+   /* The firmware writes little-endian dwords. */
+   uint32_t has_bitstream = util_le32_to_cpu(ptr[1]);
+   uint32_t end = util_le32_to_cpu(ptr[4]), start = util_le32_to_cpu(ptr[9]);
+   *size = has_bitstream ? end - start : 0;
 
    enc->ws->buffer_unmap(enc->ws, fb->res->buf);
 

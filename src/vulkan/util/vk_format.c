@@ -25,6 +25,7 @@
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_android.h>
 
+#include "util/u_endian.h"
 #include "vk_format.h"
 
 #include "vk_enum_defines.h"
@@ -98,10 +99,30 @@ const enum pipe_format vk_format_map[] = {
 
    [VK_FORMAT_A8B8G8R8_UNORM_PACK32] = PIPE_FORMAT_RGBA8888_UNORM,
    [VK_FORMAT_A8B8G8R8_SNORM_PACK32] = PIPE_FORMAT_RGBA8888_SNORM,
+#if UTIL_ARCH_BIG_ENDIAN
+   /* u_formats.h has no endian-aware name for these; a packed word stores A first. */
+   [VK_FORMAT_A8B8G8R8_USCALED_PACK32] = PIPE_FORMAT_A8B8G8R8_USCALED,
+#else
    [VK_FORMAT_A8B8G8R8_USCALED_PACK32] = PIPE_FORMAT_RGBA8888_USCALED,
+#endif
+#if UTIL_ARCH_BIG_ENDIAN
+   /* u_formats.h has no endian-aware name for these; a packed word stores A first. */
+   [VK_FORMAT_A8B8G8R8_SSCALED_PACK32] = PIPE_FORMAT_A8B8G8R8_SSCALED,
+#else
    [VK_FORMAT_A8B8G8R8_SSCALED_PACK32] = PIPE_FORMAT_RGBA8888_SSCALED,
+#endif
+#if UTIL_ARCH_BIG_ENDIAN
+   /* u_formats.h has no endian-aware name for these; a packed word stores A first. */
+   [VK_FORMAT_A8B8G8R8_UINT_PACK32] = PIPE_FORMAT_A8B8G8R8_UINT,
+#else
    [VK_FORMAT_A8B8G8R8_UINT_PACK32] = PIPE_FORMAT_RGBA8888_UINT,
+#endif
+#if UTIL_ARCH_BIG_ENDIAN
+   /* u_formats.h has no endian-aware name for these; a packed word stores A first. */
+   [VK_FORMAT_A8B8G8R8_SINT_PACK32] = PIPE_FORMAT_A8B8G8R8_SINT,
+#else
    [VK_FORMAT_A8B8G8R8_SINT_PACK32] = PIPE_FORMAT_RGBA8888_SINT,
+#endif
    [VK_FORMAT_A8B8G8R8_SRGB_PACK32] = PIPE_FORMAT_RGBA8888_SRGB,
 
    [VK_FORMAT_A2R10G10B10_UNORM_PACK32] = PIPE_FORMAT_B10G10R10A2_UNORM,

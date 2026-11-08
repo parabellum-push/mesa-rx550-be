@@ -119,6 +119,7 @@ void *si_create_compute_state_for_nir(struct pipe_context *ctx, nir_shader *nir,
    program->shader.selector = &program->sel;
 
    sel->nir = nir;
+   program->be_internal = nir->info.internal;
    if (si_can_dump_shader(sscreen, sel->stage, SI_DUMP_INIT_NIR))
       nir_print_shader(sel->nir, stderr);
 
@@ -834,7 +835,7 @@ static bool si_check_needs_implicit_sync(struct si_context *sctx, uint32_t usage
    return false;
 }
 
-static void si_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *info)
+static void si_launch_grid_gpu(struct pipe_context *ctx, const struct pipe_grid_info *info)
 {
    struct si_context *sctx = (struct si_context *)ctx;
    struct si_screen *sscreen = sctx->screen;
@@ -1003,6 +1004,32 @@ static void si_delete_compute_state(struct pipe_context *ctx, void *state)
       sctx->cs_shader_state.emitted_program = NULL;
 
    si_compute_reference(&program, NULL);
+}
+
+static void si_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *info)
+{
+   struct si_context *sctx = (struct si_context *)ctx;
+   struct si_compute *program = sctx->cs_shader_state.program;
+   if (UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8 && info->indirect &&
+       !program->be_internal) {
+      /* API indirect buffers contain native words, including shader-written
+       * SSBOs. Read the three counts and use direct packet fields for now.
+       */
+      struct pipe_transfer *transfer = NULL;
+      const void *map = pipe_buffer_map_range(ctx, info->indirect, info->indirect_offset,
+                                              3 * sizeof(uint32_t), PIPE_MAP_READ, &transfer);
+      if (!map)
+         return;
+      struct pipe_grid_info native = *info;
+      memcpy(native.grid, map, 3 * sizeof(uint32_t));
+      pipe_buffer_unmap(ctx, transfer);
+      native.indirect = NULL;
+      native.indirect_offset = 0;
+      if (native.grid[0] && native.grid[1] && native.grid[2])
+         si_launch_grid_gpu(ctx, &native);
+      return;
+   }
+   si_launch_grid_gpu(ctx, info);
 }
 
 void si_init_compute_functions(struct si_context *sctx)

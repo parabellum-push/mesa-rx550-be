@@ -284,7 +284,24 @@ dri2_image_format_for_pbuffer_config(struct dri2_egl_display *dri2_dpy,
                                      const struct dri_config *config)
 {
    struct gl_config *gl_config = (struct gl_config *) config;
-   return gl_config->color_format;
+   enum pipe_format format = gl_config->color_format;
+   /* Big endian: configs keep native (CPU word) visual formats, but images use DRM's
+    * fixed byte layout, as the GL framebuffer does (see dri_fill_st_visual).
+    */
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      switch (format) {
+      case PIPE_FORMAT_BGRA8888_UNORM: return PIPE_FORMAT_B8G8R8A8_UNORM;
+      case PIPE_FORMAT_BGRX8888_UNORM: return PIPE_FORMAT_B8G8R8X8_UNORM;
+      case PIPE_FORMAT_RGBA8888_UNORM: return PIPE_FORMAT_R8G8B8A8_UNORM;
+      case PIPE_FORMAT_RGBX8888_UNORM: return PIPE_FORMAT_R8G8B8X8_UNORM;
+      case PIPE_FORMAT_BGRA8888_SRGB: return PIPE_FORMAT_B8G8R8A8_SRGB;
+      case PIPE_FORMAT_BGRX8888_SRGB: return PIPE_FORMAT_B8G8R8X8_SRGB;
+      case PIPE_FORMAT_RGBA8888_SRGB: return PIPE_FORMAT_R8G8B8A8_SRGB;
+      case PIPE_FORMAT_RGBX8888_SRGB: return PIPE_FORMAT_R8G8B8X8_SRGB;
+      default: break;
+      }
+   }
+   return format;
 }
 
 struct dri2_egl_config *

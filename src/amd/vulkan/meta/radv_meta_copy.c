@@ -6,6 +6,7 @@
 
 #include "radv_formats.h"
 #include "radv_meta.h"
+#include "radv_meta_native_indices.h"
 #include "radv_sdma.h"
 #include "vk_format.h"
 
@@ -294,6 +295,106 @@ gfx_or_compute_copy_memory_to_image(struct radv_cmd_buffer *cmd_buffer, VkAddres
    }
 }
 
+/* Big endian GFX8: image memory holds what the GPU decodes, little-endian elements.
+ * Application memory holds host-order elements, so copies between them swap each element.
+ */
+static unsigned
+radv_native_copy_element_width(const struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image,
+                               VkImageAspectFlags aspect_mask)
+{
+   const struct radv_physical_device *pdev = radv_device_physical(radv_cmd_buffer_device(cmd_buffer));
+   if (!UTIL_ARCH_BIG_ENDIAN || pdev->info.gfx_level != GFX8 || cmd_buffer->qf == RADV_QUEUE_TRANSFER)
+      return 1;
+
+   const VkFormat format = radv_get_aspect_format((struct radv_image *)image, aspect_mask);
+   if (image->plane_count > 1) {
+      const unsigned plane = radv_plane_from_aspect(aspect_mask);
+      return image->native_plane_width[plane] ? image->native_plane_width[plane] : radv_native_format_width(format);
+   }
+   if (vk_format_is_depth_or_stencil(image->vk.format))
+      return radv_native_format_width(format);
+   return image->native_width;
+}
+
+/* Returns the byte range of a region and whether it has bytes the copy skips. */
+static uint64_t
+radv_native_copy_size(const struct radv_image *image, const VkDeviceMemoryImageCopyKHR *region, bool *has_gaps)
+{
+   const VkFormat format = radv_get_aspect_format((struct radv_image *)image, region->imageSubresource.aspectMask);
+   const uint64_t bs = vk_format_get_blocksize(format);
+   const VkExtent3D buffer_extent = {region->addressRowLength ? region->addressRowLength : region->imageExtent.width,
+                                     region->addressImageHeight ? region->addressImageHeight
+                                                                : region->imageExtent.height,
+                                     1};
+   const VkExtent3D buf_el = vk_image_extent_to_elements(&image->vk, buffer_extent);
+   const VkExtent3D img_el = vk_image_extent_to_elements(&image->vk, region->imageExtent);
+   const uint64_t slices = MAX2(img_el.depth, vk_image_subresource_layer_count(&image->vk, &region->imageSubresource));
+
+   *has_gaps = buf_el.width != img_el.width || (slices > 1 && buf_el.height != img_el.height);
+   return (slices - 1) * buf_el.height * buf_el.width * bs + (uint64_t)(img_el.height - 1) * buf_el.width * bs +
+          img_el.width * bs;
+}
+
+static void
+radv_be_copy_memory_to_image(struct radv_cmd_buffer *cmd_buffer, VkAddressCopyFlagsKHR src_copy_flags,
+                             struct radv_image *image, const VkDeviceMemoryImageCopyKHR *region, bool use_compute)
+{
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const unsigned width = radv_native_copy_element_width(cmd_buffer, image, region->imageSubresource.aspectMask);
+   if (width == 1) {
+      gfx_or_compute_copy_memory_to_image(cmd_buffer, src_copy_flags, image, region, use_compute);
+      return;
+   }
+
+   bool has_gaps;
+   const uint64_t size = radv_native_copy_size(image, region, &has_gaps);
+   struct radeon_winsys_bo *bo;
+   unsigned offset;
+   if (!radv_meta_alloc_native_scratch(cmd_buffer, size, &bo, &offset))
+      return;
+   radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, bo);
+   const uint64_t scratch_va = radv_buffer_get_va(bo) + offset;
+   radv_meta_swap_native_elements(cmd_buffer, region->addressRange.address, scratch_va, size / width, width);
+
+   VkDeviceMemoryImageCopyKHR copy = *region;
+   copy.addressRange.address = scratch_va;
+   copy.addressRange.size = size;
+   gfx_or_compute_copy_memory_to_image(cmd_buffer, radv_get_copy_flags_from_bo(bo), image, &copy, use_compute);
+}
+
+static void
+radv_be_copy_image_to_memory(struct radv_cmd_buffer *cmd_buffer, VkAddressCopyFlagsKHR dst_copy_flags,
+                             struct radv_image *image, const VkDeviceMemoryImageCopyKHR *region)
+{
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const unsigned width = radv_native_copy_element_width(cmd_buffer, image, region->imageSubresource.aspectMask);
+   if (width == 1) {
+      compute_copy_image_to_memory(cmd_buffer, dst_copy_flags, image, region);
+      return;
+   }
+
+   bool has_gaps;
+   const uint64_t size = radv_native_copy_size(image, region, &has_gaps);
+   struct radeon_winsys_bo *bo;
+   unsigned offset;
+   if (!radv_meta_alloc_native_scratch(cmd_buffer, size, &bo, &offset))
+      return;
+   radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, bo);
+   const uint64_t dst_va = region->addressRange.address;
+   const uint64_t scratch_va = radv_buffer_get_va(bo) + offset;
+
+   /* Bytes between rows must survive the final swap unchanged. */
+   if (has_gaps)
+      radv_meta_swap_native_elements(cmd_buffer, dst_va, scratch_va, size / width, width);
+
+   VkDeviceMemoryImageCopyKHR copy = *region;
+   copy.addressRange.address = scratch_va;
+   copy.addressRange.size = size;
+   compute_copy_image_to_memory(cmd_buffer, radv_get_copy_flags_from_bo(bo), image, &copy);
+
+   radv_meta_swap_native_elements(cmd_buffer, scratch_va, dst_va, size / width, width);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2 *pCopyBufferToImageInfo)
 {
@@ -334,7 +435,7 @@ radv_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const VkCopyBufferToIm
          transfer_copy_memory_image(cmd_buffer, src_copy_flags, dst_image, &copy, true);
       } else {
          const bool use_compute = cmd_buffer->qf == RADV_QUEUE_COMPUTE || !radv_image_is_renderable(dst_image);
-         gfx_or_compute_copy_memory_to_image(cmd_buffer, src_copy_flags, dst_image, &copy, use_compute);
+         radv_be_copy_memory_to_image(cmd_buffer, src_copy_flags, dst_image, &copy, use_compute);
       }
    }
 
@@ -392,7 +493,7 @@ radv_CmdCopyMemoryToImageKHR(VkCommandBuffer commandBuffer, const VkCopyDeviceMe
          transfer_copy_memory_image(cmd_buffer, copy_flags, dst_image, region, true);
       } else {
          const bool use_compute = cmd_buffer->qf == RADV_QUEUE_COMPUTE || !radv_image_is_renderable(dst_image);
-         gfx_or_compute_copy_memory_to_image(cmd_buffer, copy_flags, dst_image, region, use_compute);
+         radv_be_copy_memory_to_image(cmd_buffer, copy_flags, dst_image, region, use_compute);
       }
    }
 
@@ -545,7 +646,7 @@ radv_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer, const VkCopyImageToBuf
       if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
          transfer_copy_memory_image(cmd_buffer, dst_copy_flags, src_image, &copy, false);
       } else {
-         compute_copy_image_to_memory(cmd_buffer, dst_copy_flags, src_image, &copy);
+         radv_be_copy_image_to_memory(cmd_buffer, dst_copy_flags, src_image, &copy);
       }
    }
 
@@ -578,7 +679,7 @@ radv_CmdCopyImageToMemoryKHR(VkCommandBuffer commandBuffer, const VkCopyDeviceMe
       if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
          transfer_copy_memory_image(cmd_buffer, copy_flags, src_image, region, false);
       } else {
-         compute_copy_image_to_memory(cmd_buffer, copy_flags, src_image, region);
+         radv_be_copy_image_to_memory(cmd_buffer, copy_flags, src_image, region);
       }
    }
 
@@ -801,6 +902,99 @@ gfx_or_compute_copy_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image 
    }
 }
 
+/* Big endian: Vulkan copies between compatible formats preserve the bytes the host would see.
+ * Image memory holds little-endian elements of each format's own width, so when the widths
+ * differ a raw copy would expose the other format's byte order. Going through host order
+ * gives the same result as a copy through application buffers. Returns false when the
+ * region does not need this.
+ */
+static bool
+radv_native_copy_image_through_host_order(struct radv_cmd_buffer *cmd_buffer, struct radv_image *src_image,
+                                          VkImageLayout src_layout, struct radv_image *dst_image,
+                                          VkImageLayout dst_layout, const VkImageCopy2 *region, bool use_compute)
+{
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+
+   const VkImageAspectFlags zs = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+   if (src_image->vk.samples > 1 || ((region->srcSubresource.aspectMask | region->dstSubresource.aspectMask) & zs))
+      return false;
+
+   const unsigned src_width = radv_native_copy_element_width(cmd_buffer, src_image, region->srcSubresource.aspectMask);
+   const unsigned dst_width = radv_native_copy_element_width(cmd_buffer, dst_image, region->dstSubresource.aspectMask);
+   if (src_width == dst_width)
+      return false;
+
+   const VkFormat src_format = radv_get_aspect_format(src_image, region->srcSubresource.aspectMask);
+   const VkFormat dst_format = radv_get_aspect_format(dst_image, region->dstSubresource.aspectMask);
+   const unsigned layers = vk_image_subresource_layer_count(&src_image->vk, &region->srcSubresource);
+   const unsigned slices = MAX2(region->extent.depth, layers);
+   const VkExtent3D elements = {DIV_ROUND_UP(region->extent.width, vk_format_get_blockwidth(src_format)),
+                                DIV_ROUND_UP(region->extent.height, vk_format_get_blockheight(src_format)), 1};
+   const uint32_t bw = vk_format_get_blockwidth(dst_format);
+   const uint32_t bh = vk_format_get_blockheight(dst_format);
+   const uint64_t size = (uint64_t)elements.width * elements.height * slices * vk_format_get_blocksize(src_format);
+
+   struct radeon_winsys_bo *from_bo, *to_bo;
+   unsigned from_offset, to_offset;
+   if (!radv_meta_alloc_native_scratch(cmd_buffer, size, &from_bo, &from_offset) ||
+       !radv_meta_alloc_native_scratch(cmd_buffer, size, &to_bo, &to_offset))
+      return true;
+
+   /* Both allocations must stay valid: a new upload BO may have replaced the first. */
+   radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, from_bo);
+   radv_cs_add_buffer(device->ws, cmd_buffer->cs->b, to_bo);
+   const uint64_t from_va = radv_buffer_get_va(from_bo) + from_offset;
+   const uint64_t to_va = radv_buffer_get_va(to_bo) + to_offset;
+
+   VkDeviceMemoryImageCopyKHR src_region = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
+      .addressRange = {.address = from_va, .size = size},
+      .imageSubresource = region->srcSubresource,
+      .imageLayout = src_layout,
+      .imageOffset = region->srcOffset,
+      .imageExtent = {region->extent.width, region->extent.height, 1},
+   };
+   VkDeviceMemoryImageCopyKHR dst_region = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
+      .imageSubresource = region->dstSubresource,
+      .imageLayout = dst_layout,
+      .imageOffset = region->dstOffset,
+      .imageExtent = {elements.width * bw, elements.height * bh, 1},
+   };
+   if (src_image->vk.image_type == VK_IMAGE_TYPE_3D) {
+      src_region.imageExtent.depth = slices;
+      src_region.imageSubresource.layerCount = 1;
+   } else {
+      src_region.imageSubresource.layerCount = slices;
+   }
+   if (dst_image->vk.image_type == VK_IMAGE_TYPE_3D) {
+      dst_region.imageExtent.depth = slices;
+      dst_region.imageSubresource.layerCount = 1;
+   } else {
+      dst_region.imageSubresource.layerCount = slices;
+   }
+
+   compute_copy_image_to_memory(cmd_buffer, radv_get_copy_flags_from_bo(from_bo), src_image, &src_region);
+
+   /* to_va ends up holding the destination's little-endian elements. */
+   uint64_t host_va = from_va;
+   if (src_width > 1) {
+      radv_meta_swap_native_elements(cmd_buffer, from_va, to_va, size / src_width, src_width);
+      host_va = to_va;
+   }
+   uint64_t final_va = host_va;
+   if (dst_width > 1) {
+      final_va = host_va == from_va ? to_va : from_va;
+      radv_meta_swap_native_elements(cmd_buffer, host_va, final_va, size / dst_width, dst_width);
+   }
+
+   dst_region.addressRange.address = final_va;
+   dst_region.addressRange.size = size;
+   gfx_or_compute_copy_memory_to_image(cmd_buffer, radv_get_copy_flags_from_bo(final_va == to_va ? to_bo : from_bo),
+                                       dst_image, &dst_region, use_compute);
+   return true;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyImage2(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *pCopyImageInfo)
 {
@@ -830,8 +1024,11 @@ radv_CmdCopyImage2(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *pCopyI
                              pCopyImageInfo->dstImageLayout, region);
       } else {
          const bool use_compute = cmd_buffer->qf == RADV_QUEUE_COMPUTE || !radv_image_is_renderable(dst_image);
-         gfx_or_compute_copy_image(cmd_buffer, src_image, pCopyImageInfo->srcImageLayout, dst_image,
-                                   pCopyImageInfo->dstImageLayout, region, use_compute);
+         if (!radv_native_copy_image_through_host_order(cmd_buffer, src_image, pCopyImageInfo->srcImageLayout,
+                                                        dst_image, pCopyImageInfo->dstImageLayout, region,
+                                                        use_compute))
+            gfx_or_compute_copy_image(cmd_buffer, src_image, pCopyImageInfo->srcImageLayout, dst_image,
+                                      pCopyImageInfo->dstImageLayout, region, use_compute);
       }
    }
 

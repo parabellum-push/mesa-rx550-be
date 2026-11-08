@@ -223,6 +223,8 @@ radv_queue_submit_empty(struct radv_queue *queue, struct vk_queue_submit *submis
                                 submission->signals);
 }
 
+#define RADV_QUEUE_RING_DESCRIPTORS_SIZE 304
+
 static void
 radv_set_ring_buffer(const struct radv_physical_device *pdev, struct radeon_winsys_bo *bo, uint32_t offset,
                      uint32_t ring_size, bool add_tid, bool swizzle_enable, bool oob_select_raw, uint32_t element_size,
@@ -999,9 +1001,7 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
        tess_rings_bo != queue->tess_rings_bo || task_rings_bo != queue->task_rings_bo ||
        mesh_scratch_ring_bo != queue->mesh_scratch_ring_bo || ge_rings_bo != queue->ge_rings_bo ||
        add_sample_positions) {
-      const uint32_t size = 304;
-
-      result = radv_bo_create(device, NULL, size, 4096, RADEON_DOMAIN_VRAM,
+      result = radv_bo_create(device, NULL, RADV_QUEUE_RING_DESCRIPTORS_SIZE, 4096, RADEON_DOMAIN_VRAM,
                               RADEON_FLAG_CPU_ACCESS | RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_READ_ONLY,
                               RADV_BO_PRIORITY_DESCRIPTOR, 0, true, &descriptor_bo);
       if (result != VK_SUCCESS)
@@ -1017,6 +1017,12 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
 
       radv_fill_shader_rings(device, map, scratch_bo, needs->esgs_ring_size, esgs_ring_bo, needs->gsvs_ring_size,
                              gsvs_ring_bo, tess_rings_bo, task_rings_bo, mesh_scratch_ring_bo, ge_rings_bo);
+
+      /* The GPU reads these descriptors and sample positions as little-endian words. */
+      if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+         for (unsigned i = 0; i < RADV_QUEUE_RING_DESCRIPTORS_SIZE / 4; ++i)
+            map[i] = util_cpu_to_le32(map[i]);
+      }
 
       ws->buffer_unmap(ws, descriptor_bo, false);
    }

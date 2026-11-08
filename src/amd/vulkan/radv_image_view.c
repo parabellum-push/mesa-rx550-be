@@ -241,6 +241,7 @@ gfx6_make_texture_descriptor(struct radv_device *device, struct radv_image *imag
    }
 
    desc = util_format_description(format);
+   struct util_format_description hw_desc;
 
    radv_compose_swizzle(desc, mapping, swizzle);
 
@@ -287,6 +288,8 @@ gfx6_make_texture_descriptor(struct radv_device *device, struct radv_image *imag
       .dcc_enabled = radv_dcc_enabled(image, first_level),
       .tc_compat_htile_enabled = radv_tc_compat_htile_enabled(image, first_level),
       .aniso_single_level = !instance->drirc.debug.disable_aniso_single_level,
+      /* Big endian: data/num format from the hardware field order. */
+      .be_desc = UTIL_ARCH_BIG_ENDIAN ? radv_format_hw_description(desc, &hw_desc) : NULL,
    };
 
    ac_build_texture_descriptor(&pdev->info, &tex_state, &state[0]);
@@ -445,6 +448,24 @@ radv_image_view_make_descriptor(struct radv_image_view *iview, struct radv_devic
       descriptor->plane_descriptors[descriptor_plane_id],
       descriptor_plane_id || is_storage_image ? NULL : descriptor->fmask_descriptor, &iview->nbc_view, sliced_3d);
 
+   /* A multi-planar view reads each plane through its own descriptor. */
+   unsigned native_group = iview->native_group;
+   if (UTIL_ARCH_BIG_ENDIAN && native_group == 1 && image->native_plane_width[plane_id] > radv_native_format_width(vk_format))
+      native_group = image->native_plane_width[plane_id] / radv_native_format_width(vk_format);
+
+   if (native_group > 1) {
+      /* The view's channels sit reversed within each element of the image's memory. */
+      uint32_t *word3 = &descriptor->plane_descriptors[descriptor_plane_id][3];
+      const unsigned shifts[4] = {0, 3, 6, 9};
+      for (unsigned i = 0; i < 4; i++) {
+         const unsigned sel = (*word3 >> shifts[i]) & 0x7;
+         if (sel >= V_008F1C_SQ_SEL_X) {
+            const unsigned reversed = V_008F1C_SQ_SEL_X + ((sel - V_008F1C_SQ_SEL_X) ^ (native_group - 1));
+            *word3 = (*word3 & ~(0x7u << shifts[i])) | (reversed << shifts[i]);
+         }
+      }
+   }
+
    const struct legacy_surf_level *base_level_info = NULL;
    if (pdev->info.gfx_level <= GFX8) {
       if (is_stencil)
@@ -477,6 +498,10 @@ radv_image_view_can_fast_clear(const struct radv_device *device, const struct ra
    if (!iview)
       return false;
    image = iview->image;
+
+   /* Clear values are packed for memory order, which these views reorder. */
+   if (iview->native_group > 1)
+      return false;
 
    /* Only fast clear if the image itself can be fast cleared. */
    if (!radv_image_can_fast_clear(device, image))
@@ -516,6 +541,28 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    const unsigned num_layers =
       iview->image->vk.image_type == VK_IMAGE_TYPE_3D ? (iview->extent.depth - 1) : (iview->image->vk.array_layers - 1);
 
+   /* Big endian (GFX6-9): CB format and swap in RADV's hardware field order, and no
+    * hardware endian swap (memory holds little-endian elements), except where a view
+    * reinterprets wider stored elements.
+    */
+   const bool be_override = UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level <= GFX9;
+   uint32_t be_format = 0, be_swap = 0, be_endian = V_028C70_ENDIAN_NONE;
+   if (be_override) {
+      const struct util_format_description *desc = radv_format_description(iview->vk.format);
+      be_format = radv_get_cb_format(pdev->info.gfx_level, desc->format);
+      be_swap = radv_translate_colorswap(pdev->info.gfx_level, iview->vk.format, false);
+      if (iview->native_group > 1) {
+         if (iview->native_group == desc->nr_channels) {
+            be_swap = be_swap == V_028C70_SWAP_STD       ? V_028C70_SWAP_STD_REV
+                      : be_swap == V_028C70_SWAP_ALT     ? V_028C70_SWAP_ALT_REV
+                      : be_swap == V_028C70_SWAP_STD_REV ? V_028C70_SWAP_STD
+                                                         : V_028C70_SWAP_ALT;
+         } else if (iview->native_group == 2 && desc->channel[0].size == 8) {
+            be_endian = V_028C70_ENDIAN_8IN16;
+         }
+      }
+   }
+
    const struct ac_cb_state cb_state = {
       .surf = surf,
       .format = radv_format_to_pipe_format(iview->vk.format),
@@ -532,6 +579,10 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
          {
             .nbc_view = iview->nbc_view.valid ? &iview->nbc_view : NULL,
          },
+      .be_override = be_override,
+      .be_format = be_format,
+      .be_swap = be_swap,
+      .be_endian = be_endian,
    };
 
    ac_init_cb_surface(&pdev->info, &cb_state, &cb->ac);
@@ -666,6 +717,33 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
       iview->vk.format = image->vk.format;
       iview->vk.view_format = image->vk.format;
    }
+
+   const VkFormat api_format = iview->vk.format;
+   if (from_client && (image->vk.create_flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT))
+      radv_image_widen_native_storage(image, api_format);
+
+   iview->native_group = 1;
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && (from_client || (extra_create_info && extra_create_info->native_channels)) &&
+       !vk_format_is_depth_or_stencil(image->vk.format) &&
+       !vk_format_is_compressed(image->vk.format) && !vk_format_is_compressed(api_format) &&
+       vk_format_get_plane_count(api_format) == 1) {
+      const unsigned view_width = radv_native_format_width(api_format);
+      unsigned storage_width = image->native_width;
+      /* A plane holds elements of its own width. Planes are not widened, since other
+       * devices share them, so only views narrower than the plane can be corrected.
+       */
+      if (image->plane_count > 1) {
+         const unsigned plane = radv_plane_from_aspect(pCreateInfo->subresourceRange.aspectMask);
+         storage_width = radv_native_format_width(vk_format_get_plane_format(image->vk.format, plane));
+         if (image->native_plane_width[plane])
+            storage_width = image->native_plane_width[plane];
+      }
+      if (storage_width > view_width)
+         iview->native_group = storage_width / view_width;
+   }
+
+   iview->vk.format = radv_native_image_format(iview->vk.format);
+   iview->vk.view_format = radv_native_image_format(iview->vk.view_format);
 
    /* Split out the right aspect. Note that for internal meta code we sometimes
     * use an equivalent color format for the aspect so we first have to check

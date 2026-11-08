@@ -23,6 +23,7 @@
 #include "tools/radv_spm.h"
 #include "tools/radv_sqtt.h"
 #include "util/u_debug.h"
+#include "util/u_endian.h"
 #include "radv_cs.h"
 #include "radv_entrypoints.h"
 #include "radv_formats.h"
@@ -954,7 +955,16 @@ radv_create_gfx_preamble(struct radv_device *device)
       device->gfx_init = NULL;
       goto fail;
    }
-   memcpy(map, cs->b->buf, cs->b->cdw * 4);
+   /* Big endian GFX8: this reusable IB bypasses winsys CS finalization. Match the GPU
+    * command representation used for ordinary graphics/compute command buffers.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+      uint32_t *words = map;
+      for (unsigned i = 0; i < cs->b->cdw; ++i)
+         words[i] = util_cpu_to_le32(cs->b->buf[i]);
+   } else {
+      memcpy(map, cs->b->buf, cs->b->cdw * 4);
+   }
 
    device->ws->buffer_unmap(device->ws, device->gfx_init, false);
    device->gfx_init_size_dw = cs->b->cdw;

@@ -1082,10 +1082,16 @@ static void radeon_uvd_enc_get_feedback(struct pipe_video_codec *encoder, void *
    radeon_uvd_enc_feedback_t *fb_data = (radeon_uvd_enc_feedback_t *)enc->ws->buffer_map(
       enc->ws, fb->res->buf, NULL, PIPE_MAP_READ_WRITE | RADEON_MAP_TEMPORARY);
 
-   if (!fb_data->status)
-      *size = fb_data->bitstream_size - fb_data->extra_bytes;
-   else
-      *size = 0;
+   /* The firmware writes little-endian dwords. */
+   uint32_t status = fb_data->status;
+   uint32_t bitstream_size = fb_data->bitstream_size;
+   uint32_t extra_bytes = fb_data->extra_bytes;
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      status = util_le32_to_cpu(status);
+      bitstream_size = util_le32_to_cpu(bitstream_size);
+      extra_bytes = util_le32_to_cpu(extra_bytes);
+   }
+   *size = status ? 0 : bitstream_size - extra_bytes;
 
    enc->ws->buffer_unmap(enc->ws, fb->res->buf);
 

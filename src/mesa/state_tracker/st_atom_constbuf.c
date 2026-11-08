@@ -146,6 +146,12 @@ st_upload_constants(struct st_context *st, struct gl_program *prog, mesa_shader_
          if (params->StateFlags)
             _mesa_upload_state_parameters(st->ctx, params, ptr);
 
+         /* Big endian: the driver reads these as little-endian dwords. */
+         if (UTIL_ARCH_BIG_ENDIAN && st->screen->caps.upload_constbuf0_le32) {
+            for (unsigned i = 0; i < paramBytes / 4; i++)
+               ptr[i] = util_cpu_to_le32(ptr[i]);
+         }
+
          u_upload_unmap(pipe->const_uploader);
          pipe->set_constant_buffer(pipe, stage, 0, &cb);
 

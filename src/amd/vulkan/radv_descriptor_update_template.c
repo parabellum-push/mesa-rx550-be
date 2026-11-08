@@ -193,7 +193,7 @@ radv_update_descriptor_set_with_template_impl(struct radv_device *device, struct
             if (cmd_buffer && templ->entry[i].immutable_samplers) {
                const uint32_t sampler_offset = radv_get_combined_image_sampler_offset(pdev);
 
-               memcpy((char *)pDst + sampler_offset, templ->entry[i].immutable_samplers + RADV_SAMPLER_DESC_SIZE * j,
+               radv_copy_gpu_descriptor((char *)pDst + sampler_offset, templ->entry[i].immutable_samplers + RADV_SAMPLER_DESC_SIZE * j,
                       RADV_SAMPLER_DESC_SIZE);
             }
             break;
@@ -203,7 +203,7 @@ radv_update_descriptor_set_with_template_impl(struct radv_device *device, struct
                const VkDescriptorImageInfo *pImageInfo = (struct VkDescriptorImageInfo *)pSrc;
                radv_write_sampler_descriptor(pDst, pImageInfo->sampler);
             } else if (cmd_buffer && templ->entry[i].immutable_samplers)
-               memcpy(pDst, templ->entry[i].immutable_samplers + RADV_SAMPLER_DESC_SIZE * j, RADV_SAMPLER_DESC_SIZE);
+               radv_copy_gpu_descriptor(pDst, templ->entry[i].immutable_samplers + RADV_SAMPLER_DESC_SIZE * j, RADV_SAMPLER_DESC_SIZE);
             break;
          case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
             VK_FROM_HANDLE(vk_acceleration_structure, accel_struct, *(const VkAccelerationStructureKHR *)pSrc);

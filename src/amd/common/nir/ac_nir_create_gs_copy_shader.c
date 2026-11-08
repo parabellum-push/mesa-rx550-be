@@ -64,7 +64,7 @@ ac_nir_create_gs_copy_shader(const nir_shader *gs_nir, ac_nir_lower_legacy_gs_op
       }
 
       if (stream_id)
-         ac_nir_emit_legacy_streamout(&b, stream, info, out);
+         ac_nir_emit_legacy_streamout(&b, stream, info, out, options->gfx_level);
 
       /* This should be after streamout and before exports. */
       ac_nir_clamp_vertex_color_outputs(&b, out);

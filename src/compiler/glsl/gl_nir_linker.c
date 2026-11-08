@@ -1111,6 +1111,8 @@ nir_build_program_resource_list(const struct gl_constants *consts,
 
       GLenum interface = uniform->is_shader_storage ? GL_BUFFER_VARIABLE : GL_UNIFORM;
       if (!link_util_add_program_resource(prog, resource_set, interface, uniform,
+                                          uniform->query_stage_mask ?
+                                          uniform->query_stage_mask :
                                           uniform->active_shader_mask)) {
          return;
       }
@@ -4111,6 +4113,8 @@ gl_nir_link_glsl(struct gl_context *ctx, struct gl_shader_program *prog)
    if (!prelink_lowering(ctx->screen, consts, exts, prog, linked_shader,
                          num_linked_shaders))
       goto done;
+
+   gl_nir_gather_source_uniform_use(prog);
 
    if (!gl_nir_link_varyings(ctx->screen, consts, exts, api, prog))
       goto done;

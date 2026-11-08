@@ -125,6 +125,9 @@ ac_translate_tex_numformat(const struct util_format_description *desc,
    uint32_t num_format;
 
    switch (desc->format) {
+   /* Either CPU channel order describes the same normalized depth aspect.
+    * On BE, the first non-void Z24_S8 channel is the integer stencil. */
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
    case PIPE_FORMAT_S8_UINT_Z24_UNORM:
       num_format = V_008F14_IMG_NUM_FORMAT_UNORM;
       break;
@@ -565,7 +568,15 @@ unsigned ac_get_cb_number_type(enum pipe_format format)
 unsigned
 ac_translate_colorswap(enum amd_gfx_level gfx_level, enum pipe_format format, bool do_endian_swap)
 {
-   const struct util_format_description *desc = util_format_description(format);
+   return ac_translate_colorswap_desc(gfx_level, util_format_description(format), do_endian_swap);
+}
+
+/* Like ac_translate_colorswap, for a (possibly driver-adjusted) format description. */
+unsigned
+ac_translate_colorswap_desc(enum amd_gfx_level gfx_level, const struct util_format_description *desc,
+                            bool do_endian_swap)
+{
+   const enum pipe_format format = desc->format;
 
 #define HAS_SWIZZLE(chan, swz) (desc->swizzle[chan] == PIPE_SWIZZLE_##swz)
 

@@ -77,6 +77,7 @@ bool gl_nir_link_function_calls(struct gl_shader_program *prog,
                                 struct gl_linked_shader *linked_sh,
                                 struct gl_shader **shader_list,
                                 unsigned num_shaders);
+void gl_nir_gather_source_uniform_use(struct gl_shader_program *prog);
 
 bool gl_nir_link_uniforms(const struct gl_constants *consts,
                           struct gl_shader_program *prog,

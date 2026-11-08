@@ -381,6 +381,21 @@ _mesa_get_uniform(struct gl_context *ctx, GLuint program, GLint location,
          src = &uni->storage[offset * elements * dmul];
       }
 
+      /* Bindless opaque uniforms also hold ordinary texture/image units in
+       * native 64-bit storage. Narrow queries need the numeric low word,
+       * which is not the first word in memory on big-endian systems.
+       */
+      gl_constant_value opaque_value;
+      if (uni->is_bindless &&
+          (glsl_type_is_sampler(uni->type) || glsl_type_is_image(uni->type)) &&
+          returnType != GLSL_TYPE_UINT64) {
+         uint64_t value;
+         memcpy(&value, src, sizeof(value));
+         opaque_value.u = (uint32_t)value;
+         src = &opaque_value;
+         dmul = 1;
+      }
+
       assert(returnType == GLSL_TYPE_FLOAT || returnType == GLSL_TYPE_INT ||
              returnType == GLSL_TYPE_UINT || returnType == GLSL_TYPE_DOUBLE ||
              returnType == GLSL_TYPE_UINT64 || returnType == GLSL_TYPE_INT64);

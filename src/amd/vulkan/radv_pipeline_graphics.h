@@ -68,7 +68,8 @@ struct radv_vertex_input_state {
    uint8_t bindings[MAX_VERTEX_ATTRIBS];
    uint32_t divisors[MAX_VERTEX_ATTRIBS];
    uint32_t offsets[MAX_VERTEX_ATTRIBS];
-   uint8_t formats[MAX_VERTEX_ATTRIBS];
+   /* pipe_format: on big endian the RGBA8888 aliases are A8B8G8R8 formats above 255. */
+   uint16_t formats[MAX_VERTEX_ATTRIBS];
    uint8_t format_align_req_minus_1[MAX_VERTEX_ATTRIBS];
    uint8_t component_align_req_minus_1[MAX_VERTEX_ATTRIBS];
    uint8_t format_sizes[MAX_VERTEX_ATTRIBS];

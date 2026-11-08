@@ -284,6 +284,10 @@ static int si_init_surface(struct si_screen *sscreen, struct radeon_surf *surfac
          if (ptex->nr_samples >= 2 && sscreen->debug_flags & DBG(NO_DCC_MSAA))
             flags |= RADEON_SURF_DISABLE_DCC;
 
+         /* Big endian GFX8: packed formats are stored by word, not by channel. */
+         if (si_gfx8_be_packed_texture(sscreen->info.gfx_level, ptex->format))
+            flags |= RADEON_SURF_DISABLE_DCC;
+
          /* Shared textures must always set up DCC. If it's not present, it will be disabled by
           * si_get_opaque_metadata later.
           */
@@ -2103,6 +2107,23 @@ static void si_texture_invalidate_storage(struct si_context *sctx, struct si_tex
    sctx->num_alloc_tex_transfer_bytes += tex->surface.total_size;
 }
 
+/* Convert packed words without touching row/layer padding or live GPU storage. */
+static void si_swap_native_texture_map(void *dst, unsigned dst_stride, unsigned dst_layer_stride,
+                                      const void *src, unsigned src_stride,
+                                      unsigned src_layer_stride, const struct pipe_box *box,
+                                      unsigned block_size, unsigned swap_bytes)
+{
+   for (unsigned z = 0; z < box->depth; z++) {
+      for (unsigned y = 0; y < box->height; y++) {
+         uint8_t *d = (uint8_t *)dst + (size_t)z * dst_layer_stride + (size_t)y * dst_stride;
+         const uint8_t *s = (const uint8_t *)src + (size_t)z * src_layer_stride + (size_t)y * src_stride;
+         for (unsigned x = 0; x < box->width * block_size; x += swap_bytes)
+            for (unsigned i = 0; i < swap_bytes; i++)
+               d[x + i] = s[x + swap_bytes - 1 - i];
+      }
+   }
+}
+
 static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resource *texture,
                                      unsigned level, unsigned usage, const struct pipe_box *box,
                                      struct pipe_transfer **ptransfer)
@@ -2228,13 +2249,34 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
    if (sizeof(void *) == 4)
       usage |= RADEON_MAP_TEMPORARY;
 
+   unsigned swap_bytes = si_gfx8_be_texture_swap_bytes(sctx->gfx_level, texture->format);
+   unsigned block_size = util_format_get_blocksize(texture->format);
+   if (swap_bytes) {
+      trans->native_map = MALLOC((size_t)box->width * box->height * box->depth * block_size);
+      if (!trans->native_map)
+         goto fail_trans;
+   }
+
    if (!(map = si_buffer_map(sctx, buf, usage)))
       goto fail_trans;
 
    *ptransfer = &trans->b.b;
+   if (trans->native_map) {
+      trans->gpu_map = map + offset;
+      trans->gpu_stride = trans->b.b.stride;
+      trans->gpu_layer_stride = trans->b.b.layer_stride;
+      trans->b.b.stride = box->width * block_size;
+      trans->b.b.layer_stride = trans->b.b.stride * box->height;
+      if (usage & PIPE_MAP_READ)
+         si_swap_native_texture_map(trans->native_map, trans->b.b.stride, trans->b.b.layer_stride,
+                                    trans->gpu_map, trans->gpu_stride, trans->gpu_layer_stride,
+                                    box, block_size, swap_bytes);
+      return trans->native_map;
+   }
    return map + offset;
 
 fail_trans:
+   FREE(trans->native_map);
    si_resource_reference(&trans->staging, NULL);
    pipe_resource_reference(&trans->b.b.resource, NULL);
    FREE(trans);
@@ -2247,6 +2289,18 @@ static void si_texture_transfer_unmap(struct pipe_context *ctx, struct pipe_tran
    struct si_transfer *stransfer = (struct si_transfer *)transfer;
    struct pipe_resource *texture = transfer->resource;
    struct si_texture *tex = (struct si_texture *)texture;
+
+   if (stransfer->native_map) {
+      if (transfer->usage & PIPE_MAP_WRITE)
+         si_swap_native_texture_map(stransfer->gpu_map, stransfer->gpu_stride,
+                                    stransfer->gpu_layer_stride, stransfer->native_map,
+                                    transfer->stride, transfer->layer_stride, &transfer->box,
+                                    util_format_get_blocksize(texture->format),
+                                    si_gfx8_be_texture_swap_bytes(sctx->gfx_level, texture->format));
+      FREE(stransfer->native_map);
+      transfer->stride = stransfer->gpu_stride;
+      transfer->layer_stride = stransfer->gpu_layer_stride;
+   }
 
    /* Always unmap texture CPU mappings on 32-bit architectures, so that
     * we don't run out of the CPU address space.
@@ -2548,4 +2602,26 @@ void si_init_context_texture_functions(struct si_context *sctx)
 {
    sctx->b.texture_map = si_texture_transfer_map;
    sctx->b.texture_unmap = si_texture_transfer_unmap;
+}
+
+/* Big endian GFX8: packed formats use numeric channel order, and DB-to-CB staging copies use
+ * GPU little-endian Z24/S8 words.
+ */
+unsigned si_translate_colorswap(enum amd_gfx_level gfx_level, enum pipe_format format,
+                                bool do_endian_swap)
+{
+   struct util_format_description numeric;
+   const struct util_format_description *desc =
+      si_texture_format_description(gfx_level, format, &numeric);
+   if (UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8 &&
+       desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS && desc->block.bits == 32 &&
+       desc->nr_channels == 2) {
+      numeric = *desc;
+      numeric.channel[0] = desc->channel[1];
+      numeric.channel[1] = desc->channel[0];
+      for (unsigned i = 0; i < 4; i++)
+         numeric.swizzle[i] = desc->swizzle[i] < 2 ? 1 - desc->swizzle[i] : desc->swizzle[i];
+      desc = &numeric;
+   }
+   return ac_translate_colorswap_desc(gfx_level, desc, do_endian_swap);
 }

@@ -92,7 +92,7 @@ radv_choose_spi_color_format(const struct radv_compiler_info *compiler_info, VkF
    struct ac_spi_color_formats formats = {0};
    unsigned format, ntype, swap;
 
-   format = ac_get_cb_format(compiler_info->ac->gfx_level, desc->format);
+   format = radv_get_cb_format(compiler_info->ac->gfx_level, desc->format);
    ntype = ac_get_cb_number_type(desc->format);
    swap = ac_translate_colorswap(compiler_info->ac->gfx_level, desc->format, false);
 

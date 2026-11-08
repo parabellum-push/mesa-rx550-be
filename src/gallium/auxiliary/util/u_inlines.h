@@ -723,7 +723,10 @@ pipe_upload_constant_buffer0(struct pipe_context *pipe, mesa_shader_stage stage,
    if (pipe->screen->caps.prefer_real_buffer_in_constbuf0) {
       u_upload_alloc(pipe->const_uploader, 0, cbuf.buffer_size,
          alignment, &cbuf.buffer_offset, &cbuf.buffer, releasebuf, (void**)&ptr);
-      memcpy(ptr, cbuf.user_buffer, cbuf.buffer_size);
+      if (UTIL_ARCH_BIG_ENDIAN && pipe->screen->caps.upload_constbuf0_le32)
+         util_memcpy_cpu_to_le32(ptr, cbuf.user_buffer, cbuf.buffer_size);
+      else
+         memcpy(ptr, cbuf.user_buffer, cbuf.buffer_size);
       cbuf.user_buffer = NULL;
 
       u_upload_unmap(pipe->const_uploader);

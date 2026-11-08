@@ -286,11 +286,39 @@ opencoded_load_format(nir_builder *b, nir_def *rsrc, nir_def *vindex,
       }
    }
 
+   /* Loads are split into individual components before endian conversion. */
+   if (UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8 && log_size == 1) {
+      for (unsigned i = 0; i < num_channels; i++) {
+         nir_def *x = loads[i];
+         loads[i] = nir_ior(b, nir_ushr_imm(b, x, 8), nir_ishl_imm(b, x, 8));
+      }
+   }
+
+   /* Swap each raw native CPU dword before interpreting its numeric format. */
+   if (UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8 && log_size >= 2) {
+      unsigned count = log_size == 3 ?
+         (format == AC_FETCH_FORMAT_FLOAT ? 2 * num_channels : 1) : num_channels;
+      for (unsigned i = 0; i < count; i++) {
+         nir_def *x = loads[i];
+         loads[i] = nir_ior(b,
+            nir_ior(b, nir_ushr_imm(b, x, 24),
+                       nir_iand_imm(b, nir_ushr_imm(b, x, 8), 0x0000ff00)),
+            nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, x, 8), 0x00ff0000),
+                       nir_ishl_imm(b, x, 24)));
+      }
+   }
+
    if (log_size == 3) {
       switch (format) {
       case AC_FETCH_FORMAT_FLOAT: {
-         for (unsigned i = 0; i < num_channels; ++i)
-            loads[i] = nir_pack_64_2x32_split(b, loads[2 * i], loads[2 * i + 1]);
+         for (unsigned i = 0; i < num_channels; ++i) {
+            /* Native BE doubles store the high dword first. Each dword has
+             * already been swapped above; pack_64 expects low then high.
+             */
+            bool native_be = UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8;
+            loads[i] = nir_pack_64_2x32_split(b, loads[2 * i + native_be],
+                                               loads[2 * i + !native_be]);
+         }
          break;
       }
       case AC_FETCH_FORMAT_FIXED: {

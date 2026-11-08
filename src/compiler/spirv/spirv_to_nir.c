@@ -7481,6 +7481,10 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
    /* Initialize the vtn_builder object */
    struct vtn_builder *b = rzalloc(NULL, struct vtn_builder);
 
+   /* vtn_err() reads the options, and it can run before they are duplicated
+    * below.
+    */
+   b->options = (struct spirv_to_nir_options *)options;
    b->spirv = words;
    b->spirv_word_count = word_count;
    b->file = NULL;
@@ -7757,10 +7761,10 @@ create_shader_name(struct vtn_builder *b)
    b->shader->info.name = ralloc_strdup(b->shader, b->source_file);
 }
 
-nir_shader *
-spirv_to_nir(const uint32_t *words, size_t word_count,
-             struct nir_spirv_specialization *spec,
-             mesa_shader_stage stage, const char *entry_point_name,
+static nir_shader *
+spirv_to_nir_native(const uint32_t *words, size_t word_count,
+                    struct nir_spirv_specialization *spec,
+                    mesa_shader_stage stage, const char *entry_point_name,
              const struct spirv_to_nir_options *options,
              const nir_shader_compiler_options *nir_options)
 
@@ -8262,4 +8266,34 @@ vtn_free_specialization(struct nir_spirv_specialization *spec)
 
    free(spec->entries);
    free(spec);
+}
+
+nir_shader *
+spirv_to_nir(const uint32_t *words, size_t word_count,
+             struct nir_spirv_specialization *spec,
+             mesa_shader_stage stage, const char *entry_point_name,
+             const struct spirv_to_nir_options *options,
+             const nir_shader_compiler_options *nir_options)
+{
+   /* Precompiled modules are normally stored little-endian.  The magic number
+    * identifies the byte order, so accept the opposite order by parsing a
+    * native copy.  Nothing in the resulting shader points into the words.
+    */
+   if (word_count > 0 && words[0] == util_bswap32(SpvMagicNumber)) {
+      uint32_t *native = malloc(word_count * sizeof(*native));
+      if (native == NULL)
+         return NULL;
+
+      for (size_t i = 0; i < word_count; i++)
+         native[i] = util_bswap32(words[i]);
+
+      nir_shader *nir = spirv_to_nir_native(native, word_count, spec,
+                                            stage, entry_point_name, options,
+                                            nir_options);
+      free(native);
+      return nir;
+   }
+
+   return spirv_to_nir_native(words, word_count, spec, stage,
+                              entry_point_name, options, nir_options);
 }

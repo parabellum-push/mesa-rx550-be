@@ -12,6 +12,8 @@
 #include "util/xxhash.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_index_modify.h"
+#include "util/u_draw.h"
+#include "util/u_prim.h"
 #include "util/u_upload_mgr.h"
 #include "ac_rtld.h"
 #include "si_build_pm4.h"
@@ -2055,12 +2057,22 @@ static void si_upload_VB_descriptors(struct si_context *sctx, struct si_vertex_s
    {
       /* The first iteration always executes. */
       do {
+         /* Big endian GFX8: descriptors beyond the user-SGPR slots are read directly
+          * from GPU memory, outside the PM4 endian conversion.
+          */
          if (IS_DRAW_VERTEX_STATE) {
             unsigned velem_index = get_next_vertex_state_elem<POPCNT>(&vstate->b, partial_velem_mask);
-            memcpy(ptr, &vstate->descriptors[velem_index * 4], 16);
+            if (UTIL_ARCH_BIG_ENDIAN && GFX_VERSION == GFX8)
+               util_memcpy_cpu_to_le32(ptr, &vstate->descriptors[velem_index * 4], 16);
+            else
+               memcpy(ptr, &vstate->descriptors[velem_index * 4], 16);
          } else {
             unsigned vbo_index = velems->vertex_buffer_index[i];
             si_set_vb_descriptor<GFX_VERSION>(velems, &sctx->vertex_buffer[vbo_index], i, ptr);
+            if (UTIL_ARCH_BIG_ENDIAN && GFX_VERSION == GFX8) {
+               for (unsigned word = 0; word < 4; word++)
+                  ptr[word] = util_cpu_to_le32(ptr[word]);
+            }
          }
          ptr += 4;
          i++;
@@ -2328,7 +2340,56 @@ static void si_draw(struct pipe_context *ctx,
    if (index_size) {
       /* Translate or upload, if needed. */
       /* 8-bit indices are supported on GFX8. */
-      if (!IS_DRAW_VERTEX_STATE && GFX_VERSION <= GFX7 && index_size == 1) {
+      if (UTIL_ARCH_BIG_ENDIAN && GFX_VERSION == GFX8 && index_size > 1) {
+         /* GFX8 has no VGT index byte-swap mode. Preserve the API's native
+          * CPU representation and upload a little-endian copy for this draw. */
+         unsigned start, count;
+         struct pipe_transfer *transfer = NULL;
+         const unsigned char *src;
+         void *dst = NULL;
+
+         si_get_draw_start_count(sctx, info, indirect, draws, num_draws, &start, &count);
+         if (!count)
+            return;
+         unsigned start_offset = start * index_size;
+         unsigned size = count * index_size;
+         if (info->has_user_indices) {
+            src = (const unsigned char *)info->index.user + start_offset;
+         } else {
+            src = (const unsigned char *)pipe_buffer_map_range(ctx, indexbuf,
+                     index_offset + start_offset, size, PIPE_MAP_READ, &transfer);
+            if (!src)
+               return;
+         }
+
+         struct pipe_resource *release_buf = NULL;
+         indexbuf = NULL;
+         /* stream_uploader is not used elsewhere in si_draw (see the user index path). */
+         u_upload_alloc(ctx->stream_uploader, start_offset, size,
+                        sctx->screen->info.tcc_cache_line_size,
+                        &index_offset, &indexbuf, &release_buf, &dst);
+         pipe_resource_release(ctx, release_buf);
+         if (indexbuf) {
+            for (unsigned i = 0; i < count; i++) {
+               if (index_size == 2) {
+                  uint16_t value;
+                  memcpy(&value, src + i * 2, 2);
+                  value = util_cpu_to_le16(value);
+                  memcpy((unsigned char *)dst + i * 2, &value, 2);
+               } else {
+                  uint32_t value;
+                  memcpy(&value, src + i * 4, 4);
+                  value = util_cpu_to_le32(value);
+                  memcpy((unsigned char *)dst + i * 4, &value, 4);
+               }
+            }
+         }
+         if (transfer)
+            pipe_buffer_unmap(ctx, transfer);
+         if (!indexbuf)
+            return;
+         index_offset -= start_offset;
+      } else if (!IS_DRAW_VERTEX_STATE && GFX_VERSION <= GFX7 && index_size == 1) {
          unsigned start, count, start_offset, size;
 
          si_get_draw_start_count(sctx, info, indirect, draws, num_draws, &start, &count);
@@ -2440,7 +2501,29 @@ static void si_draw(struct pipe_context *ctx,
                              NGG);
    }
 
-   if (IS_DRAW_VERTEX_STATE) {
+   if (IS_DRAW_VERTEX_STATE && UTIL_ARCH_BIG_ENDIAN && GFX_VERSION == GFX8) {
+      /* Display-list buffers contain native CPU components too. Select the
+       * fetch lowering for their compacted attribute order, without changing
+       * the application's currently bound vertex element state. */
+      struct si_vertex_elements elements = {};
+      unsigned mask = partial_velem_mask;
+      unsigned i = 0;
+      while (mask) {
+         unsigned j = get_next_vertex_state_elem<POPCNT>(state, &mask);
+         elements.fix_fetch[i] = vstate->velems.fix_fetch[j];
+         elements.fix_fetch_always |= ((vstate->velems.fix_fetch_always >> j) & 1u) << i;
+         elements.fix_fetch_opencode |= ((vstate->velems.fix_fetch_opencode >> j) & 1u) << i;
+         i++;
+      }
+      struct si_vertex_elements *saved = sctx->vertex_elements;
+      sctx->vertex_elements = &elements;
+      sctx->force_trivial_vs_inputs = false;
+      si_vs_key_update_inputs(sctx);
+      sctx->vertex_elements = saved;
+      /* Force the next regular draw to restore its own fetch lowering. */
+      sctx->force_trivial_vs_inputs = true;
+      sctx->dirty_shaders_mask |= BITFIELD_BIT(MESA_SHADER_VERTEX);
+   } else if (IS_DRAW_VERTEX_STATE) {
       /* draw_vertex_state doesn't use the current vertex buffers and vertex elements,
        * so disable all VS input lowering.
        */
@@ -2648,6 +2731,41 @@ static void si_draw_vbo(struct pipe_context *ctx,
                         const struct pipe_draw_start_count_bias *restrict draws,
                         unsigned num_draws)
 {
+   if (UTIL_ARCH_BIG_ENDIAN && GFX_VERSION == GFX8 && indirect && indirect->buffer &&
+       !indirect->count_from_stream_output) {
+      struct pipe_draw_indirect_info native = *indirect;
+      if (native.indirect_draw_count) {
+         struct pipe_transfer *transfer = NULL;
+         const uint32_t *count = (const uint32_t *)pipe_buffer_map_range(
+            ctx, native.indirect_draw_count, native.indirect_draw_count_offset,
+            sizeof(uint32_t), PIPE_MAP_READ, &transfer);
+         if (!count)
+            return;
+         native.draw_count = MIN2(native.draw_count, *count);
+         pipe_buffer_unmap(ctx, transfer);
+         native.indirect_draw_count = NULL;
+      }
+      unsigned command_size = (info->index_size ? 5 : 4) * sizeof(uint32_t);
+      native.stride = native.stride ? native.stride : command_size;
+      if (native.offset > native.buffer->width0 ||
+          command_size > native.buffer->width0 - native.offset)
+         return;
+      unsigned available = (native.buffer->width0 - native.offset - command_size) /
+                              native.stride + 1;
+      native.draw_count = MIN2(native.draw_count, available);
+      if (!native.draw_count)
+         return;
+      unsigned count = 0;
+      struct u_indirect_params *params = util_draw_indirect_read(ctx, info, &native, &count);
+      if (!params)
+         return;
+      for (unsigned i = 0; i < count; i++)
+         si_draw<GFX_VERSION, HAS_TESS, HAS_GS, NGG, DRAW_VERTEX_STATE_OFF,
+                  HAS_SH_PAIRS_PACKED, POPCNT_NO, ALT_HIZ_LOGIC>
+            (ctx, &params[i].info, drawid_offset + i, NULL, &params[i].draw, 1, NULL, 0);
+      free(params);
+      return;
+   }
    si_draw<GFX_VERSION, HAS_TESS, HAS_GS, NGG, DRAW_VERTEX_STATE_OFF, HAS_SH_PAIRS_PACKED,
          POPCNT_NO, ALT_HIZ_LOGIC>
       (ctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);

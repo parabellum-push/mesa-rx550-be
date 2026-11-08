@@ -49,6 +49,11 @@ struct radv_image_view {
    bool disable_dcc_mrt;
    bool disable_tc_compat_cmask_mrt;
 
+   /* Big-endian GFX8: how many of the view's elements make up one element of the
+    * image's memory. Their order is reversed within that group.
+    */
+   uint8_t native_group;
+
    union radv_descriptor descriptor;
 
    /* Descriptor for use as a storage image as opposed to a sampled image.
@@ -80,6 +85,7 @@ struct radv_image_view_extra_create_info {
    bool depth_compress_disable;
    bool stencil_compress_disable;
    bool from_client; /**< Set only if this came from vkCreateImage */
+   bool native_channels; /**< Meta view that means channels, not raw bytes */
 };
 
 void radv_image_view_init(struct radv_image_view *view, struct radv_device *device,

@@ -8,6 +8,9 @@
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_deref.h"
+#include "nir_format_convert.h"
+#include "util/u_endian.h"
+#include "radv_constants.h"
 #include "radv_nir.h"
 #include "radv_shader.h"
 #include "radv_shader_args.h"
@@ -235,6 +238,127 @@ location_from_intrinsic(nir_intrinsic_instr *intrin, const lower_vs_inputs_state
    return loc;
 }
 
+/* Raw array loads are CPU-native application values. Convert their bytes
+ * before float/integer use, retaining each component's 32/64-bit width.
+ */
+static nir_def *
+radv_native_vertex_bswap(nir_builder *b, nir_def *value)
+{
+   if (value->bit_size == 64)
+      return nir_pack_64_2x32_split(b,
+         radv_native_vertex_bswap(b, nir_unpack_64_2x32_split_y(b, value)),
+         radv_native_vertex_bswap(b, nir_unpack_64_2x32_split_x(b, value)));
+   assert(value->bit_size == 32);
+   return nir_ior(b,
+      nir_ior(b, nir_ushr_imm(b, value, 24),
+                 nir_iand_imm(b, nir_ushr_imm(b, value, 8), 0xff00)),
+      nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, value, 8), 0xff0000),
+                 nir_ishl_imm(b, value, 24)));
+}
+
+/* The typed fetch hardware decodes channels as little-endian, so application
+ * data wider than a byte is fetched as raw words and decoded here instead.
+ */
+static bool
+radv_vertex_format_needs_native_decode(const struct util_format_description *f)
+{
+   return f->format == PIPE_FORMAT_R10G10B10A2_UNORM || f->format == PIPE_FORMAT_R10G10B10A2_SNORM ||
+          f->format == PIPE_FORMAT_R10G10B10A2_USCALED || f->format == PIPE_FORMAT_R10G10B10A2_SSCALED ||
+          f->format == PIPE_FORMAT_R10G10B10A2_UINT || f->format == PIPE_FORMAT_R10G10B10A2_SINT ||
+          f->format == PIPE_FORMAT_B10G10R10A2_UNORM || f->format == PIPE_FORMAT_B10G10R10A2_SNORM ||
+          f->format == PIPE_FORMAT_B10G10R10A2_USCALED || f->format == PIPE_FORMAT_B10G10R10A2_SSCALED ||
+          f->format == PIPE_FORMAT_B10G10R10A2_UINT || f->format == PIPE_FORMAT_B10G10R10A2_SINT ||
+          f->format == PIPE_FORMAT_R11G11B10_FLOAT || (f->is_array && f->channel[0].size == 16);
+}
+
+static nir_def *
+radv_decode_native_vertex_channel(nir_builder *b, nir_def *bits, const struct util_format_channel_description *c,
+                                  unsigned size)
+{
+   const bool is_signed = c->type == UTIL_FORMAT_TYPE_SIGNED;
+   if (c->type == UTIL_FORMAT_TYPE_FLOAT)
+      return nir_channel(b, nir_unpack_half_2x16(b, bits), 0);
+   nir_def *value = is_signed ? nir_ibfe_imm(b, bits, 0, size) : bits;
+   if (c->pure_integer)
+      return value;
+   nir_def *real = is_signed ? nir_i2f32(b, value) : nir_u2f32(b, value);
+   if (!c->normalized)
+      return real;
+   if (is_signed)
+      return nir_fmax(b, nir_fdiv_imm(b, real, (double)((1u << (size - 1)) - 1)), nir_imm_float(b, -1.0f));
+   return nir_fdiv_imm(b, real, (double)((1u << size) - 1));
+}
+
+static nir_def *
+radv_lower_native_vertex_input(nir_builder *b, nir_intrinsic_instr *intrin, const struct util_format_description *f,
+                               nir_def *descriptor, nir_def *base_index, unsigned attrib_offset,
+                               unsigned attrib_stride, unsigned component)
+{
+   const unsigned bit_size = intrin->def.bit_size;
+   const unsigned num_components = intrin->def.num_components;
+   const nir_alu_type dst_type = nir_alu_type_get_base_type(nir_intrinsic_dest_type(intrin));
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *rgba[4] = {0};
+   unsigned present;
+
+   /* Excess constant offsets move to the index, as for the regular fetch. */
+   unsigned first_off = attrib_offset;
+   nir_def *index = base_index;
+
+   if (f->is_array) {
+      present = f->nr_channels;
+      for (unsigned i = 0; i < present; ++i) {
+         unsigned off = first_off + i * 2;
+         nir_def *chan_index = index;
+         if (attrib_stride && off > attrib_stride) {
+            chan_index = nir_iadd_imm(b, index, off / attrib_stride);
+            off %= attrib_stride;
+         }
+         nir_def *raw = nir_load_typed_buffer_amd(b, 1, 32, descriptor, zero, zero, chan_index, .base = off,
+                                                  .format = PIPE_FORMAT_R16_UINT, .align_mul = 2, .align_offset = off % 2,
+                                                  .memory_modes = nir_var_shader_in);
+         nir_def *bits = nir_iand_imm(b, nir_ior(b, nir_ushr_imm(b, raw, 8), nir_ishl_imm(b, raw, 8)), 0xffff);
+         rgba[i] = radv_decode_native_vertex_channel(b, bits, &f->channel[0], 16);
+      }
+   } else {
+      if (attrib_stride && first_off > attrib_stride) {
+         index = nir_iadd_imm(b, index, first_off / attrib_stride);
+         first_off %= attrib_stride;
+      }
+      nir_def *raw = nir_load_buffer_amd(b, 1, 32, descriptor, zero, zero, index, .base = first_off,
+                                         .memory_modes = nir_var_shader_in);
+      nir_def *word = radv_native_vertex_bswap(b, raw);
+      if (f->format == PIPE_FORMAT_R11G11B10_FLOAT) {
+         nir_def *decoded = nir_format_unpack_11f11f10f(b, word);
+         present = 3;
+         for (unsigned i = 0; i < present; ++i)
+            rgba[i] = nir_channel(b, decoded, i);
+      } else {
+         const bool bgra = f->format == PIPE_FORMAT_B10G10R10A2_UNORM || f->format == PIPE_FORMAT_B10G10R10A2_SNORM ||
+                           f->format == PIPE_FORMAT_B10G10R10A2_USCALED ||
+                           f->format == PIPE_FORMAT_B10G10R10A2_SSCALED || f->format == PIPE_FORMAT_B10G10R10A2_UINT ||
+                           f->format == PIPE_FORMAT_B10G10R10A2_SINT;
+         const unsigned shifts[4] = {bgra ? 20 : 0, 10, bgra ? 0 : 20, 30};
+         present = 4;
+         for (unsigned i = 0; i < present; ++i) {
+            const unsigned size = i == 3 ? 2 : 10;
+            nir_def *bits = nir_ubfe_imm(b, word, shifts[i], size);
+            rgba[i] = radv_decode_native_vertex_channel(b, bits, &f->channel[0], size);
+         }
+      }
+   }
+
+   nir_def *channels[NIR_MAX_VEC_COMPONENTS];
+   for (unsigned i = 0; i < num_components; ++i) {
+      const unsigned c = i + component;
+      nir_def *value = c < present ? rgba[c] : oob_input_load_value(b, c, 32, dst_type == nir_type_float);
+      if (bit_size == 16)
+         value = dst_type == nir_type_float ? nir_f2f16(b, value) : nir_u2u16(b, value);
+      channels[i] = value;
+   }
+   return nir_vec(b, channels, num_components);
+}
+
 static nir_def *
 lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs_state *s)
 {
@@ -279,6 +403,11 @@ lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs
       ac_nir_load_smem(b, 4, vertex_buffers, nir_imm_int(b, desc_index * 16), 4, ACCESS_CAN_SPECULATE);
    nir_def *base_index = calc_vs_input_index(b, location, s);
    nir_def *zero = nir_imm_int(b, 0);
+
+   if (UTIL_ARCH_BIG_ENDIAN && s->compiler_info->ac->gfx_level == GFX8 && !b->shader->info.internal &&
+       radv_vertex_format_needs_native_decode(f))
+      return radv_lower_native_vertex_input(b, intrin, f, descriptor, base_index, attrib_offset, 0,
+                                            component);
 
    /* We currently implement swizzling for all formats in shaders.
     * Note, it is possible to specify swizzling in the DST_SEL fields of descriptors,
@@ -356,6 +485,9 @@ lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin, lower_vs_inputs
          load = nir_load_buffer_amd(b, fetch_num_channels, bit_size, descriptor, zero, sgpr_offset, base_index,
                                     .base = inst_offset, .memory_modes = nir_var_shader_in, .align_mul = align_mul,
                                     .align_offset = align_offset, .access = ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE);
+         /* Big endian GFX8: raw application words hold host-order values. */
+         if (UTIL_ARCH_BIG_ENDIAN && s->compiler_info->ac->gfx_level == GFX8 && !b->shader->info.internal)
+            load = radv_native_vertex_bswap(b, load);
       } else {
          load = nir_load_typed_buffer_amd(b, fetch_num_channels, bit_size, descriptor, zero, sgpr_offset, base_index,
                                           .base = inst_offset, .format = fetch_format, .align_mul = align_mul,

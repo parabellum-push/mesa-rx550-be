@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
 
@@ -105,7 +106,8 @@ radv_GetEventStatus(VkDevice _device, VkEvent _event)
    if (vk_device_is_lost(&device->vk))
       return VK_ERROR_DEVICE_LOST;
 
-   if (*event->map == 1)
+   /* The CP reads and writes the event as a little-endian dword at the start of the BO. */
+   if (util_le32_to_cpu(*(volatile uint32_t *)event->map) == 1)
       return VK_EVENT_SET;
    return VK_EVENT_RESET;
 }
@@ -114,7 +116,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 radv_SetEvent(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(radv_event, event, _event);
-   *event->map = 1;
+   *(volatile uint32_t *)event->map = util_cpu_to_le32(1);
 
    return VK_SUCCESS;
 }
@@ -123,7 +125,7 @@ VKAPI_ATTR VkResult VKAPI_CALL
 radv_ResetEvent(VkDevice _device, VkEvent _event)
 {
    VK_FROM_HANDLE(radv_event, event, _event);
-   *event->map = 0;
+   *(volatile uint32_t *)event->map = util_cpu_to_le32(0);
 
    return VK_SUCCESS;
 }

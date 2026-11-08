@@ -9,6 +9,7 @@
 #ifndef RADV_META_H
 #define RADV_META_H
 
+#include "util/u_endian.h"
 #include "tools/radv_sqtt.h"
 #include "radv_buffer.h"
 #include "radv_buffer_view.h"
@@ -90,7 +91,18 @@ enum radv_meta_object_key_type {
    RADV_META_OBJECT_KEY_BVH_ENCODE_TRIANGLES_GFX12,
    RADV_META_OBJECT_KEY_BVH_UPDATE,
    RADV_META_OBJECT_KEY_BVH_HEADER,
+   RADV_META_OBJECT_KEY_BE_SWAP_ELEMENTS,
+   RADV_META_OBJECT_KEY_BE_SWAP_16BIT_PAIRS,
 };
+
+/* Big endian: a uint64_t push-constant member whose memory holds the low dword first,
+ * as the internal shaders read it (push constants are uploaded as 32-bit words).
+ */
+static inline uint64_t
+radv_meta_pc_u64(uint64_t value)
+{
+   return UTIL_ARCH_BIG_ENDIAN ? (value << 32) | (value >> 32) : value;
+}
 
 VkResult radv_device_init_meta(struct radv_device *device);
 void radv_device_finish_meta(struct radv_device *device);
@@ -271,6 +283,8 @@ void radv_meta_buffer_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct rad
 void radv_meta_image_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *src,
                                  struct radv_meta_blit2d_surf *dst, const VkOffset3D *src_offset,
                                  const VkOffset3D *dst_offset, const VkExtent3D *extent);
+
+void radv_meta_be_swap_16bit_pairs(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *iview);
 
 void radv_meta_clear_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *dst,
                               const VkClearColorValue *clear_color);

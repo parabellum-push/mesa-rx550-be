@@ -645,8 +645,8 @@ read_rgba_pixels( struct gl_context *ctx,
    free(rgba);
 
 done_swap:
-   /* Handle byte swapping if required */
-   if (packing->SwapBytes) {
+   /* Handle native packed-float byte order as well as explicit swapping. */
+   if (packing->SwapBytes ^ _mesa_packed_float_needs_swap(type)) {
       _mesa_swap_bytes_2d_image(format, type, packing,
                                 width, height, dst, dst);
    }

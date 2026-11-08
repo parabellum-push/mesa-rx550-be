@@ -182,7 +182,8 @@ nir_def *
 ac_get_global_ids(nir_builder *b, unsigned num_components, unsigned bit_size);
 
 void
-ac_nir_emit_legacy_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info, ac_nir_prerast_out *out);
+ac_nir_emit_legacy_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info, ac_nir_prerast_out *out,
+                             enum amd_gfx_level gfx_level);
 
 bool
 ac_nir_gs_shader_query(nir_builder *b,

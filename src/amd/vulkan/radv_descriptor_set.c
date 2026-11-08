@@ -470,7 +470,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
          const uint32_t *samplers =
             (const uint32_t *)((const char *)layout + layout->binding[i].immutable_samplers_offset);
          for (unsigned j = 0; j < layout->binding[i].array_size; ++j) {
-            memcpy(set->header.mapped_ptr + offset, samplers + 4 * j, RADV_SAMPLER_DESC_SIZE);
+            radv_copy_gpu_descriptor(set->header.mapped_ptr + offset, samplers + 4 * j, RADV_SAMPLER_DESC_SIZE);
             offset += layout->binding[i].size / 4;
          }
       }
@@ -627,7 +627,7 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
                const uint32_t sampler_offset = radv_get_combined_image_sampler_offset(pdev);
                const unsigned idx = writeset->dstArrayElement + j;
 
-               memcpy((char *)ptr + sampler_offset, samplers + 4 * idx, RADV_SAMPLER_DESC_SIZE);
+               radv_copy_gpu_descriptor((char *)ptr + sampler_offset, samplers + 4 * idx, RADV_SAMPLER_DESC_SIZE);
             }
             break;
          }
@@ -637,7 +637,7 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
                radv_write_sampler_descriptor(ptr, pImageInfo->sampler);
             } else if (copy_immutable_samplers) {
                unsigned idx = writeset->dstArrayElement + j;
-               memcpy(ptr, samplers + 4 * idx, RADV_SAMPLER_DESC_SIZE);
+               radv_copy_gpu_descriptor(ptr, samplers + 4 * idx, RADV_SAMPLER_DESC_SIZE);
             }
             break;
          case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {

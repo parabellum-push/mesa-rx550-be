@@ -558,8 +558,10 @@ ac_nir_get_sorted_xfb_info(const nir_shader *nir)
 }
 
 void
-ac_nir_emit_legacy_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info, ac_nir_prerast_out *out)
+ac_nir_emit_legacy_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info, ac_nir_prerast_out *out,
+                             enum amd_gfx_level gfx_level)
 {
+   const bool native_be = UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8;
    nir_def *so_vtx_count = nir_ubfe_imm(b, nir_load_streamout_config_amd(b), 16, 7);
    nir_def *tid = nir_load_subgroup_invocation(b);
 
@@ -604,6 +606,18 @@ ac_nir_emit_legacy_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info
              */
             if (output->mediump)
                data = nir_convert_to_bit_size(b, data, output->mediump_upconvert_type, 32);
+         }
+
+         /* Big endian: transform feedback is API buffer storage, so each native dword is BE.
+          * Rasterization exports keep the original values. 64-bit components already have
+          * their high dword first (nir_lower_io stores them in memory order).
+          */
+         if (native_be) {
+            data = nir_ior(b,
+               nir_ior(b, nir_ushr_imm(b, data, 24),
+                          nir_iand_imm(b, nir_ushr_imm(b, data, 8), 0xff00)),
+               nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, data, 8), 0xff0000),
+                          nir_ishl_imm(b, data, 24)));
          }
 
          assert(out_comp >= output->component_offset);

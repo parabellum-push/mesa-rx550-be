@@ -16,6 +16,7 @@
 #include "util/os_time.h"
 #include "util/u_memory.h"
 #include "ac_cmdbuf_cp.h"
+#include "util/u_endian.h"
 #include "ac_debug.h"
 #include "ac_linux_drm.h"
 #include "radv_amdgpu_bo.h"
@@ -72,6 +73,7 @@ struct radv_amdgpu_cs {
    struct radv_amdgpu_cs *chained_to;
    bool chain_ib;
    bool is_secondary;
+   bool words_le; /* big endian: IB memory already holds little-endian GPU words */
 
    int buffer_hash_table[1024];
    unsigned hw_ip;
@@ -106,6 +108,18 @@ radv_amdgpu_cs(struct ac_cmdbuf *base)
 {
    return (struct radv_amdgpu_cs *)base;
 }
+
+/* Big endian GFX8: recording and size backpatches use CPU words. GPU command memory is
+ * serialized only when recording is complete, including every grown IB.
+ */
+static bool
+radv_amdgpu_cs_needs_le(const struct radv_amdgpu_cs *cs)
+{
+   return UTIL_ARCH_BIG_ENDIAN && cs->ws->info.gfx_level == GFX8 &&
+          (cs->hw_ip == AMD_IP_GFX || cs->hw_ip == AMD_IP_COMPUTE);
+}
+
+static VkResult radv_amdgpu_cs_finalize_native(struct ac_cmdbuf *cs);
 
 struct radv_amdgpu_cs_request {
    /** Specify HW IP block type to which to send the IB. */
@@ -406,7 +420,7 @@ radv_amdgpu_cs_grow(struct ac_cmdbuf *_cs, size_t min_size)
 
    const uint32_t ib_alignment = cs->ws->info.ip[cs->hw_ip].ib_alignment;
 
-   cs->ws->base.cs_finalize(_cs);
+   radv_amdgpu_cs_finalize_native(_cs);
 
    uint64_t ib_size = MAX2(min_size * 4 + 16, cs->base.max_dw * 4 * 2);
 
@@ -476,7 +490,7 @@ radv_amdgpu_winsys_cs_pad(struct ac_cmdbuf *_cs, unsigned leave_dw_space)
 }
 
 static VkResult
-radv_amdgpu_cs_finalize(struct ac_cmdbuf *_cs)
+radv_amdgpu_cs_finalize_native(struct ac_cmdbuf *_cs)
 {
    struct radv_amdgpu_cs *cs = radv_amdgpu_cs(_cs);
 
@@ -509,12 +523,35 @@ radv_amdgpu_cs_finalize(struct ac_cmdbuf *_cs)
    return cs->status;
 }
 
+static VkResult
+radv_amdgpu_cs_finalize(struct ac_cmdbuf *_cs)
+{
+   struct radv_amdgpu_cs *cs = radv_amdgpu_cs(_cs);
+   if (cs->words_le)
+      return cs->status;
+   VkResult result = radv_amdgpu_cs_finalize_native(_cs);
+   if (result != VK_SUCCESS || !radv_amdgpu_cs_needs_le(cs))
+      return result;
+
+   for (unsigned i = 0; i < cs->num_ib_buffers; ++i) {
+      struct radv_amdgpu_ib *ib = &cs->ib_buffers[i];
+      uint32_t *words = (uint32_t *)radv_buffer_map(&cs->ws->base, ib->bo);
+      if (!words)
+         return cs->status = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+      for (unsigned j = 0; j < ib->cdw; ++j)
+         words[j] = util_cpu_to_le32(words[j]);
+   }
+   cs->words_le = true;
+   return result;
+}
+
 static void
 radv_amdgpu_cs_reset(struct ac_cmdbuf *_cs)
 {
    struct radv_amdgpu_cs *cs = radv_amdgpu_cs(_cs);
    cs->base.cdw = 0;
    cs->base.reserved_dw = 0;
+   cs->words_le = false;
    cs->status = VK_SUCCESS;
 
    for (unsigned i = 0; i < cs->num_buffers; ++i) {
@@ -558,6 +595,8 @@ radv_amdgpu_cs_unchain(struct ac_cmdbuf *cs)
 
    acs->chained_to = NULL;
    cs->buf[cs->cdw - 4] = PKT3(PKT3_NOP, 2, 0);
+   if (acs->words_le)
+      cs->buf[cs->cdw - 4] = util_cpu_to_le32(cs->buf[cs->cdw - 4]);
 }
 
 static bool
@@ -587,6 +626,9 @@ radv_amdgpu_cs_chain(struct ac_cmdbuf *cs, struct ac_cmdbuf *next_cs, bool pre_e
    cs->buf[cs->cdw - 3] = next_acs->ib.ib_mc_address;
    cs->buf[cs->cdw - 2] = next_acs->ib.ib_mc_address >> 32;
    cs->buf[cs->cdw - 1] = S_3F3_CHAIN(1) | S_3F3_VALID(1) | S_3F3_PRE_ENA(pre_ena) | next_acs->ib.size;
+   if (acs->words_le)
+      for (unsigned i = cs->cdw - 4; i < cs->cdw; ++i)
+         cs->buf[i] = util_cpu_to_le32(cs->buf[i]);
 
    return true;
 }
@@ -734,7 +776,13 @@ radv_amdgpu_cs_execute_secondary(struct ac_cmdbuf *_parent, struct ac_cmdbuf *_c
             return;
          }
 
-         memcpy(parent->base.buf + parent->base.cdw, mapped, 4 * cdw);
+         if (child->words_le) {
+            const uint32_t *words = (const uint32_t *)mapped;
+            for (unsigned j = 0; j < cdw; ++j)
+               parent->base.buf[parent->base.cdw + j] = util_le32_to_cpu(words[j]);
+         } else {
+            memcpy(parent->base.buf + parent->base.cdw, mapped, 4 * cdw);
+         }
          parent->base.cdw += cdw;
       }
    }
@@ -795,7 +843,7 @@ radv_amdgpu_cs_chain_dgc_ib(struct ac_cmdbuf *_cs, uint64_t va, uint32_t cdw, ui
       }
 
       /* Finalize the current CS. */
-      cs->ws->base.cs_finalize(_cs);
+      radv_amdgpu_cs_finalize_native(_cs);
 
       /* Chain the current CS to the DGC CS. */
       _cs->buf[_cs->cdw - 4] = PKT3(PKT3_INDIRECT_BUFFER, 2, 0);
@@ -1400,6 +1448,21 @@ radv_amdgpu_winsys_cs_dump(struct ac_cmdbuf *_cs, FILE *file, const int *trace_i
    const bool dump_ibs = type == RADV_CS_DUMP_TYPE_PREAMBLE_IBS || type == RADV_CS_DUMP_TYPE_MAIN_IBS ||
                          type == RADV_CS_DUMP_TYPE_POSTAMBLE_IBS;
    const bool dump_ctx_rolls = type == RADV_CS_DUMP_TYPE_CTX_ROLLS;
+
+   if (cs->words_le) {
+      /* Big endian: the IB parser reads host words. Print the decoded raw PM4 words instead. */
+      for (unsigned i = 0; i < cs->num_ib_buffers; ++i) {
+         const struct radv_amdgpu_ib *ib = &cs->ib_buffers[i];
+         const uint32_t *words = (const uint32_t *)radv_buffer_map(&ws->base, ib->bo);
+         if (!words)
+            continue;
+         fprintf(file, "IB chunk %u (little-endian GPU words):\n", i);
+         for (unsigned j = 0; j < ib->cdw; ++j)
+            fprintf(file, "%08x%c", util_le32_to_cpu(words[j]), (j % 8 == 7) ? '\n' : ' ');
+         fprintf(file, "\n");
+      }
+      return;
+   }
 
    if (cs->chain_ib) {
       struct radv_amdgpu_cs_ib_info ib_info = radv_amdgpu_cs_ib_to_info(cs, cs->ib_buffers[0]);

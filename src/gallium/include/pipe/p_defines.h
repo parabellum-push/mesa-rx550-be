@@ -1031,6 +1031,10 @@ struct pipe_caps {
    bool shader_atomic_int64;
    bool device_protected_surface;
    bool prefer_real_buffer_in_constbuf0;
+   /* Big endian: constant buffer 0 contents uploaded by the frontend must be
+    * stored as little-endian dwords (the driver reads them as LE).
+    */
+   bool upload_constbuf0_le32;
    bool gl_clamp;
    bool texrect;
    bool sampler_reduction_minmax;

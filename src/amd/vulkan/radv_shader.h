@@ -154,7 +154,7 @@ struct radv_graphics_state_key {
       uint32_t attributes_valid;
       uint32_t instance_rate_inputs;
       uint32_t instance_rate_divisors[MAX_VERTEX_ATTRIBS];
-      uint8_t vertex_attribute_formats[MAX_VERTEX_ATTRIBS];
+      uint16_t vertex_attribute_formats[MAX_VERTEX_ATTRIBS];
       uint32_t vertex_attribute_bindings[MAX_VERTEX_ATTRIBS];
       uint32_t vertex_attribute_offsets[MAX_VERTEX_ATTRIBS];
       uint8_t vertex_binding_align[MAX_VBS];
@@ -324,7 +324,7 @@ struct radv_vs_prolog_key {
     */
    uint32_t alpha_adjust_lo;
    uint32_t alpha_adjust_hi;
-   uint8_t formats[MAX_VERTEX_ATTRIBS];
+   uint16_t formats[MAX_VERTEX_ATTRIBS];
    unsigned num_attributes;
    uint32_t misaligned_mask;
    uint32_t unaligned_mask;

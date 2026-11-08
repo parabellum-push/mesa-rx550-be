@@ -26,6 +26,7 @@ radv_make_texel_buffer_descriptor(struct radv_device *device, uint64_t va, VkFor
    const struct util_format_description *desc;
    unsigned stride;
    enum pipe_swizzle swizzle[4];
+   struct util_format_description hw_desc;
 
    desc = radv_format_description(vk_format);
    stride = desc->block.bits / 8;
@@ -63,6 +64,8 @@ radv_make_texel_buffer_descriptor(struct radv_device *device, uint64_t va, VkFor
       .stride = stride,
       .gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED,
       .has_desc_resource_level = pdev->info.compiler_info.has_desc_resource_level,
+      /* Big endian: data/num format from the hardware field order. */
+      .be_desc = UTIL_ARCH_BIG_ENDIAN ? radv_format_hw_description(desc, &hw_desc) : NULL,
    };
 
    ac_build_buffer_descriptor(pdev->info.gfx_level, &ac_state, state);

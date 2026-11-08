@@ -1026,7 +1026,9 @@ void si_gfx_copy_image(struct si_context *sctx, struct pipe_resource *dst,
    vi_disable_dcc_if_incompatible_format(sctx, src, src_level, src_templ.format);
 
    /* Initialize the sampler view. */
+   sctx->native_raw_view = true;
    src_view = sctx->b.create_sampler_view(&sctx->b, src, &src_templ);
+   sctx->native_raw_view = false;
 
    u_box_3d(dstx, dsty, dstz, abs(src_box->width), abs(src_box->height), abs(src_box->depth),
             &dstbox);

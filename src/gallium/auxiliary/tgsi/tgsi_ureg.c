@@ -1025,6 +1025,14 @@ ureg_DECL_immediate_f64( struct ureg_program *ureg,
       fu.d[i] = v[i];
    }
 
+   /* TGSI 64-bit operands are low/high 32-bit channel pairs. */
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      for (i = 0; i < nr; i += 2) {
+         unsigned tmp = fu.u[i];
+         fu.u[i] = fu.u[i + 1];
+         fu.u[i + 1] = tmp;
+      }
+   }
    return decl_immediate(ureg, fu.u, nr, TGSI_IMM_FLOAT64);
 }
 
@@ -1090,6 +1098,13 @@ ureg_DECL_immediate_uint64( struct ureg_program *ureg,
       fu.u64[i] = v[i];
    }
 
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      for (i = 0; i < nr; i += 2) {
+         unsigned tmp = fu.u[i];
+         fu.u[i] = fu.u[i + 1];
+         fu.u[i + 1] = tmp;
+      }
+   }
    return decl_immediate(ureg, fu.u, nr, TGSI_IMM_UINT64);
 }
 
@@ -1109,6 +1124,13 @@ ureg_DECL_immediate_int64( struct ureg_program *ureg,
       fu.i64[i] = v[i];
    }
 
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      for (i = 0; i < nr; i += 2) {
+         unsigned tmp = fu.u[i];
+         fu.u[i] = fu.u[i + 1];
+         fu.u[i + 1] = tmp;
+      }
+   }
    return decl_immediate(ureg, fu.u, nr, TGSI_IMM_INT64);
 }
 

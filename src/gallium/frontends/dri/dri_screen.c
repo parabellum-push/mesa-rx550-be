@@ -490,6 +490,22 @@ dri_fill_st_visual(struct st_visual *stvis,
 
    assert(mode->color_format != PIPE_FORMAT_NONE);
    stvis->color_format = mode->color_format;
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      /* Keep native X11 visual masks, but use DRM's fixed byte layout for
+       * framebuffer storage, matching the DRI image FourCC mapping.
+       */
+      switch (stvis->color_format) {
+      case PIPE_FORMAT_BGRA8888_UNORM: stvis->color_format = PIPE_FORMAT_B8G8R8A8_UNORM; break;
+      case PIPE_FORMAT_BGRX8888_UNORM: stvis->color_format = PIPE_FORMAT_B8G8R8X8_UNORM; break;
+      case PIPE_FORMAT_RGBA8888_UNORM: stvis->color_format = PIPE_FORMAT_R8G8B8A8_UNORM; break;
+      case PIPE_FORMAT_RGBX8888_UNORM: stvis->color_format = PIPE_FORMAT_R8G8B8X8_UNORM; break;
+      case PIPE_FORMAT_BGRA8888_SRGB: stvis->color_format = PIPE_FORMAT_B8G8R8A8_SRGB; break;
+      case PIPE_FORMAT_BGRX8888_SRGB: stvis->color_format = PIPE_FORMAT_B8G8R8X8_SRGB; break;
+      case PIPE_FORMAT_RGBA8888_SRGB: stvis->color_format = PIPE_FORMAT_R8G8B8A8_SRGB; break;
+      case PIPE_FORMAT_RGBX8888_SRGB: stvis->color_format = PIPE_FORMAT_R8G8B8X8_SRGB; break;
+      default: break;
+      }
+   }
    stvis->accum_format = mode->accum_format;
    stvis->depth_stencil_format = mode->zs_format;
 

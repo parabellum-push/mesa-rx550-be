@@ -221,6 +221,29 @@ static void si_pipe_clear_buffer(struct pipe_context *ctx, struct pipe_resource 
 {
    struct si_context *sctx = (struct si_context *)ctx;
 
+   /* The value is bytes in memory order; the clear paths emit dwords the GPU stores as
+    * little endian. Without this every multi-byte clear reaches the buffer reversed.
+    */
+   uint32_t le_value[4] = {0};
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      const uint8_t *bytes = (const uint8_t *)clear_value;
+      const int pattern = clear_value_size < 4 ? 4 : clear_value_size;
+      for (int i = 0; i < pattern; i++)
+         le_value[i / 4] |= (uint32_t)bytes[i % clear_value_size] << ((i % 4) * 8);
+
+      /* Bytes after the last dword are written as the pattern's bytes. */
+      unsigned tail = pattern == 4 ? size & 3 : 0;
+      if (tail) {
+         uint8_t tail_bytes[4];
+         for (unsigned i = 0; i < tail; i++)
+            tail_bytes[i] = bytes[(size - tail + i) % clear_value_size];
+         size -= tail;
+         pipe_buffer_write(ctx, dst, offset + size, tail, tail_bytes);
+      }
+      clear_value = le_value;
+      clear_value_size = pattern;
+   }
+
    si_barrier_before_simple_buffer_op(sctx, 0, dst, NULL);
    si_clear_buffer(sctx, dst, offset, size, (uint32_t *)clear_value, clear_value_size,
                    SI_AUTO_SELECT_CLEAR_METHOD, false);
@@ -463,8 +486,10 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
    /* Clear FMASK to identity. */
    struct si_texture *stex = (struct si_texture *)tex;
 
+   uint64_t expand_value = fmask_expand_values[log_fragments][log_samples - 1];
+   uint32_t expand_words[2] = {(uint32_t)expand_value, (uint32_t)(expand_value >> 32)};
    si_clear_buffer(sctx, tex, stex->surface.fmask_offset, stex->surface.fmask_size,
-                   (uint32_t *)&fmask_expand_values[log_fragments][log_samples - 1],
+                   expand_words,
                    log_fragments >= 2 && log_samples == 4 ? 8 : 4,
                    SI_AUTO_SELECT_CLEAR_METHOD, false);
    si_barrier_after_simple_buffer_op(sctx, 0, tex, NULL);

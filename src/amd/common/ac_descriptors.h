@@ -278,6 +278,9 @@ struct ac_texture_state {
    uint32_t dcc_enabled : 1;
    uint32_t tc_compat_htile_enabled : 1;
    uint32_t aniso_single_level : 1;
+   /* Big endian (GFX6-9): if set, data/num format come from this description
+    * (packed formats in numeric channel order) instead of the format's own. */
+   const struct util_format_description *be_desc;
 };
 
 void
@@ -333,6 +336,10 @@ struct ac_buffer_state {
       uint32_t compression_en : 1;
       uint32_t write_compress_enable : 1;
    } gfx12;
+
+   /* Big endian (GFX6-9): if set, data/num format come from this description
+    * (packed formats in hardware field order) instead of the format's own. */
+   const struct util_format_description *be_desc;
 };
 
 void
@@ -440,6 +447,12 @@ struct ac_cb_state {
    struct {
       struct ac_surf_nbc_view *nbc_view;
    } gfx10;
+
+   /* Big endian (GFX6-9): the driver supplies CB format, swap and endian itself. */
+   bool be_override;
+   uint32_t be_format;
+   uint32_t be_swap;
+   uint32_t be_endian;
 };
 
 struct ac_cb_surface {

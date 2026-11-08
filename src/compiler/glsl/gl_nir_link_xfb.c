@@ -174,6 +174,7 @@ gl_nir_link_assign_xfb_resources(const struct gl_constants *consts,
       output->StreamId = xfb_info->buffer_to_stream[xfb_output->buffer];
       output->DstOffset = xfb_output->offset / 4;
       output->ComponentOffset = xfb_output->component_offset;
+      output->ComponentMask64Bit = xfb_output->component_mask_64bit;
    }
 
    /* Make sure MaxTransformFeedbackBuffers is <= 32 so the bitmask for
@@ -217,6 +218,7 @@ gl_to_nir_xfb_info(struct gl_transform_feedback_info *info, void *mem_ctx)
       xfb->outputs[i].offset = info->Outputs[i].DstOffset * 4;
       xfb->outputs[i].location = info->Outputs[i].OutputRegister;
       xfb->outputs[i].component_offset = info->Outputs[i].ComponentOffset;
+      xfb->outputs[i].component_mask_64bit = info->Outputs[i].ComponentMask64Bit;
       xfb->outputs[i].component_mask =
          BITFIELD_RANGE(info->Outputs[i].ComponentOffset,
                         info->Outputs[i].NumComponents);

@@ -399,7 +399,8 @@ ac_build_fmask_descriptor(const enum amd_gfx_level gfx_level, const struct ac_fm
 static void
 ac_build_gfx6_texture_descriptor(const struct radeon_info *info, const struct ac_texture_state *state, uint32_t desc[8])
 {
-   const struct util_format_description *fmt_desc = util_format_description(state->format);
+   const struct util_format_description *fmt_desc =
+      state->be_desc ? state->be_desc : util_format_description(state->format);
    uint32_t num_format, data_format, num_samples;
    int first_non_void;
 
@@ -851,7 +852,8 @@ ac_set_buf_desc_word3(const enum amd_gfx_level gfx_level, const struct ac_buffer
                         S_008F0C_WRITE_COMPRESS_ENABLE(state->gfx12.write_compress_enable);
       }
    } else {
-      const struct util_format_description * desc =  util_format_description(state->format);
+      const struct util_format_description * desc =
+         state->be_desc ? state->be_desc : util_format_description(state->format);
       const int first_non_void = util_format_get_first_non_void_channel(state->format);
       const uint32_t num_format = ac_translate_buffer_numformat(desc, first_non_void);
 
@@ -1255,7 +1257,7 @@ ac_init_gfx6_cb_surface(const struct radeon_info *info, const struct ac_cb_state
                         uint32_t cb_format, bool force_dst_alpha_1, struct ac_cb_surface *cb)
 {
    const struct radeon_surf *surf = state->surf;
-   const uint32_t endian = ac_colorformat_endian_swap(cb_format);
+   const uint32_t endian = state->be_override ? state->be_endian : ac_colorformat_endian_swap(cb_format);
 
    cb->cb_color_info |= S_028C70_ENDIAN(endian) |
                         S_028C70_FORMAT_GFX6(cb_format) |
@@ -1392,7 +1394,8 @@ void
 ac_init_cb_surface(const struct radeon_info *info, const struct ac_cb_state *state, struct ac_cb_surface *cb)
 {
    const struct util_format_description *desc = util_format_description(state->format);
-   const uint32_t cb_format = ac_get_cb_format(info->gfx_level, state->format);
+   const uint32_t cb_format = state->be_override ? state->be_format :
+                              ac_get_cb_format(info->gfx_level, state->format);
    const struct radeon_surf *surf = state->surf;
    uint32_t width = state->width;
 
@@ -1419,7 +1422,8 @@ ac_init_cb_surface(const struct radeon_info *info, const struct ac_cb_state *sta
          width *= 2;
    }
 
-   const uint32_t swap = ac_translate_colorswap(info->gfx_level, state->format, false);
+   const uint32_t swap = state->be_override ? state->be_swap :
+                         ac_translate_colorswap(info->gfx_level, state->format, false);
    const uint32_t ntype = ac_get_cb_number_type(state->format);
    uint32_t blend_clamp = 0, blend_bypass = 0;
 

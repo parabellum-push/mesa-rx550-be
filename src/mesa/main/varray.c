@@ -172,6 +172,8 @@ type_to_bit(const struct gl_context *ctx, GLenum type)
       return INT_2_10_10_10_REV_BIT;
    case GL_UNSIGNED_INT_10F_11F_11F_REV:
       return UNSIGNED_INT_10F_11F_11F_REV_BIT;
+   case GL_UNSIGNED_INT64_ARB:
+      return UNSIGNED_INT64_BIT;
    default:
       return 0;
    }
@@ -690,7 +692,10 @@ vertex_format_to_pipe_format(GLubyte size, GLenum16 type, GLenum16 format,
       return pipe_format;
    }
 
-   unsigned index = integer*2 + normalized;
+   /* LPointer uses the double-input API flag for both doubles and handles.
+    * Handle words still need the raw integer format rather than conversion.
+    */
+   unsigned index = type == GL_UNSIGNED_INT64_ARB ? 2 : integer*2 + normalized;
    assert(index <= 2);
    assert((type >= GL_BYTE && type <= GL_FIXED) ||
           type == GL_HALF_FLOAT_OES ||

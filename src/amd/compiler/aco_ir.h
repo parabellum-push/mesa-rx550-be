@@ -12,6 +12,7 @@
 #include "aco_util.h"
 
 #include "util/bitset.h"
+#include "util/u_endian.h"
 #include "util/compiler.h"
 #include "util/shader_stats.h"
 
@@ -146,6 +147,19 @@ enum fp_denorm {
 struct float_mode {
    /* matches encoding of the MODE register */
    union {
+#if UTIL_ARCH_BIG_ENDIAN
+      /* Big-endian compilers allocate bit-fields from the most significant bit. */
+      struct {
+         unsigned denorm16_64 : 2;
+         unsigned denorm32 : 2;
+         fp_round round16_64 : 2;
+         fp_round round32 : 2;
+      };
+      struct {
+         uint8_t denorm : 4;
+         uint8_t round : 4;
+      };
+#else
       struct {
          fp_round round32 : 2;
          fp_round round16_64 : 2;
@@ -156,6 +170,7 @@ struct float_mode {
          uint8_t round : 4;
          uint8_t denorm : 4;
       };
+#endif
       uint8_t val = 0;
    };
    /* if false, optimizations which may remove denormal flushing can be done */

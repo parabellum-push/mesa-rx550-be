@@ -7,6 +7,7 @@
 #ifndef RADV_DESCRIPTORS_H
 #define RADV_DESCRIPTORS_H
 
+#include "util/u_math.h"
 #include "vk_command_buffer.h"
 
 #include "radv_buffer.h"
@@ -30,6 +31,33 @@ bool radv_mutable_descriptor_type_size_alignment(const struct radv_device *devic
                                                  const VkMutableDescriptorTypeListEXT *list, uint64_t *out_size,
                                                  uint64_t *out_align);
 
+/* Big endian: descriptors in GPU-visible memory are little-endian words, while the CPU
+ * copies kept in views, samplers and layouts stay native. Application data (inline
+ * uniform blocks) is opaque and not converted. Only GFX8 is supported on big endian.
+ */
+static ALWAYS_INLINE void
+radv_copy_gpu_descriptor(void *dst, const void *src, unsigned size)
+{
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      assert(size % 4 == 0);
+      for (unsigned i = 0; i < size; i += 4) {
+         uint32_t word;
+         memcpy(&word, (const uint8_t *)src + i, 4);
+         word = util_cpu_to_le32(word);
+         memcpy((uint8_t *)dst + i, &word, 4);
+      }
+   } else {
+      memcpy(dst, src, size);
+   }
+}
+
+static ALWAYS_INLINE void
+radv_encode_gpu_descriptor(void *dst, unsigned size)
+{
+   if (UTIL_ARCH_BIG_ENDIAN)
+      radv_copy_gpu_descriptor(dst, dst, size);
+}
+
 static ALWAYS_INLINE void
 radv_write_texel_buffer_descriptor(unsigned *dst, const VkBufferView _buffer_view)
 {
@@ -40,7 +68,7 @@ radv_write_texel_buffer_descriptor(unsigned *dst, const VkBufferView _buffer_vie
       return;
    }
 
-   memcpy(dst, buffer_view->state, RADV_BUFFER_DESC_SIZE);
+   radv_copy_gpu_descriptor(dst, buffer_view->state, RADV_BUFFER_DESC_SIZE);
 }
 
 static ALWAYS_INLINE void
@@ -67,6 +95,7 @@ radv_write_buffer_descriptor(struct radv_device *device, VkDescriptorType descri
     */
    ac_build_raw_buffer_descriptor(pdev->info.gfx_level, pdev->info.compiler_info.has_desc_resource_level, va,
                                   align(range, 4), dst);
+   radv_encode_gpu_descriptor(dst, RADV_BUFFER_DESC_SIZE);
 }
 
 static ALWAYS_INLINE void
@@ -144,10 +173,10 @@ radv_write_image_descriptor(unsigned *dst, unsigned size, VkDescriptorType descr
    /* Encourage compilers to inline memcpy for combined image/sampler descriptors. */
    switch (size) {
    case 32:
-      memcpy(dst, descriptor, 32);
+      radv_copy_gpu_descriptor(dst, descriptor, 32);
       break;
    case 64:
-      memcpy(dst, descriptor, 64);
+      radv_copy_gpu_descriptor(dst, descriptor, 64);
       break;
    default:
       UNREACHABLE("Invalid size");
@@ -175,7 +204,7 @@ radv_write_image_descriptor_ycbcr(struct radv_device *device, unsigned *dst, con
    const uint32_t stride = desc_size / 4;
 
    for (uint32_t i = 0; i < plane_count; i++) {
-      memcpy(dst, iview->descriptor.plane_descriptors[i], 32);
+      radv_copy_gpu_descriptor(dst, iview->descriptor.plane_descriptors[i], 32);
 
       dst += stride;
    }
@@ -185,7 +214,7 @@ static ALWAYS_INLINE void
 radv_write_sampler_descriptor(unsigned *dst, VkSampler _sampler)
 {
    VK_FROM_HANDLE(radv_sampler, sampler, _sampler);
-   memcpy(dst, sampler->state, RADV_SAMPLER_DESC_SIZE);
+   radv_copy_gpu_descriptor(dst, sampler->state, RADV_SAMPLER_DESC_SIZE);
 }
 
 static ALWAYS_INLINE void
@@ -208,10 +237,11 @@ radv_write_combined_image_sampler_descriptor(struct radv_device *device, unsigne
 static ALWAYS_INLINE void
 radv_write_accel_struct_descriptor(struct radv_device *device, void *ptr, VkDeviceAddress va)
 {
-   uint64_t desc[2] = {va, 0};
+   /* Numeric low/high dwords, so the GPU sees the same value on either host. */
+   uint32_t desc[4] = {(uint32_t)va, (uint32_t)(va >> 32), 0, 0};
 
    assert(sizeof(desc) == RADV_ACCEL_STRUCT_DESC_SIZE);
-   memcpy(ptr, desc, RADV_ACCEL_STRUCT_DESC_SIZE);
+   radv_copy_gpu_descriptor(ptr, desc, RADV_ACCEL_STRUCT_DESC_SIZE);
 }
 
 #endif /* RADV_DESCRIPTORS_H */

@@ -75,6 +75,13 @@ struct radv_image {
 
    unsigned plane_count;
    bool disjoint;
+
+   /* Big-endian GFX8: memory holds little-endian elements of this size, the widest
+    * of the image format and its views, so narrower views only reorder channels.
+    */
+   uint8_t native_width;
+   /* Big endian: planes stored as whole elements so that wider views work; 0 otherwise. */
+   uint8_t native_plane_width[3];
    struct radv_image_plane planes[0];
 };
 
@@ -425,6 +432,8 @@ VkResult radv_image_create(VkDevice _device, const struct radv_image_create_info
 unsigned radv_plane_from_aspect(VkImageAspectFlags mask);
 
 VkFormat radv_get_aspect_format(struct radv_image *image, VkImageAspectFlags mask);
+
+void radv_image_widen_native_storage(struct radv_image *image, VkFormat view_format);
 
 /* Whether the image has a htile  that is known consistent with the contents of
  * the image and is allowed to be in compressed form.

@@ -2424,12 +2424,24 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE, "Mesa " PACKAGE_VERSION MESA_GIT_SHA1 "%s",
             radv_get_compiler_string(pdev));
 
-   p->conformanceVersion = (VkConformanceVersion){
-      .major = 1,
-      .minor = 4,
-      .subminor = 5,
-      .patch = 3,
-   };
+   /* Big endian GFX8: report the suite this port is tested with. This is not a Khronos
+    * conformance submission.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+      p->conformanceVersion = (VkConformanceVersion){
+         .major = 1,
+         .minor = 3,
+         .subminor = 8,
+         .patch = 3,
+      };
+   } else {
+      p->conformanceVersion = (VkConformanceVersion){
+         .major = 1,
+         .minor = 4,
+         .subminor = 5,
+         .patch = 3,
+      };
+   }
 
    /* VK_EXT_host_image_copy */
    static const VkImageLayout supported_layouts[] = {

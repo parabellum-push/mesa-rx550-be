@@ -39,6 +39,7 @@
 #include "image.h"
 #include "macros.h"
 #include "util/half_float.h"
+#include "util/u_math.h"
 #include "util/format_rgb9e5.h"
 #include "util/format_r11g11b10f.h"
 
@@ -195,6 +196,23 @@ do_span(enum pipe_format format, int srcWidth,
    assert(dstWidth == srcWidth || dstWidth == srcWidth / 2);
    const struct util_format_description *desc =
       util_format_description(format);
+
+   /* Big endian: these packed formats are mapped as little-endian words, while
+    * util_format unpacks host-order words.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && (format == PIPE_FORMAT_R9G9B9E5_FLOAT ||
+                                format == PIPE_FORMAT_R11G11B10_FLOAT)) {
+      uint32_t a[MAX_SPAN_WIDTH], b[MAX_SPAN_WIDTH], d[MAX_SPAN_WIDTH];
+      assert(srcWidth <= MAX_SPAN_WIDTH);
+      for (int i = 0; i < srcWidth; i++) {
+         a[i] = util_le32_to_cpu(((const uint32_t *)srcRowA)[i]);
+         b[i] = util_le32_to_cpu(((const uint32_t *)srcRowB)[i]);
+      }
+      do_span_rgba_float(format, srcWidth, a, b, dstWidth, d);
+      for (int i = 0; i < dstWidth; i++)
+         ((uint32_t *)dstRow)[i] = util_cpu_to_le32(d[i]);
+      return;
+   }
 
    if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS)
       do_span_zs(format, srcWidth, srcRowA, srcRowB, dstWidth, dstRow);

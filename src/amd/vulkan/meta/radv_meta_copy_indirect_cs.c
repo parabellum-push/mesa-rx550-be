@@ -178,7 +178,8 @@ radv_compute_copy_memory_indirect(struct radv_cmd_buffer *cmd_buffer,
       const uint64_t copy_addr =
          pCopyMemoryIndirectInfo->copyAddressRange.address + i * pCopyMemoryIndirectInfo->copyAddressRange.stride;
 
-      radv_meta_push_constants(cmd_buffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_addr), &copy_addr);
+      const uint64_t copy_addr_pc = radv_meta_pc_u64(copy_addr);
+      radv_meta_push_constants(cmd_buffer, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_addr_pc), &copy_addr_pc);
 
       const struct radv_dispatch_info info = {
          .indirect_va = upload_addr + i * sizeof(VkDispatchIndirectCommand),

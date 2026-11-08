@@ -307,6 +307,32 @@ static void gfx10_emit_barrier(struct si_context *ctx, struct radeon_cmdbuf *cs)
       ctx->task_wait_count++;
 }
 
+/* Big endian GFX8 (RX550 on Power Mac G5): fragment shader image stores were seen still
+ * in flight after PS_PARTIAL_FLUSH, and after a CB/DB SURFACE_SYNC: a compute dispatch after
+ * glMemoryBarrier(GL_ALL_BARRIER_BITS) read stale texels (about 12,000 of 65,536 per frame),
+ * and so did the compute copy behind texture readbacks. A bottom-of-pipe timestamp with
+ * write confirm, waited for in the CP, orders them. Compute-to-anything and
+ * fragment-to-fragment were clean. Not compared with little endian hardware.
+ */
+static void si_be_gfx8_eop_wait(struct si_context *sctx, struct radeon_cmdbuf *cs)
+{
+   if (!sctx->wait_mem_scratch) {
+      sctx->wait_mem_scratch =
+         si_aligned_buffer_create(&sctx->screen->b,
+                                  PIPE_RESOURCE_FLAG_UNMAPPABLE | SI_RESOURCE_FLAG_DRIVER_INTERNAL,
+                                  PIPE_USAGE_DEFAULT, 4, sctx->screen->info.tcc_cache_line_size);
+      if (!sctx->wait_mem_scratch)
+         return;
+   }
+   struct si_resource *scratch = si_get_wait_mem_scratch_bo(sctx, cs, sctx->ws->cs_is_secure(cs));
+   sctx->wait_mem_number++;
+   si_cp_release_mem(sctx, cs, V_028A90_BOTTOM_OF_PIPE_TS, 0, EOP_DST_SEL_MEM,
+                     EOP_INT_SEL_SEND_DATA_AFTER_WR_CONFIRM, EOP_DATA_SEL_VALUE_32BIT,
+                     scratch, scratch->gpu_address, sctx->wait_mem_number, SI_NOT_QUERY);
+   si_cp_wait_mem(sctx, cs, scratch->gpu_address, sctx->wait_mem_number, 0xffffffff,
+                  WAIT_REG_MEM_EQUAL);
+}
+
 static void gfx6_emit_barrier(struct si_context *sctx, struct radeon_cmdbuf *cs)
 {
    assert(sctx->gfx_level <= GFX9);
@@ -381,6 +407,10 @@ static void gfx6_emit_barrier(struct si_context *sctx, struct radeon_cmdbuf *cs)
       radeon_event_write(V_028A90_CS_PARTIAL_FLUSH);
 
    radeon_end();
+
+   /* Must precede the cache invalidations below. */
+   if (UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8 && (flags & SI_BARRIER_SYNC_PS))
+      si_be_gfx8_eop_wait(sctx, cs);
 
    /* GFX9: Wait for idle if we're flushing CB or DB. ACQUIRE_MEM doesn't
     * wait for idle on GFX9. We have to use a TS event.
@@ -676,8 +706,12 @@ static void si_memory_barrier(struct pipe_context *ctx, unsigned flags)
    /* Ignore PIPE_BARRIER_QUERY_BUFFER - the GL spec description is confusing, and the driver
     * always inserts barriers around get_query_result_resource.
     */
-   flags &= ~PIPE_BARRIER_UPDATE_BUFFER & ~PIPE_BARRIER_UPDATE_TEXTURE &
-            ~PIPE_BARRIER_MAPPED_BUFFER & ~PIPE_BARRIER_QUERY_BUFFER;
+   /* Big endian: update barriers still have to wait, because the copy behind a following
+    * readback must not start while shaders are writing the image.
+    */
+   if (!UTIL_ARCH_BIG_ENDIAN)
+      flags &= ~PIPE_BARRIER_UPDATE_BUFFER & ~PIPE_BARRIER_UPDATE_TEXTURE &
+               ~PIPE_BARRIER_MAPPED_BUFFER & ~PIPE_BARRIER_QUERY_BUFFER;
 
    if (!flags)
       return;

@@ -64,7 +64,7 @@ ac_nir_lower_legacy_vs(nir_shader *nir,
    }
 
    if (!disable_streamout && nir->xfb_info)
-      ac_nir_emit_legacy_streamout(&b, 0, ac_nir_get_sorted_xfb_info(nir), &out);
+      ac_nir_emit_legacy_streamout(&b, 0, ac_nir_get_sorted_xfb_info(nir), &out, gfx_level);
 
    /* This should be after streamout and before exports. */
    ac_nir_clamp_vertex_color_outputs(&b, &out);

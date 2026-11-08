@@ -447,6 +447,8 @@ st_ReadPixels(struct gl_context *ctx, GLint x, GLint y,
    if (rb->TexImage && st->force_compute_based_texture_transfer)
       goto fallback;
 
+   if (_mesa_packed_float_needs_swap(type))
+      goto fallback;
    if (!st->prefer_blit_based_texture_transfer) {
       goto fallback;
    }

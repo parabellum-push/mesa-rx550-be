@@ -1047,7 +1047,7 @@ util_make_fs_pack_color_zs(struct pipe_context *pipe,
       if (has_stencil) {
          /* Load stencil. */
          stencil_sampler = ureg_DECL_sampler(ureg, 1);
-         ureg_DECL_sampler_view(ureg, 0, tex_target,
+         ureg_DECL_sampler_view(ureg, 1, tex_target,
                                 TGSI_RETURN_TYPE_UINT,
                                 TGSI_RETURN_TYPE_UINT,
                                 TGSI_RETURN_TYPE_UINT,

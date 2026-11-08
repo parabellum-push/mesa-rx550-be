@@ -158,6 +158,7 @@ radv_GetDescriptorEXT(VkDevice _device, const VkDescriptorGetInfoEXT *pDescripto
       if (addr_info && addr_info->address) {
          radv_make_texel_buffer_descriptor(device, addr_info->address, addr_info->format, addr_info->range,
                                            pDescriptor);
+         radv_encode_gpu_descriptor(pDescriptor, RADV_BUFFER_DESC_SIZE);
       } else {
          memset(pDescriptor, 0, RADV_BUFFER_DESC_SIZE);
       }
@@ -254,6 +255,7 @@ radv_WriteResourceDescriptorsEXT(VkDevice _device, uint32_t resourceCount,
          if (desc_info && desc_info->addressRange.address) {
             radv_make_texel_buffer_descriptor(device, desc_info->addressRange.address, desc_info->format,
                                               desc_info->addressRange.size, host_addr_range->address);
+            radv_encode_gpu_descriptor(host_addr_range->address, RADV_BUFFER_DESC_SIZE);
          } else {
             memset(host_addr_range->address, 0, RADV_BUFFER_DESC_SIZE);
          }

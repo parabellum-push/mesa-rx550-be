@@ -639,6 +639,10 @@ static void si_init_gfx_caps(struct si_screen *sscreen)
    caps->frontend_noop = true;
    caps->demote_to_helper_invocation = true;
    caps->prefer_real_buffer_in_constbuf0 = true;
+   /* Big endian GFX8: frontend-uploaded constants must be LE dwords, as the driver's own
+    * user-buffer path writes them.
+    */
+   caps->upload_constbuf0_le32 = UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8;
    caps->compute_shader_derivatives = true;
    caps->image_atomic_inc_wrap = true;
    caps->image_store_formatted = true;
@@ -667,8 +671,9 @@ static void si_init_gfx_caps(struct si_screen *sscreen)
    caps->sampler_reduction_minmax_arb =
       !(sscreen->info.family == CHIP_TAHITI || sscreen->info.family == CHIP_VERDE);
 
-   caps->texture_transfer_modes =
-      PIPE_TEXTURE_TRANSFER_BLIT | PIPE_TEXTURE_TRANSFER_COMPUTE;
+   /* Big endian GFX8: CPU transfers preserve native packed-word semantics. */
+   caps->texture_transfer_modes = UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 ?
+      PIPE_TEXTURE_TRANSFER_DEFAULT : PIPE_TEXTURE_TRANSFER_BLIT | PIPE_TEXTURE_TRANSFER_COMPUTE;
 
    caps->draw_vertex_state = !(sscreen->debug_flags & DBG(NO_FAST_DISPLAY_LIST));
 
@@ -880,6 +885,14 @@ bool si_init_gfx_screen(struct si_screen *sscreen) {
 
    sscreen->context_roll_log_filename = debug_get_option("AMD_ROLLS", NULL);
    sscreen->shader_debug_flags = debug_get_flags_option("AMD_DEBUG", radeonsi_shader_debug_options, 0);
+
+#if AMD_LLVM_AVAILABLE
+   /* Big endian: the radeonsi->ACO path is not big-endian clean (it hung the GFX ring on
+    * Polaris/GFX8), while the LLVM path is ported and tested, so LLVM is the default.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN)
+      sscreen->shader_debug_flags |= DBG(USE_LLVM);
+#endif
 
    if (sscreen->debug_flags & DBG(NO_DISPLAY_DCC)) {
       sscreen->info.use_display_dcc_unaligned = false;
