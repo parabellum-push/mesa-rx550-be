@@ -2947,6 +2947,11 @@ static bool visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
                                 ? comp_type
                                 : LLVMVectorType(comp_type, instr->def.num_components);
       result = LLVMBuildLoad2(ctx->ac.builder, vec_type, ptr, "");
+      /* Without this LLVM assumes ABI alignment (e.g. 4 for <2 x i16>) and splits the access
+       * with immediate offsets, which cross the 4-byte swizzle element of GFX6-8 scratch and
+       * land in the next lane (OpenCL vloadN/vstoreN on private memory).
+       */
+      LLVMSetAlignment(result, nir_intrinsic_align(instr));
       break;
    }
    case nir_intrinsic_store_scratch: {
@@ -2962,7 +2967,10 @@ static bool visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
          LLVMValueRef offset = LLVMConstInt(ctx->ac.i32, start, false);
          LLVMValueRef offset_ptr = LLVMBuildGEP2(ctx->ac.builder, comp_type, ptr, &offset, 1, "");
          LLVMValueRef offset_src = ac_extract_components(&ctx->ac, src, start, count);
-         LLVMBuildStore(ctx->ac.builder, offset_src, offset_ptr);
+         LLVMValueRef store = LLVMBuildStore(ctx->ac.builder, offset_src, offset_ptr);
+         const unsigned align_mul = nir_intrinsic_align_mul(instr);
+         const unsigned byte_off = nir_intrinsic_align_offset(instr) + start * (instr->src[0].ssa->bit_size / 8);
+         LLVMSetAlignment(store, byte_off % align_mul ? 1u << (ffs(byte_off % align_mul) - 1) : align_mul);
       }
       break;
    }
