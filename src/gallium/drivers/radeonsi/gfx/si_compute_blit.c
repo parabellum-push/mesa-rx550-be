@@ -594,6 +594,20 @@ bool si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
    if (sdst->is_depth || ssrc->is_depth)
       return false;
 
+   /* Compute-only contexts (rusticl) before GFX10 can't write DCC, so si_compute_blit discards it on
+    * the destination anyway, and nothing in them can have compressed the source. Do it before
+    * choosing the copy format: with DCC the copy below stays float, and storing a NaN to a 16-bit
+    * float image writes 0xffff (OpenCL CTS imagearraycopy / enqueue_map_image with CL_HALF_FLOAT).
+    * Not the screen's async compute context: its PRIME blit sources come from gfx contexts.
+    */
+   if (sctx->gfx_level < GFX10 && !sctx->is_gfx_queue &&
+       &sctx->b != sctx->screen->async_compute_context) {
+      if (vi_dcc_enabled(sdst, dst_level))
+         si_texture_disable_dcc(sctx, sdst);
+      if (vi_dcc_enabled(ssrc, src_level))
+         si_texture_disable_dcc(sctx, ssrc);
+   }
+
    /* Interpret as integer values to avoid NaN issues */
    if (!vi_dcc_enabled(ssrc, src_level) &&
        !vi_dcc_enabled(sdst, dst_level) &&
