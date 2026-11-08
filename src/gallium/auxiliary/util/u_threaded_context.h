@@ -545,6 +545,8 @@ struct threaded_context_options {
    tc_create_fence_func create_fence;
    tc_is_resource_busy is_resource_busy;
    bool driver_calls_flush_notify;
+   /* Encode native user constant data as LE32 during threaded uploads. */
+   bool const_buffer_le;
 
    /**
     * If true, ctx->get_device_reset_status() will be called without

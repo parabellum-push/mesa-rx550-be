@@ -213,6 +213,8 @@ void radv_meta_buffer_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct rad
 void radv_meta_image_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *src,
                                  struct radv_meta_blit2d_surf *dst, unsigned num_rects,
                                  struct radv_meta_blit2d_rect *rects);
+void radv_meta_be_swap_16bit_pairs(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *iview);
+
 void radv_meta_clear_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *dst,
                               const VkClearColorValue *clear_color);
 

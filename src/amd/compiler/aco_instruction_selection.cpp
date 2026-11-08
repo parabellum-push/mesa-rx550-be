@@ -15,6 +15,8 @@
 #include "common/sid.h"
 
 #include "util/fast_idiv_by_const.h"
+#include "util/format/u_format.h"
+#include "util/u_endian.h"
 #include "util/memstream.h"
 
 #include <array>
@@ -12633,6 +12635,11 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo, ac_sh
    uint32_t attrib_mask = BITFIELD_MASK(pinfo->num_attributes);
    bool has_nontrivial_divisors = pinfo->nontrivial_divisors;
 
+   /* Big-endian GFX8 attributes hold host-order data, which typed fetches would
+    * decode wrongly. Everything wider than a byte is fetched raw and decoded below.
+    */
+   const bool native_decode = UTIL_ARCH_BIG_ENDIAN && options->gfx_level == GFX8;
+
    wait_imm lgkm_imm;
    lgkm_imm.lgkm = 0;
 
@@ -12669,6 +12676,11 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo, ac_sh
       nontrivial_tmp_vgpr0 = get_next_vgpr(1, &num_vgprs, &vgpr_offset);
    if (needs_tmp_vgpr1)
       nontrivial_tmp_vgpr1 = get_next_vgpr(1, &num_vgprs, &vgpr_offset);
+   PhysReg native_tmp0, native_tmp1;
+   if (native_decode) {
+      native_tmp0 = get_next_vgpr(1, &num_vgprs, &vgpr_offset);
+      native_tmp1 = get_next_vgpr(1, &num_vgprs, &vgpr_offset);
+   }
 
    bld.sop1(aco_opcode::s_mov_b32, Definition(vertex_buffers, s1),
             get_arg_fixed(args, args->vertex_buffers));
@@ -12764,10 +12776,47 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo, ac_sh
             assert(vtx_info->has_hw_format & 0x1);
             unsigned dfmt = vtx_info->hw_format[0] & 0xf;
             unsigned nfmt = vtx_info->hw_format[0] >> 4;
+            const struct util_format_description* format_desc =
+               util_format_description((pipe_format)pinfo->formats[loc]);
+            const bool raw_fetch =
+               native_decode && (!format_desc->is_array || vtx_info->chan_byte_size > 1);
 
-            for (unsigned j = 0; j < vtx_info->num_channels; j++) {
+            if (raw_fetch && !format_desc->is_array) {
+               bld.mubuf(aco_opcode::buffer_load_dword, Definition(dest, v1), Operand(cur_desc, s4),
+                         fetch_index, Operand::c32(0u), 0u, false, false, true);
+            }
+
+            for (unsigned j = 0; raw_fetch && format_desc->is_array && j < vtx_info->num_channels;
+                 j++) {
                bool post_shuffle = pinfo->post_shuffle & (1u << loc);
                unsigned offset = vtx_info->chan_byte_size * (post_shuffle && j < 3 ? 2 - j : j);
+
+               if (vtx_info->chan_byte_size == 2) {
+                  bld.mtbuf(aco_opcode::tbuffer_load_format_x, Definition(dest.advance(j * 4u), v1),
+                            Operand(cur_desc, s4), fetch_index, Operand::c32(0u),
+                            V_008F0C_BUF_DATA_FORMAT_16, V_008F0C_BUF_NUM_FORMAT_UINT, offset, false,
+                            true);
+               } else if (vtx_info->chan_byte_size == 4) {
+                  bld.mubuf(aco_opcode::buffer_load_dword, Definition(dest.advance(j * 4u), v1),
+                            Operand(cur_desc, s4), fetch_index, Operand::c32(0u), offset, false,
+                            false, true);
+               } else {
+                  /* Host doubles store their high word first. */
+                  bld.mubuf(aco_opcode::buffer_load_dword, Definition(dest.advance(j * 8u), v1),
+                            Operand(cur_desc, s4), fetch_index, Operand::c32(0u), offset + 4u, false,
+                            false, true);
+                  bld.mubuf(aco_opcode::buffer_load_dword,
+                            Definition(dest.advance(j * 8u + 4u), v1), Operand(cur_desc, s4),
+                            fetch_index, Operand::c32(0u), offset, false, false, true);
+               }
+            }
+
+            for (unsigned j = 0; !raw_fetch && j < vtx_info->num_channels; j++) {
+               bool post_shuffle = pinfo->post_shuffle & (1u << loc);
+               unsigned offset = vtx_info->chan_byte_size * (post_shuffle && j < 3 ? 2 - j : j);
+               /* Packed A8B8G8R8 has its bytes reversed on a big-endian host. */
+               if (native_decode && format_desc->swizzle[0] == PIPE_SWIZZLE_W)
+                  offset = 3 - j;
 
                /* Use MUBUF to workaround hangs for byte-aligned dword loads. The Vulkan spec
                 * doesn't require this to work, but some GL CTS tests over Zink do this anyway.
@@ -12812,15 +12861,111 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo, ac_sh
       }
    }
 
-   if (pinfo->alpha_adjust_lo | pinfo->alpha_adjust_hi) {
+   if (native_decode || (pinfo->alpha_adjust_lo | pinfo->alpha_adjust_hi)) {
       wait_imm vm_imm;
       vm_imm.vm = 0;
       bld.sopp(aco_opcode::s_waitcnt, vm_imm.pack(program->gfx_level));
    }
 
+   if (native_decode) {
+      const auto bswap32 = [&](PhysReg reg)
+      {
+         bld.vop2(aco_opcode::v_lshlrev_b32, Definition(native_tmp0, v1), Operand::c32(8u),
+                  Operand(reg, v1));
+         bld.vop2(aco_opcode::v_and_b32, Definition(native_tmp0, v1), Operand::c32(0xff00ff00u),
+                  Operand(native_tmp0, v1));
+         bld.vop2(aco_opcode::v_lshrrev_b32, Definition(reg, v1), Operand::c32(8u), Operand(reg, v1));
+         bld.vop2(aco_opcode::v_and_b32, Definition(reg, v1), Operand::c32(0x00ff00ffu),
+                  Operand(reg, v1));
+         bld.vop2(aco_opcode::v_or_b32, Definition(reg, v1), Operand(native_tmp0, v1),
+                  Operand(reg, v1));
+         bld.vop3(aco_opcode::v_alignbit_b32, Definition(reg, v1), Operand(reg, v1), Operand(reg, v1),
+                  Operand::c32(16u));
+      };
+      const auto convert = [&](PhysReg reg, const util_format_channel_description* chan, unsigned size)
+      {
+         const bool is_signed = chan->type == UTIL_FORMAT_TYPE_SIGNED;
+         if (chan->type == UTIL_FORMAT_TYPE_FLOAT) {
+            bld.vop1(aco_opcode::v_cvt_f32_f16, Definition(reg, v1), Operand(reg, v1));
+            return;
+         }
+         if (is_signed) {
+            bld.vop3(aco_opcode::v_bfe_i32, Definition(reg, v1), Operand(reg, v1), Operand::c32(0u),
+                     Operand::c32(size));
+         }
+         if (chan->pure_integer)
+            return;
+         bld.vop1(is_signed ? aco_opcode::v_cvt_f32_i32 : aco_opcode::v_cvt_f32_u32,
+                  Definition(reg, v1), Operand(reg, v1));
+         if (!chan->normalized)
+            return;
+         const float scale = 1.0f / (float)((1u << (is_signed ? size - 1 : size)) - 1);
+         bld.vop2(aco_opcode::v_mul_f32, Definition(reg, v1), Operand::c32(fui(scale)),
+                  Operand(reg, v1));
+         bld.vop2(aco_opcode::v_max_f32, Definition(reg, v1),
+                  Operand::c32(fui(is_signed ? -1.0f : 0.0f)), Operand(reg, v1));
+         bld.vop2(aco_opcode::v_min_f32, Definition(reg, v1), Operand::c32(fui(1.0f)),
+                  Operand(reg, v1));
+      };
+
+      for (unsigned loc = 0; loc < pinfo->num_attributes;) {
+         PhysReg dest(attributes_start.reg() + loc * 4u);
+         const struct ac_vtx_format_info* vtx_info = &vtx_info_table[pinfo->formats[loc]];
+         const struct util_format_description* format_desc =
+            util_format_description((pipe_format)pinfo->formats[loc]);
+         const pipe_format format = (pipe_format)pinfo->formats[loc];
+         const unsigned slots = vtx_info->chan_byte_size == 8 && vtx_info->num_channels > 2 ? 2 : 1;
+
+         if (!format_desc->is_array) {
+            bswap32(dest);
+            bld.vop1(aco_opcode::v_mov_b32, Definition(native_tmp1, v1), Operand(dest, v1));
+            if (format == PIPE_FORMAT_R11G11B10_FLOAT) {
+               const unsigned shifts[3] = {0, 11, 22}, sizes[3] = {11, 11, 10};
+               for (unsigned j = 0; j < 3; j++) {
+                  PhysReg reg = dest.advance(j * 4u);
+                  bld.vop3(aco_opcode::v_bfe_u32, Definition(reg, v1), Operand(native_tmp1, v1),
+                           Operand::c32(shifts[j]), Operand::c32(sizes[j]));
+                  /* These share the half-float layout once aligned to its mantissa. */
+                  bld.vop2(aco_opcode::v_lshlrev_b32, Definition(reg, v1),
+                           Operand::c32(j == 2 ? 5u : 4u), Operand(reg, v1));
+                  bld.vop1(aco_opcode::v_cvt_f32_f16, Definition(reg, v1), Operand(reg, v1));
+               }
+            } else {
+               const bool bgra = util_format_description(format)->swizzle[0] != PIPE_SWIZZLE_W;
+               const unsigned shifts[4] = {bgra ? 20u : 0u, 10u, bgra ? 0u : 20u, 30u};
+               for (unsigned j = 0; j < 4; j++) {
+                  PhysReg reg = dest.advance(j * 4u);
+                  const unsigned size = j == 3 ? 2 : 10;
+                  bld.vop3(aco_opcode::v_bfe_u32, Definition(reg, v1), Operand(native_tmp1, v1),
+                           Operand::c32(shifts[j]), Operand::c32(size));
+                  convert(reg, &format_desc->channel[0], size);
+               }
+            }
+         } else if (vtx_info->chan_byte_size == 2) {
+            for (unsigned j = 0; j < vtx_info->num_channels; j++) {
+               PhysReg reg = dest.advance(j * 4u);
+               bld.vop2(aco_opcode::v_lshlrev_b32, Definition(native_tmp0, v1), Operand::c32(8u),
+                        Operand(reg, v1));
+               bld.vop2(aco_opcode::v_lshrrev_b32, Definition(reg, v1), Operand::c32(8u),
+                        Operand(reg, v1));
+               bld.vop2(aco_opcode::v_or_b32, Definition(reg, v1), Operand(native_tmp0, v1),
+                        Operand(reg, v1));
+               bld.vop2(aco_opcode::v_and_b32, Definition(reg, v1), Operand::c32(0xffffu),
+                        Operand(reg, v1));
+               convert(reg, &format_desc->channel[0], 16);
+            }
+         } else if (vtx_info->chan_byte_size >= 4) {
+            const unsigned words = vtx_info->num_channels * (vtx_info->chan_byte_size / 4);
+            for (unsigned j = 0; j < words; j++)
+               bswap32(dest.advance(j * 4u));
+         }
+         loc += slots;
+      }
+   }
+
    /* For 2_10_10_10 formats the alpha is handled as unsigned by pre-vega HW.
     * so we may need to fix it up. */
-   u_foreach_bit (loc, (pinfo->alpha_adjust_lo | pinfo->alpha_adjust_hi)) {
+   u_foreach_bit (loc, native_decode ? 0 : (pinfo->alpha_adjust_lo | pinfo->alpha_adjust_hi)) {
       PhysReg alpha(attributes_start.reg() + loc * 4u + 3);
 
       unsigned alpha_adjust = (pinfo->alpha_adjust_lo >> loc) & 0x1;

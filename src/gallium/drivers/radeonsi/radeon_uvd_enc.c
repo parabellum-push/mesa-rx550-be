@@ -12,6 +12,7 @@
 #include "radeon_video.h"
 #include "radeonsi/si_pipe.h"
 #include "util/u_memory.h"
+#include "util/u_math.h"
 #include "util/u_video.h"
 #include "vl/vl_video_buffer.h"
 
@@ -266,10 +267,13 @@ static void radeon_uvd_enc_get_feedback(struct pipe_video_codec *encoder, void *
       radeon_uvd_enc_feedback_t *fb_data = (radeon_uvd_enc_feedback_t *)enc->ws->buffer_map(
          enc->ws, fb->res->buf, &enc->cs, PIPE_MAP_READ_WRITE | RADEON_MAP_TEMPORARY);
 
-      if (!fb_data->status)
-         *size = fb_data->bitstream_size;
-      else
-         *size = 0;
+      uint32_t status = fb_data->status;
+      uint32_t bitstream_size = fb_data->bitstream_size;
+      if (UTIL_ARCH_BIG_ENDIAN && ((struct si_screen *)enc->screen)->info.gfx_level == GFX8) {
+         status = util_le32_to_cpu(status);
+         bitstream_size = util_le32_to_cpu(bitstream_size);
+      }
+      *size = status ? 0 : bitstream_size;
       enc->ws->buffer_unmap(enc->ws, fb->res->buf);
    }
 

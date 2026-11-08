@@ -413,8 +413,12 @@ lower_load(nir_intrinsic_instr *intrin, struct lower_io_state *state,
             emit_load(state, array_index, var, offset, component,
                       num_comps * 2, 32, nir_type_uint32, high_dvec2);
          for (unsigned i = 0; i < num_comps; i++) {
-            comp64[dest_comp + i] =
-               nir_pack_64_2x32(b, nir_channels(b, data32, 3 << (i * 2)));
+            nir_def *pair = nir_channels(b, data32, 3 << (i * 2));
+            if (b->shader->info.stage == MESA_SHADER_VERTEX &&
+                var->data.mode == nir_var_shader_in &&
+                b->shader->options->io_options & nir_io_64bit_vertex_inputs_high_word_first)
+               pair = nir_vec2(b, nir_channel(b, pair, 1), nir_channel(b, pair, 0));
+            comp64[dest_comp + i] = nir_pack_64_2x32(b, pair);
          }
 
          /* Only the first store has a component offset */

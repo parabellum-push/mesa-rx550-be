@@ -9,6 +9,7 @@
 #include "amdgpu_cs.h"
 #include "util/detect_os.h"
 #include "util/os_time.h"
+#include "util/u_math.h"
 #include <inttypes.h>
 #include <stdio.h>
 
@@ -194,7 +195,7 @@ bool amdgpu_fence_wait(struct pipe_fence_handle *fence, uint64_t timeout,
 
    user_fence_cpu = afence->user_fence_cpu_address;
    if (user_fence_cpu) {
-      if (*user_fence_cpu >= afence->seq_no) {
+      if (util_le64_to_cpu(*user_fence_cpu) >= afence->seq_no) {
          afence->signalled = true;
          return true;
       }
@@ -398,6 +399,8 @@ static int amdgpu_submit_gfx_nop(struct amdgpu_ctx *ctx)
 
    noop_dw_size = ctx->aws->info.ip[AMD_IP_GFX].ib_pad_dw_mask + 1;
    ((uint32_t*)cpu)[0] = PKT3(PKT3_NOP, noop_dw_size - 2, 0);
+   if (UTIL_ARCH_BIG_ENDIAN && ctx->aws->info.gfx_level == GFX8)
+      ((uint32_t*)cpu)[0] = util_cpu_to_le32(((uint32_t*)cpu)[0]);
 
    amdgpu_bo_cpu_unmap(buf_handle);
 
@@ -794,6 +797,20 @@ static void amdgpu_ib_finalize(struct amdgpu_winsys *aws, struct radeon_cmdbuf *
                                struct amdgpu_ib *ib, enum amd_ip_type ip_type)
 {
    amdgpu_set_ib_size(rcs, ib);
+   /* Polaris GFX/compute and UVD ENC, plus Polaris11 VCE, use LE words.
+    * UVD decode and SDMA retain native IBs with hardware swapping enabled.
+    * Convert only after all
+    * chained-IB size words have been patched in CPU order. */
+   if (UTIL_ARCH_BIG_ENDIAN && aws->info.gfx_level == GFX8 &&
+       (ip_type == AMD_IP_GFX || ip_type == AMD_IP_COMPUTE ||
+        ip_type == AMD_IP_UVD_ENC ||
+        (ip_type == AMD_IP_VCE && aws->info.family == CHIP_POLARIS11))) {
+      for (unsigned i = 0; i < rcs->num_prev; i++)
+         for (unsigned j = 0; j < rcs->prev[i].cdw; j++)
+            rcs->prev[i].buf[j] = util_cpu_to_le32(rcs->prev[i].buf[j]);
+      for (unsigned j = 0; j < rcs->current.cdw; j++)
+         rcs->current.buf[j] = util_cpu_to_le32(rcs->current.buf[j]);
+   }
    ib->used_ib_space += rcs->current.cdw * 4;
    ib->used_ib_space = align(ib->used_ib_space, aws->info.ip[ip_type].ib_alignment);
    ib->max_ib_bytes = MAX2(ib->max_ib_bytes, (rcs->prev_dw + rcs->current.cdw) * 4);
@@ -1004,6 +1021,9 @@ amdgpu_cs_setup_preemption(struct radeon_cmdbuf *rcs, const uint32_t *preamble_i
 
    /* Pad the IB. */
    amdgpu_pad_gfx_compute_ib(aws, cs->ip_type, map, &preamble_num_dw, 0);
+   if (UTIL_ARCH_BIG_ENDIAN && aws->info.gfx_level == GFX8)
+      for (unsigned i = 0; i < preamble_num_dw; i++)
+         map[i] = util_cpu_to_le32(map[i]);
    amdgpu_bo_unmap(&aws->dummy_sws.base, preamble_bo);
 
    for (unsigned i = 0; i < 2; i++) {
@@ -1236,6 +1256,9 @@ static void amdgpu_cs_add_syncobj_signal(struct radeon_cmdbuf *rws,
 template<bool QUEUE_USES_ALT_FENCE>
 static void amdgpu_cs_submit_ib(void *job, void *gdata, int thread_index)
 {
+   uint64_t *fence_user_addr = NULL;
+   uint64_t fence_seq_no = 0;
+   bool fence_submitted = false;
    struct amdgpu_cs *acs = (struct amdgpu_cs*)job;
    struct amdgpu_winsys *aws = acs->aws;
    struct amdgpu_cs_context *cs = acs->cst;
@@ -1644,7 +1667,10 @@ static void amdgpu_cs_submit_ib(void *job, void *gdata, int thread_index)
           */
          if (has_user_fence)
             user_fence = acs->ctx->user_fence_cpu_address_base + acs->ip_type * 4;
-         amdgpu_fence_submitted(cs->fence, seq_no, user_fence);
+         /* Signalled below, after num_active_ioctls is dropped. */
+         fence_user_addr = user_fence;
+         fence_seq_no = seq_no;
+         fence_submitted = true;
       }
    }
 
@@ -1707,6 +1733,12 @@ static void amdgpu_cs_submit_ib(void *job, void *gdata, int thread_index)
 
       cs->buffer_lists[list].num_buffers = 0;
    }
+
+   /* A waiter that wakes on this must see the buffers as no longer being submitted:
+    * a non-blocking check after glFinish would otherwise report them busy.
+    */
+   if (fence_submitted)
+      amdgpu_fence_submitted(cs->fence, fence_seq_no, fence_user_addr);
 
    amdgpu_cs_context_cleanup(aws, cs);
 }

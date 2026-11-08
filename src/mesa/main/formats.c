@@ -1455,6 +1455,7 @@ _mesa_format_matches_format_and_type(mesa_format mformat,
       return false;
    }
 
+   swapBytes ^= _mesa_packed_float_needs_swap(type);
    if (swapBytes && !_mesa_swap_bytes_in_type_enum(&type))
       return false;
 

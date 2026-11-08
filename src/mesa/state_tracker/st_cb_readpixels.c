@@ -435,6 +435,8 @@ st_ReadPixels(struct gl_context *ctx, GLint x, GLint y,
    st_validate_state(st, ST_PIPELINE_UPDATE_FB_STATE_MASK);
    st_flush_bitmap_cache(st);
 
+   if (_mesa_packed_float_needs_swap(type))
+      goto fallback;
    if (!st->prefer_blit_based_texture_transfer) {
       goto fallback;
    }

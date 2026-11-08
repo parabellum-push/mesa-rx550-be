@@ -3280,6 +3280,11 @@ void si_get_active_slot_masks(struct si_screen *sscreen, const struct si_shader_
     * and so we can benefit from a better cache hit rate if we keep image
     * descriptors together.
     */
+   /* BE GFX8 single-sample images use their FMASK slots for native-format
+    * reinterpretation metadata, even when no actual MSAA images are used.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && num_images)
+      num_msaa_images = MAX2(num_msaa_images, num_images);
    if (sscreen->info.gfx_level < GFX11 && num_msaa_images)
       num_images = SI_NUM_IMAGES + num_msaa_images; /* add FMASK descriptors */
 

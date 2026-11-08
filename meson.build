@@ -1451,8 +1451,10 @@ endif
 
 with_c11_threads = false
 if cc.has_function('thrd_create', prefix: '#include <threads.h>')
-  if with_platform_android
-    # Current only Android's c11 <threads.h> are verified
+  if with_platform_android or cc.has_header_symbol('stdlib.h', 'once_flag', args : '-D_GNU_SOURCE')
+    # Newer C libraries also expose call_once and once_flag in stdlib.h.
+    # Their declarations conflict with the emulation, so use native C11
+    # threads when those declarations and thrd_create are available.
     pre_args += '-DHAVE_THRD_CREATE'
     with_c11_threads = true
   endif

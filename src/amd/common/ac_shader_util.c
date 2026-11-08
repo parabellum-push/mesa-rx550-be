@@ -520,6 +520,13 @@ const struct ac_data_format_info *ac_get_data_format_info(unsigned dfmt)
    [(int)PIPE_FORMAT_R64G64B64A64_##nfmt] = {DST_SEL(X,Y,Z,W), 32, 4, 8, FMT_64(nfmt)}, \
 
 #define VB_FORMATS \
+   /* Big-endian hosts use this byte order for packed A8B8G8R8 vertex data. */ \
+   [(int)PIPE_FORMAT_A8B8G8R8_UNORM] = {DST_SEL(W,Z,Y,X), 4, 4, 1, FMT(8, UNORM)}, \
+   [(int)PIPE_FORMAT_A8B8G8R8_SNORM] = {DST_SEL(W,Z,Y,X), 4, 4, 1, FMT(8, SNORM)}, \
+   [(int)PIPE_FORMAT_A8B8G8R8_USCALED] = {DST_SEL(W,Z,Y,X), 4, 4, 1, FMT(8, USCALED)}, \
+   [(int)PIPE_FORMAT_A8B8G8R8_SSCALED] = {DST_SEL(W,Z,Y,X), 4, 4, 1, FMT(8, SSCALED)}, \
+   [(int)PIPE_FORMAT_A8B8G8R8_UINT] = {DST_SEL(W,Z,Y,X), 4, 4, 1, FMT(8, UINT)}, \
+   [(int)PIPE_FORMAT_A8B8G8R8_SINT] = {DST_SEL(W,Z,Y,X), 4, 4, 1, FMT(8, SINT)}, \
    [(int)PIPE_FORMAT_NONE] = {DST_SEL(0,0,0,1), 0, 4, 0, 0xf, {DUP4(HW_FMT_INVALID)}}, \
    LIST_NFMT_8_16(UNORM) \
    LIST_NFMT_8_16(SNORM) \

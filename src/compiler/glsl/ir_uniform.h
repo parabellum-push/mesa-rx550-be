@@ -121,6 +121,12 @@ struct gl_uniform_storage {
    unsigned active_shader_mask;
 
    /**
+    * Link time only: stages using this uniform before cross-stage optimisation,
+    * reported by GL_REFERENCED_BY_*. Zero if unknown.
+    */
+   unsigned query_stage_mask;
+
+   /**
     * Storage used by the driver for the uniform
     */
    unsigned num_driver_storage;

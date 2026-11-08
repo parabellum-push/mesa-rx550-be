@@ -12,6 +12,7 @@
 #include "meta/radv_meta.h"
 #include "nir/nir.h"
 #include "nir/nir_builder.h"
+#include "nir/nir_builder.h"
 #include "nir/nir_xfb_info.h"
 #include "nir/radv_nir.h"
 #include "spirv/nir_spirv.h"
@@ -19,6 +20,7 @@
 #include "util/mesa-sha1.h"
 #include "util/streaming-load-memcpy.h"
 #include "util/u_atomic.h"
+#include "util/u_endian.h"
 #include "radv_cs.h"
 #include "radv_debug.h"
 #include "radv_entrypoints.h"
@@ -296,6 +298,245 @@ fix_dual_src_mrt1_export(nir_shader *nir)
       loc1_var->data.index = 1;
    }
 }
+
+static nir_def *radv_nir_native_bswap(nir_builder *b, nir_def *value)
+{
+   if (value->bit_size == 8)
+      return value;
+   if (value->bit_size == 16)
+      return nir_ior(b, nir_ushr_imm(b, value, 8), nir_ishl_imm(b, value, 8));
+   if (value->bit_size == 64) {
+      nir_def *lo = nir_unpack_64_2x32_split_x(b, value);
+      nir_def *hi = nir_unpack_64_2x32_split_y(b, value);
+      return nir_pack_64_2x32_split(b, radv_nir_native_bswap(b, hi), radv_nir_native_bswap(b, lo));
+   }
+   assert(value->bit_size == 32);
+   return nir_ior(b,
+      nir_ior(b, nir_ushr_imm(b, value, 24),
+                 nir_iand_imm(b, nir_ushr_imm(b, value, 8), 0x0000ff00)),
+      nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, value, 8), 0x00ff0000),
+                 nir_ishl_imm(b, value, 24)));
+}
+
+static nir_def *radv_native_atomic_value(nir_builder *b, nir_atomic_op op,
+                                        nir_def *old, nir_def *data)
+{
+   switch (op) {
+   case nir_atomic_op_iadd: return nir_iadd(b, old, data);
+   case nir_atomic_op_imin: return nir_imin(b, old, data);
+   case nir_atomic_op_umin: return nir_umin(b, old, data);
+   case nir_atomic_op_imax: return nir_imax(b, old, data);
+   case nir_atomic_op_umax: return nir_umax(b, old, data);
+   case nir_atomic_op_iand: return nir_iand(b, old, data);
+   case nir_atomic_op_ior: return nir_ior(b, old, data);
+   case nir_atomic_op_ixor: return nir_ixor(b, old, data);
+   case nir_atomic_op_xchg: return data;
+   case nir_atomic_op_fadd: return nir_fadd(b, old, data);
+   case nir_atomic_op_fmin: return nir_fmin(b, old, data);
+   case nir_atomic_op_fmax: return nir_fmax(b, old, data);
+   case nir_atomic_op_inc_wrap:
+      return nir_bcsel(b, nir_uge(b, old, data), nir_imm_intN_t(b, 0, old->bit_size),
+                        nir_iadd_imm(b, old, 1));
+   case nir_atomic_op_dec_wrap:
+      return nir_bcsel(b, nir_ior(b, nir_ieq_imm(b, old, 0), nir_ult(b, data, old)),
+                        data, nir_iadd_imm(b, old, -1));
+   default: unreachable("unexpected native atomic operation");
+   }
+}
+
+static bool radv_lower_native_be_atomic(nir_builder *b, nir_intrinsic_instr *intr)
+{
+   const unsigned bits = intr->def.bit_size;
+   nir_atomic_op op = nir_intrinsic_atomic_op(intr);
+   nir_def *index = intr->src[0].ssa, *offset = intr->src[1].ssa;
+   enum gl_access_qualifier access = nir_intrinsic_access(intr);
+   b->cursor = nir_instr_remove(&intr->instr);
+   nir_def *result;
+   if (intr->intrinsic == nir_intrinsic_ssbo_atomic_swap) {
+      result = nir_ssbo_atomic_swap(b, bits, index, offset,
+                                    radv_nir_native_bswap(b, intr->src[2].ssa),
+                                    radv_nir_native_bswap(b, intr->src[3].ssa),
+                                    .access = access, .atomic_op = nir_atomic_op_cmpxchg);
+   } else {
+      /* Keep the shared buffer in native byte order throughout the operation.
+       * A compare/exchange loop also preserves arithmetic under contention.
+       */
+      nir_def *zero = nir_imm_intN_t(b, 0, bits);
+      nir_def *initial = nir_ssbo_atomic_swap(b, bits, index, offset, zero, zero,
+                                             .access = access, .atomic_op = nir_atomic_op_cmpxchg);
+      nir_variable *raw = nir_local_variable_create(b->impl, glsl_uintN_t_type(bits), "native_atomic");
+      nir_store_var(b, raw, initial, 1);
+      nir_loop *loop = nir_push_loop(b);
+      nir_def *old = nir_load_var(b, raw);
+      nir_def *native_old = radv_nir_native_bswap(b, old);
+      nir_def *native_new = radv_native_atomic_value(b, op, native_old, intr->src[2].ssa);
+      nir_def *observed = nir_ssbo_atomic_swap(b, bits, index, offset, old,
+                                              radv_nir_native_bswap(b, native_new),
+                                              .access = access, .atomic_op = nir_atomic_op_cmpxchg);
+      nir_store_var(b, raw, observed, 1);
+      /* Atomics do nothing in a helper invocation, so its exchange never takes effect and
+       * the comparison could stay false. Its result is undefined, so it can just leave.
+       */
+      nir_def *finished = nir_ieq(b, observed, old);
+      if (b->shader->info.stage == MESA_SHADER_FRAGMENT)
+         finished = nir_ior(b, finished, nir_is_helper_invocation(b, 1));
+      nir_if *done = nir_push_if(b, finished);
+      nir_jump(b, nir_jump_break);
+      nir_pop_if(b, done);
+      nir_pop_loop(b, loop);
+      result = nir_load_var(b, raw);
+   }
+   result = radv_nir_native_bswap(b, result);
+   nir_def_rewrite_uses(&intr->def, result);
+   return true;
+}
+
+/* Buffer device address accesses become global intrinsics later than the
+ * descriptor-based buffers, and hold the same host-order application data.
+ */
+static bool radv_lower_native_be_global(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_global: {
+      if (intr->def.bit_size <= 8)
+         return false;
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *value = radv_nir_native_bswap(b, &intr->def);
+      nir_def_rewrite_uses_after(&intr->def, value, value->parent_instr);
+      return true;
+   }
+   case nir_intrinsic_store_global:
+      if (intr->src[0].ssa->bit_size <= 8)
+         return false;
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_src_rewrite(&intr->src[0], radv_nir_native_bswap(b, intr->src[0].ssa));
+      return true;
+   case nir_intrinsic_global_atomic:
+   case nir_intrinsic_global_atomic_swap: {
+      const unsigned bits = intr->def.bit_size;
+      nir_atomic_op op = nir_intrinsic_atomic_op(intr);
+      nir_def *addr = intr->src[0].ssa;
+      b->cursor = nir_instr_remove(&intr->instr);
+      nir_def *result;
+      if (intr->intrinsic == nir_intrinsic_global_atomic_swap) {
+         result = nir_global_atomic_swap(b, bits, addr, radv_nir_native_bswap(b, intr->src[1].ssa),
+                                         radv_nir_native_bswap(b, intr->src[2].ssa),
+                                         .atomic_op = nir_atomic_op_cmpxchg);
+      } else {
+         nir_def *zero = nir_imm_intN_t(b, 0, bits);
+         nir_def *initial = nir_global_atomic_swap(b, bits, addr, zero, zero, .atomic_op = nir_atomic_op_cmpxchg);
+         nir_variable *raw = nir_local_variable_create(b->impl, glsl_uintN_t_type(bits), "native_atomic");
+         nir_store_var(b, raw, initial, 1);
+         nir_loop *loop = nir_push_loop(b);
+         nir_def *old = nir_load_var(b, raw);
+         nir_def *native_new = radv_native_atomic_value(b, op, radv_nir_native_bswap(b, old), intr->src[1].ssa);
+         nir_def *observed = nir_global_atomic_swap(b, bits, addr, old, radv_nir_native_bswap(b, native_new),
+                                                    .atomic_op = nir_atomic_op_cmpxchg);
+         nir_store_var(b, raw, observed, 1);
+         /* Atomics do nothing in a helper invocation, so its exchange never takes effect and
+          * the comparison could stay false. Its result is undefined, so it can just leave.
+          */
+         nir_def *finished = nir_ieq(b, observed, old);
+         if (b->shader->info.stage == MESA_SHADER_FRAGMENT)
+            finished = nir_ior(b, finished, nir_is_helper_invocation(b, 1));
+         nir_if *done = nir_push_if(b, finished);
+         nir_jump(b, nir_jump_break);
+         nir_pop_if(b, done);
+         nir_pop_loop(b, loop);
+         result = nir_load_var(b, raw);
+      }
+      nir_def_rewrite_uses(&intr->def, radv_nir_native_bswap(b, result));
+      return true;
+   }
+   default:
+      return false;
+   }
+}
+
+/* The constant data section is built from host-order elements and reaches the
+ * GPU converted per dword, like the shader code it is appended to. 32-bit values
+ * are right. Others keep the host's layout within and across those dwords.
+ */
+static bool radv_lower_native_be_constant(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_constant || intr->def.bit_size == 32)
+      return false;
+
+   const unsigned bits = intr->def.bit_size;
+   const unsigned base = nir_intrinsic_base(intr), range = nir_intrinsic_range(intr);
+   nir_def *comps[NIR_MAX_VEC_COMPONENTS];
+   b->cursor = nir_before_instr(&intr->instr);
+   for (unsigned i = 0; i < intr->def.num_components; ++i) {
+      nir_def *offset = nir_iadd_imm(b, intr->src[0].ssa, i * bits / 8);
+      if (bits == 64) {
+         nir_def *high = nir_load_constant(b, 1, 32, offset, .base = base, .range = range);
+         nir_def *low = nir_load_constant(b, 1, 32, nir_iadd_imm(b, offset, 4), .base = base, .range = range);
+         comps[i] = nir_pack_64_2x32_split(b, low, high);
+      } else {
+         /* Base and offset are dword aligned together only as a sum. */
+         nir_def *address = nir_iadd_imm(b, offset, base);
+         comps[i] = nir_load_constant(b, 1, bits, nir_ixor(b, address, nir_imm_int(b, bits == 16 ? 2 : 3)), .base = 0,
+                                      .range = base + range);
+      }
+   }
+   nir_def_rewrite_uses(&intr->def, nir_vec(b, comps, intr->def.num_components));
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+static bool radv_lower_native_be_buffers(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+      return radv_lower_native_be_atomic(b, intr);
+   case nir_intrinsic_load_push_constant: {
+      /* Push constants reach the shader as numeric native words, so 32-bit
+       * values are already correct. Wider and narrower values still follow
+       * the host's layout within and across those words.
+       */
+      const unsigned bits = intr->def.bit_size;
+      if (bits == 32)
+         return false;
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *comps[NIR_MAX_VEC_COMPONENTS];
+      nir_def *base = nir_iadd_imm(b, intr->src[0].ssa, nir_intrinsic_base(intr));
+      const unsigned range = nir_intrinsic_range(intr);
+      for (unsigned i = 0; i < intr->def.num_components; ++i) {
+         nir_def *offset = nir_iadd_imm(b, base, i * bits / 8);
+         if (bits == 64) {
+            nir_def *high = nir_load_push_constant(b, 1, 32, offset, .base = 0, .range = range);
+            nir_def *low = nir_load_push_constant(b, 1, 32, nir_iadd_imm(b, offset, 4), .base = 0, .range = range);
+            comps[i] = nir_pack_64_2x32_split(b, low, high);
+         } else {
+            comps[i] = nir_load_push_constant(b, 1, bits, nir_ixor(b, offset, nir_imm_int(b, bits == 16 ? 2 : 3)), .base = 0,
+                                              .range = range);
+         }
+      }
+      nir_def_rewrite_uses(&intr->def, nir_vec(b, comps, intr->def.num_components));
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_ssbo: {
+      if (intr->def.bit_size <= 8)
+         return false;
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *value = radv_nir_native_bswap(b, &intr->def);
+      nir_def_rewrite_uses_after(&intr->def, value, value->parent_instr);
+      return true;
+   }
+   case nir_intrinsic_store_ssbo:
+      if (intr->src[0].ssa->bit_size <= 8)
+         return false;
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_src_rewrite(&intr->src[0], radv_nir_native_bswap(b, intr->src[0].ssa));
+      return true;
+   default:
+      return false;
+   }
+}
+
 
 nir_shader *
 radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_shader_stage *stage,
@@ -653,6 +894,14 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_shader_st
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_vec2_index_32bit_offset);
 
+   /* Application typed buffers have the host representation. Internal shaders
+    * retain the driver's LE data ABI; GPU-generated constant data is lowered
+    * after this pass and also retains its internal representation.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && !nir->info.internal)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, radv_lower_native_be_buffers,
+               nir_metadata_none, NULL);
+
    NIR_PASS(_, nir, radv_nir_lower_intrinsics_early, options && options->lower_view_index_to_zero);
 
    /* Lower deref operations for compute shared memory. */
@@ -677,12 +926,16 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_shader_st
    }
 
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global | nir_var_mem_constant, nir_address_format_64bit_global);
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && !nir->info.internal)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, radv_lower_native_be_global, nir_metadata_none, NULL);
 
    /* Lower large variables that are always constant with load_constant
     * intrinsics, which get turned into PC-relative loads from a data
     * section next to the shader.
     */
    NIR_PASS(_, nir, nir_opt_large_constants, glsl_get_natural_size_align_bytes, 16);
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, radv_lower_native_be_constant, nir_metadata_block_index | nir_metadata_dominance, NULL);
 
    /* Lower primitive shading rate to match HW requirements. */
    if ((nir->info.stage == MESA_SHADER_VERTEX || nir->info.stage == MESA_SHADER_GEOMETRY ||
@@ -2370,6 +2623,22 @@ radv_dump_nir_shaders(struct nir_shader *const *shaders, int shader_count)
    return ret;
 }
 
+/* ACO produces numeric CPU words; uploaded instruction memory is little endian.
+ * Store code in its GPU representation so uploads, caches and reuploads agree.
+ */
+static void
+radv_copy_aco_code(void *dest, const uint32_t *code, uint32_t count)
+{
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      for (uint32_t i = 0; i < count; ++i) {
+         uint32_t word = util_cpu_to_le32(code[i]);
+         memcpy((uint8_t *)dest + i * sizeof(word), &word, sizeof(word));
+      }
+   } else {
+      memcpy(dest, code, count * sizeof(uint32_t));
+   }
+}
+
 static void
 radv_aco_build_shader_binary(void **bin, const struct ac_shader_config *config, const char *llvm_ir_str,
                              unsigned llvm_ir_size, const char *disasm_str, unsigned disasm_size, uint32_t *statistics,
@@ -2397,7 +2666,7 @@ radv_aco_build_shader_binary(void **bin, const struct ac_shader_config *config, 
       memcpy(legacy_binary->data, statistics, stats_size);
    legacy_binary->stats_size = stats_size;
 
-   memcpy(legacy_binary->data + legacy_binary->stats_size, code, code_dw * sizeof(uint32_t));
+   radv_copy_aco_code(legacy_binary->data + legacy_binary->stats_size, code, code_dw);
    legacy_binary->exec_size = exec_size;
    legacy_binary->code_size = code_dw * sizeof(uint32_t);
 
@@ -2600,7 +2869,7 @@ radv_aco_build_shader_part(void **bin, uint32_t num_sgprs, uint32_t num_vgprs, c
    part_binary->num_vgprs = num_vgprs;
    part_binary->total_size = size;
    part_binary->code_size = code_size * sizeof(uint32_t);
-   memcpy(part_binary->data, code, part_binary->code_size);
+   radv_copy_aco_code(part_binary->data, code, code_size);
    if (disasm_size) {
       memcpy((char *)part_binary->data + part_binary->code_size, disasm_str, disasm_size);
       part_binary->disasm_size = disasm_size;

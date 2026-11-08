@@ -31,6 +31,14 @@
 #include "texcompress.h"
 #include "enums.h"
 
+bool
+_mesa_packed_float_needs_swap(GLenum type)
+{
+   return UTIL_ARCH_BIG_ENDIAN &&
+          (type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
+           type == GL_UNSIGNED_INT_5_9_9_9_REV);
+}
+
 enum {
    ZERO = 4,
    ONE = 5

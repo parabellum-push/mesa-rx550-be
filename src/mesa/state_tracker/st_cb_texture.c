@@ -2614,6 +2614,17 @@ st_GetTexSubImage(struct gl_context * ctx,
           texImage->TexFormat != MESA_FORMAT_ETC1_RGB8);
 
    st_flush_bitmap_cache(st);
+   /* Accelerated pack paths don't represent native big-endian packed-float
+    * words. The CPU converter also handles PBO destinations and swapping.
+    */
+   if (_mesa_packed_float_needs_swap(type))
+      goto cpu_transfer;
+   /* The decompressing blit writes multi-byte destinations in GPU byte order. Bytes are
+    * fine, and stay on the blit so they match what sampling the texture returns.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && _mesa_is_format_compressed(texImage->TexFormat) &&
+       type != GL_UNSIGNED_BYTE && type != GL_BYTE)
+      goto cpu_transfer;
    if (st->force_compute_based_texture_transfer)
       goto non_blit_transfer;
 

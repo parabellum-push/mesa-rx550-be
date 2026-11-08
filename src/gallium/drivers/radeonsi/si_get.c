@@ -156,7 +156,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SHADER_ATOMIC_INT64:
    case PIPE_CAP_FRONTEND_NOOP:
    case PIPE_CAP_DEMOTE_TO_HELPER_INVOCATION:
-   case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
    case PIPE_CAP_COMPUTE_SHADER_DERIVATIVES:
    case PIPE_CAP_IMAGE_ATOMIC_INC_WRAP:
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
@@ -171,8 +170,16 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CL_GL_SHARING:
       return 1;
 
+   case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
+      /* The user-buffer path performs the required native-to-LE upload.
+       * State-tracker direct uploads otherwise bypass that conversion.
+       */
+      return !(UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8);
+
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:
-      return PIPE_TEXTURE_TRANSFER_BLIT;
+      /* CPU transfers preserve native packed-word semantics on BE. */
+      return UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 ?
+                PIPE_TEXTURE_TRANSFER_DEFAULT : PIPE_TEXTURE_TRANSFER_BLIT;
 
    case PIPE_CAP_DRAW_VERTEX_STATE:
       return !(sscreen->debug_flags & DBG(NO_FAST_DISPLAY_LIST));
@@ -1577,6 +1584,8 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
    options->io_options = nir_io_has_flexible_input_interpolation_except_flat |
                          nir_io_glsl_lower_derefs |
                          (sscreen->options.optimize_io ? nir_io_glsl_opt_varyings : 0);
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8)
+      options->io_options |= nir_io_64bit_vertex_inputs_high_word_first;
    options->lower_mediump_io = sscreen->info.gfx_level >= GFX8 && sscreen->options.fp16 ?
                                   si_lower_mediump_io : NULL;
    /* HW supports indirect indexing for: | Enabled in driver

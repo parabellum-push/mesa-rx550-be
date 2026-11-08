@@ -134,10 +134,16 @@ void vlVaHandleSliceParameterBufferMJPEG(vlVaContext *context, vlVaBuffer *buf)
    context->desc.mjpeg.slice_parameter.num_mcus = mjpeg->num_mcus;
 }
 
+/* JPEG marker fields are big endian and need not be naturally aligned. */
+static void vlVaJpegWriteBE16(uint8_t *p, unsigned value)
+{
+   p[0] = value >> 8;
+   p[1] = value;
+}
+
 void vlVaGetJpegSliceHeader(vlVaContext *context)
 {
    int size = 0, saved_size, len_pos, i;
-   uint16_t *bs;
    uint8_t *p = context->mjpeg.slice_header;
 
    /* SOI */
@@ -160,8 +166,7 @@ void vlVaGetJpegSliceHeader(vlVaContext *context)
       size += 64;
    }
 
-   bs = (uint16_t*)&p[len_pos];
-   *bs = util_bswap16(size - 4);
+   vlVaJpegWriteBE16(&p[len_pos], size - 4);
 
    saved_size = size;
 
@@ -204,8 +209,7 @@ void vlVaGetJpegSliceHeader(vlVaContext *context)
       size += num;
    }
 
-   bs = (uint16_t*)&p[len_pos];
-   *bs = util_bswap16(size - saved_size - 2);
+   vlVaJpegWriteBE16(&p[len_pos], size - saved_size - 2);
 
    saved_size = size;
 
@@ -215,9 +219,9 @@ void vlVaGetJpegSliceHeader(vlVaContext *context)
       p[size++] = 0xdd;
       p[size++] = 0x00;
       p[size++] = 0x04;
-      bs = (uint16_t*)&p[size++];
-      *bs = util_bswap16(context->desc.mjpeg.slice_parameter.restart_interval);
-      saved_size = ++size;
+      vlVaJpegWriteBE16(&p[size], context->desc.mjpeg.slice_parameter.restart_interval);
+      size += 2;
+      saved_size = size;
    }
 
    /* SOF */
@@ -229,13 +233,11 @@ void vlVaGetJpegSliceHeader(vlVaContext *context)
 
    p[size++] = 0x08;
 
-   bs = (uint16_t*)&p[size++];
-   *bs = util_bswap16(context->desc.mjpeg.picture_parameter.picture_height);
-   size++;
+   vlVaJpegWriteBE16(&p[size], context->desc.mjpeg.picture_parameter.picture_height);
+   size += 2;
 
-   bs = (uint16_t*)&p[size++];
-   *bs = util_bswap16(context->desc.mjpeg.picture_parameter.picture_width);
-   size++;
+   vlVaJpegWriteBE16(&p[size], context->desc.mjpeg.picture_parameter.picture_width);
+   size += 2;
 
    p[size++] = context->desc.mjpeg.picture_parameter.num_components;
 
@@ -246,8 +248,7 @@ void vlVaGetJpegSliceHeader(vlVaContext *context)
       p[size++] = context->desc.mjpeg.picture_parameter.components[i].quantiser_table_selector;
    }
 
-   bs = (uint16_t*)&p[len_pos];
-   *bs = util_bswap16(size - saved_size - 2);
+   vlVaJpegWriteBE16(&p[len_pos], size - saved_size - 2);
 
    saved_size = size;
 
@@ -270,8 +271,7 @@ void vlVaGetJpegSliceHeader(vlVaContext *context)
    p[size++] = 0x3f;
    p[size++] = 0x00;
 
-   bs = (uint16_t*)&p[len_pos];
-   *bs = util_bswap16(size - saved_size - 2);
+   vlVaJpegWriteBE16(&p[len_pos], size - saved_size - 2);
 
    context->mjpeg.slice_header_size = size;
 }

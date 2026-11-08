@@ -1685,8 +1685,16 @@ tc_set_constant_buffer(struct pipe_context *_pipe,
        * set_constant_buffer to the driver if it was done afterwards.
        */
       buffer = NULL;
-      u_upload_data(tc->base.const_uploader, 0, cb->buffer_size,
-                    tc->ubo_alignment, cb->user_buffer, &offset, &buffer);
+      if (tc->options.const_buffer_le) {
+         void *map;
+         u_upload_alloc(tc->base.const_uploader, 0, cb->buffer_size,
+                        tc->ubo_alignment, &offset, &buffer, &map);
+         if (buffer)
+            util_memcpy_cpu_to_le32(map, cb->user_buffer, cb->buffer_size);
+      } else {
+         u_upload_data(tc->base.const_uploader, 0, cb->buffer_size,
+                       tc->ubo_alignment, cb->user_buffer, &offset, &buffer);
+      }
       u_upload_unmap(tc->base.const_uploader);
       take_ownership = true;
    } else {

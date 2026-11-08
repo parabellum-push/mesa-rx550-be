@@ -12,6 +12,7 @@
 #include "radeon_video.h"
 #include "radeonsi/si_pipe.h"
 #include "util/u_memory.h"
+#include "util/u_math.h"
 #include "util/u_video.h"
 #include "vl/vl_video_buffer.h"
 
@@ -332,11 +333,14 @@ static void rvce_get_feedback(struct pipe_video_codec *encoder, void *feedback, 
       uint32_t *ptr = enc->ws->buffer_map(enc->ws, fb->res->buf, &enc->cs,
                                           PIPE_MAP_READ_WRITE | RADEON_MAP_TEMPORARY);
 
-      if (ptr[1]) {
-         *size = ptr[4] - ptr[9];
-      } else {
-         *size = 0;
+      uint32_t has_bitstream = ptr[1];
+      uint32_t end = ptr[4], start = ptr[9];
+      if (UTIL_ARCH_BIG_ENDIAN && ((struct si_screen *)enc->screen)->info.family == CHIP_POLARIS11) {
+         has_bitstream = util_le32_to_cpu(has_bitstream);
+         end = util_le32_to_cpu(end);
+         start = util_le32_to_cpu(start);
       }
+      *size = has_bitstream ? end - start : 0;
 
       enc->ws->buffer_unmap(enc->ws, fb->res->buf);
    }

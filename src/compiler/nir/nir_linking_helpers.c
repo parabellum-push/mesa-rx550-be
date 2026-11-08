@@ -1170,14 +1170,14 @@ nir_clone_deref_instr(nir_builder *b, nir_variable *var,
     */
    switch (deref->deref_type) {
    case nir_deref_type_array: {
-      nir_load_const_instr *index =
-         nir_instr_as_load_const(deref->arr.index.ssa->parent_instr);
-      return nir_build_deref_array_imm(b, parent, index->value->i64);
+      /* nir_src_as_int honours the bit size: value->i64 on a 32-bit constant
+       * reads the wrong half of the union on big endian, so every index was 0.
+       */
+      return nir_build_deref_array_imm(b, parent,
+                                       nir_src_as_int(deref->arr.index));
    }
    case nir_deref_type_ptr_as_array: {
-      nir_load_const_instr *index =
-         nir_instr_as_load_const(deref->arr.index.ssa->parent_instr);
-      nir_def *ssa = nir_imm_intN_t(b, index->value->i64,
+      nir_def *ssa = nir_imm_intN_t(b, nir_src_as_int(deref->arr.index),
                                     parent->def.bit_size);
       return nir_build_deref_ptr_as_array(b, parent, ssa);
    }

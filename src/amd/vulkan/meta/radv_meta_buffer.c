@@ -1,7 +1,9 @@
 #include "nir/nir_builder.h"
+#include "util/u_endian.h"
 #include "radv_cp_dma.h"
 #include "radv_debug.h"
 #include "radv_meta.h"
+#include "radv_meta_native_indices.h"
 #include "radv_sdma.h"
 
 #include "radv_cs.h"
@@ -45,24 +47,61 @@ build_buffer_copy_shader(struct radv_device *dev)
       nir_iadd(&b, nir_imul_imm(&b, nir_channel(&b, nir_load_workgroup_id(&b), 0), b.shader->info.workgroup_size[0]),
                nir_load_local_invocation_index(&b));
 
-   nir_def *offset = nir_u2u64(&b, nir_imin(&b, nir_imul_imm(&b, global_id, 16), max_offset));
+   const bool native_indices = UTIL_ARCH_BIG_ENDIAN && radv_device_physical(dev)->info.gfx_level == GFX8;
+   nir_if *indices = NULL;
+   if (native_indices) {
+      nir_def *width = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 20, .range = 4);
+      indices = nir_push_if(&b, nir_ine_imm(&b, width, 0));
+      /* In this mode, max_offset holds the exact index count. */
+      nir_if *valid = nir_push_if(&b, nir_ult(&b, global_id, max_offset));
+      nir_def *offset = nir_u2u64(&b, nir_imul(&b, global_id, width));
+      nir_def *src = nir_iadd(&b, src_addr, offset);
+      nir_def *dst = nir_iadd(&b, dst_addr, offset);
+      nir_if *narrow = nir_push_if(&b, nir_ieq_imm(&b, width, 2));
+      nir_def *v16 = nir_build_load_global(&b, 1, 16, src, .align_mul = 2);
+      v16 = nir_ior(&b, nir_ushr_imm(&b, v16, 8), nir_ishl_imm(&b, v16, 8));
+      nir_build_store_global(&b, v16, dst, .align_mul = 2);
+      nir_push_else(&b, narrow);
+      nir_def *v32 = nir_build_load_global(&b, 1, 32, src, .align_mul = 4);
+      v32 = nir_ior(&b,
+         nir_ior(&b, nir_ushr_imm(&b, v32, 24), nir_iand_imm(&b, nir_ushr_imm(&b, v32, 8), 0xff00)),
+         nir_ior(&b, nir_iand_imm(&b, nir_ishl_imm(&b, v32, 8), 0xff0000), nir_ishl_imm(&b, v32, 24)));
+      nir_build_store_global(&b, v32, dst, .align_mul = 4);
+      /* 64-bit elements also exchange their two words. */
+      nir_if *wide = nir_push_if(&b, nir_ieq_imm(&b, width, 8));
+      nir_def *hi = nir_build_load_global(&b, 1, 32, nir_iadd_imm(&b, src, 4), .align_mul = 4);
+      hi = nir_ior(&b,
+         nir_ior(&b, nir_ushr_imm(&b, hi, 24), nir_iand_imm(&b, nir_ushr_imm(&b, hi, 8), 0xff00)),
+         nir_ior(&b, nir_iand_imm(&b, nir_ishl_imm(&b, hi, 8), 0xff0000), nir_ishl_imm(&b, hi, 24)));
+      nir_build_store_global(&b, hi, dst, .align_mul = 4);
+      nir_build_store_global(&b, v32, nir_iadd_imm(&b, dst, 4), .align_mul = 4);
+      nir_pop_if(&b, wide);
+      nir_pop_if(&b, narrow);
+      nir_pop_if(&b, valid);
+      nir_push_else(&b, indices);
+   }
 
+   nir_def *offset = nir_u2u64(&b, nir_imin(&b, nir_imul_imm(&b, global_id, 16), max_offset));
    nir_def *data = nir_build_load_global(&b, 4, 32, nir_iadd(&b, src_addr, offset), .align_mul = 4);
    nir_build_store_global(&b, data, nir_iadd(&b, dst_addr, offset), .align_mul = 4);
+   if (native_indices)
+      nir_pop_if(&b, indices);
 
    return b.shader;
 }
 
 struct fill_constants {
-   uint64_t addr;
+   uint32_t addr[2];
    uint32_t max_offset;
    uint32_t data;
 };
 
 struct copy_constants {
-   uint64_t src_addr;
-   uint64_t dst_addr;
+   /* Numeric low/high dwords match the internal shader ABI on either host. */
+   uint32_t src_addr[2];
+   uint32_t dst_addr[2];
    uint32_t max_offset;
+   uint32_t native_index_width;
 };
 
 VkResult
@@ -170,7 +209,7 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint64_t siz
    assert(size >= 16 && size <= UINT32_MAX);
 
    struct fill_constants fill_consts = {
-      .addr = va,
+      .addr = {va, va >> 32},
       .max_offset = size - 16,
       .data = data,
    };
@@ -197,8 +236,8 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t
    assert(size >= 16 && size <= UINT32_MAX);
 
    struct copy_constants copy_consts = {
-      .src_addr = src_va,
-      .dst_addr = dst_va,
+      .src_addr = {src_va, src_va >> 32},
+      .dst_addr = {dst_va, dst_va >> 32},
       .max_offset = size - 16,
    };
 
@@ -208,6 +247,64 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t
    radv_unaligned_dispatch(cmd_buffer, DIV_ROUND_UP(size, 16), 1, 1);
 
    radv_meta_restore(&saved_state, cmd_buffer);
+}
+
+void
+radv_meta_swap_native_elements(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t dst_va, uint32_t count,
+                               unsigned width)
+{
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   assert(width == 2 || width == 4 || width == 8);
+   assert(count > 0);
+
+   struct radv_meta_saved_state saved;
+   radv_meta_save(&saved, cmd_buffer, RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS |
+                                       RADV_META_SUSPEND_PREDICATING);
+   radv_cp_dma_wait_for_idle(cmd_buffer);
+   /* Extend the application's index-read dependency to this shader read. */
+   cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_PS_PARTIAL_FLUSH |
+                                   RADV_CMD_FLAG_INV_VCACHE | RADV_CMD_FLAG_INV_SCACHE | RADV_CMD_FLAG_INV_L2;
+   radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
+                        device->meta_state.buffer.copy_pipeline);
+   /* Explicit numeric dwords avoid the host's uint64 struct member order. */
+   uint32_t constants[6] = {src_va, src_va >> 32, dst_va, dst_va >> 32, count, width};
+   vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.copy_p_layout,
+                              VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants);
+   radv_unaligned_dispatch(cmd_buffer, count, 1, 1);
+   /* GFX8's index fetch is a non-L2 client. Publish the generated index bytes
+    * before graphics state emission and the indexed draw packet.
+    */
+   cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_WB_L2 |
+                                   RADV_CMD_FLAG_INV_VCACHE;
+   radv_meta_restore(&saved, cmd_buffer);
+}
+
+bool
+radv_meta_alloc_native_scratch(struct radv_cmd_buffer *cmd_buffer, uint64_t size, struct radeon_winsys_bo **bo,
+                               unsigned *offset)
+{
+   if (size > UINT32_MAX - 3) {
+      vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return false;
+   }
+   void *mapped;
+   if (!radv_cmd_buffer_upload_alloc(cmd_buffer, align(size, 4), offset, &mapped))
+      return false;
+   *bo = cmd_buffer->upload.upload_bo;
+   return true;
+}
+
+bool
+radv_meta_convert_native_indices(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va,
+                                 uint32_t count, unsigned width, uint64_t *dst_va)
+{
+   struct radeon_winsys_bo *bo;
+   unsigned offset;
+   if (!radv_meta_alloc_native_scratch(cmd_buffer, (uint64_t)count * width, &bo, &offset))
+      return false;
+   *dst_va = radv_buffer_get_va(bo) + offset;
+   radv_meta_swap_native_elements(cmd_buffer, src_va, *dst_va, count, width);
+   return true;
 }
 
 static bool
@@ -286,6 +383,10 @@ radv_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSi
    VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
 
+   /* Vulkan specifies this word's byte pattern in host order. */
+   if (UTIL_ARCH_BIG_ENDIAN)
+      data = util_bswap32(data);
+
    fillSize = vk_buffer_range(&dst_buffer->vk, dstOffset, fillSize) & ~3ull;
 
    radv_fill_buffer(cmd_buffer, NULL, dst_buffer->bo,
@@ -323,8 +424,9 @@ radv_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *pCop
    }
 }
 
-void
-radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const void *data, uint64_t size)
+static void
+radv_update_buffer_cp_internal(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const void *data,
+                               uint64_t size, bool raw_bytes)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    uint64_t words = size / 4;
@@ -340,10 +442,25 @@ radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const voi
                S_370_DST_SEL(mec ? V_370_MEM : V_370_MEM_GRBM) | S_370_WR_CONFIRM(1) | S_370_ENGINE_SEL(V_370_ME));
    radeon_emit(cmd_buffer->cs, va);
    radeon_emit(cmd_buffer->cs, va >> 32);
-   radeon_emit_array(cmd_buffer->cs, data, words);
+   if (raw_bytes && UTIL_ARCH_BIG_ENDIAN) {
+      /* Preserve opaque application bytes through command serialization. */
+      for (uint64_t i = 0; i < words; ++i) {
+         uint32_t value;
+         memcpy(&value, (const uint8_t *)data + i * 4, sizeof(value));
+         radeon_emit(cmd_buffer->cs, util_le32_to_cpu(value));
+      }
+   } else {
+      radeon_emit_array(cmd_buffer->cs, data, words);
+   }
 
    if (radv_device_fault_detection_enabled(device))
       radv_cmd_buffer_trace_emit(cmd_buffer);
+}
+
+void
+radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const void *data, uint64_t size)
+{
+   radv_update_buffer_cp_internal(cmd_buffer, va, data, size, false);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -364,7 +481,7 @@ radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDevice
 
    if (dataSize < RADV_BUFFER_UPDATE_THRESHOLD && cmd_buffer->qf != RADV_QUEUE_TRANSFER) {
       radv_cs_add_buffer(device->ws, cmd_buffer->cs, dst_buffer->bo);
-      radv_update_buffer_cp(cmd_buffer, va, pData, dataSize);
+      radv_update_buffer_cp_internal(cmd_buffer, va, pData, dataSize, true);
    } else {
       uint32_t buf_offset;
       radv_cmd_buffer_upload_data(cmd_buffer, dataSize, pData, &buf_offset);

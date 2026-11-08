@@ -835,7 +835,9 @@ wsi_GetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice physicalDevice,
                                      queueFamilyIndex, pSupported);
    if (res == VK_SUCCESS) {
       bool blit = (wsi_device->queue_supports_blit & BITFIELD64_BIT(queueFamilyIndex)) != 0;
-      *pSupported = (bool)*pSupported && blit;
+      /* A headless surface never blits to present, so any queue family can do it. */
+      *pSupported = (bool)*pSupported &&
+                    (blit || surface->platform == VK_ICD_WSI_PLATFORM_HEADLESS);
    }
 
    return res;

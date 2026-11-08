@@ -1279,6 +1279,7 @@ enum pipe_format
 st_choose_matching_format_noverify(struct st_context *st,
                                    GLenum format, GLenum type, GLboolean swapBytes)
 {
+   swapBytes ^= _mesa_packed_float_needs_swap(type);
    if (swapBytes && !_mesa_swap_bytes_in_type_enum(&type))
       return PIPE_FORMAT_NONE;
 

@@ -39,6 +39,22 @@
 
 #include "va_private.h"
 
+/* VA's P010/P016 sample bytes are little endian even on a BE host. */
+static void
+vlVaCopy16LittleEndian(uint8_t *dst, unsigned dst_stride,
+                     const uint8_t *src, unsigned src_stride,
+                     unsigned row_bytes, unsigned height)
+{
+   for (unsigned y = 0; y < height; y++) {
+      for (unsigned x = 0; x < row_bytes; x += 2) {
+         dst[x] = src[x + 1];
+         dst[x + 1] = src[x];
+      }
+      dst += dst_stride;
+      src += src_stride;
+   }
+}
+
 static const VAImageFormat formats[] =
 {
    {VA_FOURCC('N','V','1','2')},
@@ -437,6 +453,11 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
    img_buf->num_elements = 1;
 
    pipe_resource_reference(&img_buf->derived_surface.resource, buf_resources[0]);
+   img_buf->derived_surface.image = img;
+   img_buf->derived_surface.surface = surface;
+   img_buf->derived_surface.fixed_le_shadow = UTIL_ARCH_BIG_ENDIAN &&
+      (surf->buffer->buffer_format == PIPE_FORMAT_P010 ||
+       surf->buffer->buffer_format == PIPE_FORMAT_P016);
    img_buf->derived_image_buffer = new_buffer;
 
    if (surf->ctx)
@@ -616,6 +637,13 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
             u_copy_nv12_to_yv12((void *const *)data, pitches, i, j,
                transfer->stride, view_resources[i]->array_size,
                map, box.width, box.height);
+         } else if (UTIL_ARCH_BIG_ENDIAN &&
+                    (format == PIPE_FORMAT_P010 || format == PIPE_FORMAT_P016)) {
+            vlVaCopy16LittleEndian(data[i] + pitches[i] * j,
+                                  pitches[i] * view_resources[i]->array_size,
+                                  map, transfer->stride,
+                                  box.width * util_format_get_blocksize(view_resources[i]->format),
+                                  box.height);
          } else {
             util_copy_rect((uint8_t*)(data[i] + pitches[i] * j),
                view_resources[i]->format,
@@ -668,8 +696,8 @@ vlVaPutImage(VADriverContextP ctx, VASurfaceID surface, VAImageID image,
       return VA_STATUS_ERROR_INVALID_BUFFER;
    }
 
-   if (img_buf->derived_surface.resource) {
-      /* Attempting to transfer derived image to surface */
+   if (img_buf->derived_surface.resource && !img_buf->derived_surface.fixed_le_shadow) {
+      /* Attempting to transfer a directly mapped derived image to surface */
       mtx_unlock(&drv->mutex);
       return VA_STATUS_ERROR_UNIMPLEMENTED;
    }
@@ -752,6 +780,20 @@ vlVaPutImage(VADriverContextP ctx, VASurfaceID surface, VAImageID image,
             u_copy_nv12_from_yv12((const void * const*) data, pitches, i, j,
                                   transfer->stride, tex->array_size,
                                   map, dst_box.width, dst_box.height);
+            pipe_texture_unmap(drv->pipe, transfer);
+         } else if (UTIL_ARCH_BIG_ENDIAN &&
+                    (format == PIPE_FORMAT_P010 || format == PIPE_FORMAT_P016)) {
+            struct pipe_transfer *transfer;
+            uint8_t *map = drv->pipe->texture_map(drv->pipe, tex, 0,
+                              PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE, &dst_box, &transfer);
+            if (!map) {
+               mtx_unlock(&drv->mutex);
+               return VA_STATUS_ERROR_OPERATION_FAILED;
+            }
+            vlVaCopy16LittleEndian(map, transfer->stride,
+                                  data[i] + pitches[i] * j, pitches[i] * tex->array_size,
+                                  dst_box.width * util_format_get_blocksize(tex->format),
+                                  dst_box.height);
             pipe_texture_unmap(drv->pipe, transfer);
          } else {
             drv->pipe->texture_subdata(drv->pipe, tex, 0,

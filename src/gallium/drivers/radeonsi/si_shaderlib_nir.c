@@ -14,6 +14,7 @@
 
 static void *create_shader_state(struct si_context *sctx, nir_shader *nir)
 {
+   nir->info.internal = true;
    sctx->b.screen->finalize_nir(sctx->b.screen, (void*)nir);
    return pipe_shader_from_nir(&sctx->b, nir);
 }
@@ -948,6 +949,20 @@ void *si_get_blitter_vs(struct si_context *sctx, enum blitter_attrib_type type, 
  *  1.z = pair_count
  *
  */
+/* The destination is an application-visible query buffer: its CPU view of a
+ * result is host order, while shaders store little-endian dwords.
+ */
+static nir_def *query_result_to_api(nir_builder *b, struct si_context *sctx, nir_def *v)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || sctx->gfx_level != GFX8)
+      return v;
+   return nir_ior(b,
+                  nir_ior(b, nir_ushr_imm(b, v, 24),
+                          nir_iand_imm(b, nir_ushr_imm(b, v, 8), 0xff00)),
+                  nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, v, 8), 0xff0000),
+                          nir_ishl_imm(b, v, 24)));
+}
+
 void *si_create_query_result_cs(struct si_context *sctx)
 {
    const nir_shader_compiler_options *options =
@@ -1133,11 +1148,16 @@ void *si_create_query_result_cs(struct si_context *sctx)
                nir_pop_if(&b, if_so_overflow_mode);
 
                /* uint64_t sum = (x | (uint64_t) y << 32) + difference; */
+               /* The phi must come first: C leaves argument order unspecified, and
+                * PowerPC GCC evaluated the pack before it, leaving a phi after a
+                * non-phi instruction, which crashed the compiler.
+                */
+               nir_def *difference_phi = nir_if_phi(&b, difference, start_half_pair);
                nir_def *sum = nir_iadd(&b,
                                        nir_pack_64_2x32_split(&b,
                                                               nir_load_var(&b, x),
                                                               nir_load_var(&b, y)),
-                                       nir_if_phi(&b, difference, start_half_pair));
+                                       difference_phi);
                sum = nir_unpack_64_2x32(&b, sum);
 
                /* Increment inner loop iterator.
@@ -1203,7 +1223,21 @@ void *si_create_query_result_cs(struct si_context *sctx)
        */
       nir_def *is_result_available = nir_i2b(&b, nir_iand(&b, b0_bitfield, four));
       nir_if *if_result_available = nir_push_if(&b, is_result_available); {
-         nir_store_ssbo(&b, nir_iand(&b, nir_inot(&b, z_value), one), two, zero);
+         nir_def *available = query_result_to_api(&b, sctx,
+                                                  nir_iand(&b, nir_inot(&b, z_value), one));
+         bool native_be = UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8;
+         /* A big-endian 64-bit result keeps its low word at the higher address, so
+          * the value is stored by the 64-bit branch below on such a host.
+          */
+         nir_def *is_64_available = nir_i2b(&b, nir_iand(&b, b0_bitfield, sixty_four));
+         nir_store_ssbo(&b, native_be ? nir_bcsel(&b, is_64_available, nir_imm_int(&b, 0), available)
+                                      : available, two, zero);
+         if (native_be) {
+            nir_if *if_64_available = nir_push_if(&b, is_64_available); {
+               nir_store_ssbo(&b, available, two, nir_imm_int(&b, 4));
+            }
+            nir_pop_if(&b, if_64_available);
+         }
 
          /* Store full 64 bits result.
           *    if (b0_bitfield & (1u << 6)) {
@@ -1212,8 +1246,9 @@ void *si_create_query_result_cs(struct si_context *sctx)
           */
          nir_def *is_result_64_bits = nir_i2b(&b, nir_iand(&b, b0_bitfield, sixty_four));
          nir_if *if_result_64_bits = nir_push_if(&b, is_result_64_bits); {
-            nir_store_ssbo(&b, nir_imm_ivec2(&b, 0, 0), two, zero,
-                           .write_mask = (1u << 1));
+            if (!native_be)
+               nir_store_ssbo(&b, nir_imm_ivec2(&b, 0, 0), two, zero,
+                              .write_mask = (1u << 1));
          }
          nir_pop_if(&b, if_result_64_bits);
       } nir_push_else(&b, if_result_available); {
@@ -1271,7 +1306,11 @@ void *si_create_query_result_cs(struct si_context *sctx)
              */
             nir_def *is_result_64_bits = nir_i2b(&b, nir_iand(&b, b0_bitfield, sixty_four));
             nir_if *if_result_64_bits = nir_push_if(&b, is_result_64_bits); {
-               nir_store_ssbo(&b, nir_vec2(&b, nx, ny), two, zero);
+               if (UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8)
+                  nir_store_ssbo(&b, nir_vec2(&b, query_result_to_api(&b, sctx, ny),
+                                              query_result_to_api(&b, sctx, nx)), two, zero);
+               else
+                  nir_store_ssbo(&b, nir_vec2(&b, nx, ny), two, zero);
             } nir_push_else(&b, if_result_64_bits); {
 
                /* Clamping.
@@ -1286,7 +1325,7 @@ void *si_create_query_result_cs(struct si_context *sctx)
                nir_def *is_signed_32bit_result = nir_i2b(&b, nir_iand_imm(&b, b0_bitfield, 128));
                nir_def *min = nir_umin(&b, nx, nir_imm_int(&b, INT_MAX));
                nx = nir_bcsel(&b, is_signed_32bit_result, min, nx);
-               nir_store_ssbo(&b, nx, two, zero);
+               nir_store_ssbo(&b, query_result_to_api(&b, sctx, nx), two, zero);
             }
             nir_pop_if(&b, if_result_64_bits);
          }

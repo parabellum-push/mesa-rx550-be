@@ -598,8 +598,8 @@ static bool si_query_hw_prepare_buffer(struct si_context *sctx, struct si_query_
       for (j = 0; j < num_results; j++) {
          for (i = 0; i < max_rbs; i++) {
             if (!(enabled_rb_mask & (1ull << i))) {
-               results[(i * 4) + 1] = 0x80000000;
-               results[(i * 4) + 3] = 0x80000000;
+               results[(i * 4) + 1] = util_cpu_to_le32(0x80000000);
+               results[(i * 4) + 3] = util_cpu_to_le32(0x80000000);
             }
          }
          results += 4 * max_rbs;
@@ -1343,14 +1343,16 @@ static void si_get_hw_query_params(struct si_context *sctx, struct si_query_hw *
    }
 }
 
-static unsigned si_query_read_result(void *map, unsigned start_index, unsigned end_index,
+static uint64_t si_query_read_result(void *map, unsigned start_index, unsigned end_index,
                                      bool test_status_bit)
 {
    uint32_t *current_result = (uint32_t *)map;
    uint64_t start, end;
 
-   start = (uint64_t)current_result[start_index] | (uint64_t)current_result[start_index + 1] << 32;
-   end = (uint64_t)current_result[end_index] | (uint64_t)current_result[end_index + 1] << 32;
+   start = (uint64_t)util_le32_to_cpu(current_result[start_index]) |
+           (uint64_t)util_le32_to_cpu(current_result[start_index + 1]) << 32;
+   end = (uint64_t)util_le32_to_cpu(current_result[end_index]) |
+         (uint64_t)util_le32_to_cpu(current_result[end_index + 1]) << 32;
 
    if (!test_status_bit || ((start & 0x8000000000000000UL) && (end & 0x8000000000000000UL))) {
       return end - start;
@@ -1383,7 +1385,7 @@ static void si_query_hw_add_result(struct si_screen *sscreen, struct si_query_hw
       result->u64 += si_query_read_result(buffer, 0, 2, false);
       break;
    case PIPE_QUERY_TIMESTAMP:
-      result->u64 = *(uint64_t *)buffer;
+      result->u64 = util_le64_to_cpu(*(uint64_t *)buffer);
       break;
    case PIPE_QUERY_PRIMITIVES_EMITTED:
       /* SAMPLE_STREAMOUTSTATS stores this structure:

@@ -683,6 +683,7 @@ texstore_rgba(TEXSTORE_PARAMS)
    GLubyte *src, *dst;
    uint8_t rebaseSwizzle[4];
    bool transferOpsDone = false;
+   struct gl_pixelstore_attrib tightPacking;
 
    /* We have to handle MESA_FORMAT_YCBCR manually because it is a special case
     * and _mesa_format_convert does not support it. In this case the we only
@@ -722,33 +723,42 @@ texstore_rgba(TEXSTORE_PARAMS)
       srcAddr = tempImage;
       srcFormat = GL_RGBA;
       srcType = GL_UNSIGNED_BYTE;
-   } else if (srcPacking->SwapBytes) {
+   } else if (srcPacking->SwapBytes ^ _mesa_packed_float_needs_swap(srcType)) {
       /* We have to handle byte-swapping scenarios before calling
        * _mesa_format_convert
        */
       GLint swapSize = _mesa_sizeof_packed_type(srcType);
       if (swapSize == 2 || swapSize == 4) {
-         intptr_t imageStride = _mesa_image_image_stride(srcPacking, srcWidth,
-                                                    srcHeight, srcFormat,
-                                                    srcType);
-         int bufferSize = imageStride * srcDepth;
-         int layer;
-         const uint8_t *src;
-         uint8_t *dst;
-
+         const int sourceStride = _mesa_image_row_stride(srcPacking, srcWidth,
+                                                          srcFormat, srcType);
+         const size_t tightStride = (size_t)srcWidth * _mesa_bytes_per_pixel(srcFormat, srcType);
+         const size_t bufferSize = tightStride * srcHeight * srcDepth;
          tempImage = malloc(bufferSize);
          if (!tempImage)
             return GL_FALSE;
-         src = srcAddr;
-         dst = tempImage;
-         for (layer = 0; layer < srcDepth; layer++) {
-            _mesa_swap_bytes_2d_image(srcFormat, srcType,
-                                      srcPacking,
-                                      srcWidth, srcHeight,
-                                      dst, src);
-            src += imageStride;
-            dst += imageStride;
+
+         /* Swap only actual pixels after applying source skips. A tight
+          * temporary avoids copying padding or allocating an undersized
+          * image when SkipRows/SkipPixels/SkipImages are nonzero.
+          */
+         for (int layer = 0; layer < srcDepth; layer++) {
+            const uint8_t *src = _mesa_image_address(dims, srcPacking, srcAddr,
+                                                     srcWidth, srcHeight,
+                                                     srcFormat, srcType, layer, 0, 0);
+            uint8_t *dst = (uint8_t *)tempImage + (size_t)layer * srcHeight * tightStride;
+            for (int row = 0; row < srcHeight; row++) {
+               _mesa_swap_bytes_2d_image(srcFormat, srcType, srcPacking,
+                                         srcWidth, 1, dst, src);
+               src += sourceStride;
+               dst += tightStride;
+            }
          }
+         tightPacking = *srcPacking;
+         tightPacking.Alignment = 1;
+         tightPacking.RowLength = tightPacking.ImageHeight = 0;
+         tightPacking.SkipPixels = tightPacking.SkipRows = tightPacking.SkipImages = 0;
+         tightPacking.SwapBytes = false;
+         srcPacking = &tightPacking;
          srcAddr = tempImage;
       }
    }

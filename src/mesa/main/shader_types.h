@@ -367,6 +367,9 @@ struct gl_shader_program
    GLint RefCount;  /**< Reference count */
    GLboolean DeletePending;
 
+   /** Link time only, see gl_nir_gather_source_uniform_use(). */
+   struct hash_table *SourceUniformUse[MESA_SHADER_STAGES];
+
    /**
     * Is the application intending to glGetProgramBinary this program?
     *
@@ -734,6 +737,7 @@ struct gl_transform_feedback_output
     * offset is in the y and z components of the output register.
     */
    uint32_t ComponentOffset;
+   uint32_t ComponentMask64Bit;
 };
 
 

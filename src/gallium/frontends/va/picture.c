@@ -218,7 +218,9 @@ handlePictureParameterBuffer(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *
       break;
 
    case PIPE_VIDEO_FORMAT_MPEG4:
-      vlVaHandlePictureParameterBufferMPEG4(drv, context, buf);
+      vaStatus = vlVaHandlePictureParameterBufferMPEG4(drv, context, buf);
+      if (vaStatus != VA_STATUS_SUCCESS)
+         return vaStatus;
       break;
 
    case PIPE_VIDEO_FORMAT_HEVC:
@@ -422,7 +424,11 @@ handleVASliceDataBufferType(vlVaContext *context, vlVaBuffer *buf)
          if (bufHasStartcode(buf, 0x000001, 24))
             break;
 
-         vlVaDecoderFixMPEG4Startcode(context);
+         {
+            VAStatus status = vlVaDecoderFixMPEG4Startcode(context);
+            if (status != VA_STATUS_SUCCESS)
+               return status;
+         }
          buffers[num_buffers] = (void *)context->mpeg4.start_code;
          sizes[num_buffers++] = context->mpeg4.start_code_size;
          break;

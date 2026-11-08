@@ -2395,10 +2395,15 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
          case nir_op_ishl:
          case nir_op_ishr:
          case nir_op_ushr: {
-            if (bit_size == 32)
+            /* The shift has its own type, which may differ from the result's. Reading
+             * it through the wrong union member finds the wrong bytes on big-endian.
+             */
+            const unsigned shift_bits =
+               glsl_get_bit_size(vtn_value(b, w[5], vtn_value_type_constant)->type->type);
+            if (shift_bits == 32)
                break;
             for (unsigned i = 0; i < num_components; ++i) {
-               switch (bit_size) {
+               switch (shift_bits) {
                case 64: src[1][i].u32 = src[1][i].u64; break;
                case 16: src[1][i].u32 = src[1][i].u16; break;
                case  8: src[1][i].u32 = src[1][i].u8;  break;
@@ -6736,6 +6741,10 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
    /* Initialize the vtn_builder object */
    struct vtn_builder *b = rzalloc(NULL, struct vtn_builder);
 
+   /* vtn_err() reads the options, and it can run before they are duplicated
+    * below.
+    */
+   b->options = (struct spirv_to_nir_options *)options;
    b->spirv = words;
    b->spirv_word_count = word_count;
    b->file = NULL;
@@ -6935,8 +6944,8 @@ initialize_mesa_spirv_debug(void)
 }
 #endif
 
-nir_shader *
-spirv_to_nir(const uint32_t *words, size_t word_count,
+static nir_shader *
+spirv_to_nir_native(const uint32_t *words, size_t word_count,
              struct nir_spirv_specialization *spec, unsigned num_spec,
              gl_shader_stage stage, const char *entry_point_name,
              const struct spirv_to_nir_options *options,
@@ -7365,4 +7374,34 @@ spirv_library_to_nir_builder(FILE *fp, const uint32_t *words, size_t word_count,
 
    ralloc_free(b);
    return true;
+}
+
+nir_shader *
+spirv_to_nir(const uint32_t *words, size_t word_count,
+             struct nir_spirv_specialization *spec, unsigned num_spec,
+             gl_shader_stage stage, const char *entry_point_name,
+             const struct spirv_to_nir_options *options,
+             const nir_shader_compiler_options *nir_options)
+{
+   /* Precompiled modules are normally stored little-endian.  The magic number
+    * identifies the byte order, so accept the opposite order by parsing a
+    * native copy.  Nothing in the resulting shader points into the words.
+    */
+   if (word_count > 0 && words[0] == util_bswap32(SpvMagicNumber)) {
+      uint32_t *native = malloc(word_count * sizeof(*native));
+      if (native == NULL)
+         return NULL;
+
+      for (size_t i = 0; i < word_count; i++)
+         native[i] = util_bswap32(words[i]);
+
+      nir_shader *nir = spirv_to_nir_native(native, word_count, spec, num_spec,
+                                            stage, entry_point_name, options,
+                                            nir_options);
+      free(native);
+      return nir;
+   }
+
+   return spirv_to_nir_native(words, word_count, spec, num_spec, stage,
+                              entry_point_name, options, nir_options);
 }

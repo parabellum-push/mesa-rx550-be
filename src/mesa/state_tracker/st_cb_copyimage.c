@@ -32,6 +32,7 @@
 #include "util/box.h"
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
+#include "util/u_math.h"
 
 
 /**
@@ -554,6 +555,14 @@ copy_image(struct pipe_context *pipe,
                  src_box);
 }
 
+/* Transfers show these as little-endian words, every other format in host order. */
+static bool
+be_is_packed_float(enum pipe_format format)
+{
+   return UTIL_ARCH_BIG_ENDIAN &&
+          (format == PIPE_FORMAT_R9G9B9E5_FLOAT || format == PIPE_FORMAT_R11G11B10_FLOAT);
+}
+
 static void
 fallback_copy_image(struct st_context *st,
                     struct gl_texture_image *dst_image,
@@ -569,6 +578,8 @@ fallback_copy_image(struct st_context *st,
    struct pipe_transfer *dst_transfer, *src_transfer;
    unsigned line_bytes;
 
+   const bool be_swap_words = be_is_packed_float(src_res->format) !=
+                              be_is_packed_float(dst_res->format);
    bool dst_is_compressed = dst_image && _mesa_is_format_compressed(dst_image->TexFormat);
    bool src_is_compressed = src_image && _mesa_is_format_compressed(src_image->TexFormat);
 
@@ -650,6 +661,11 @@ fallback_copy_image(struct st_context *st,
 
    for (int y = 0; y < lines; y++) {
       memcpy(dst, src, line_bytes);
+      if (be_swap_words) {
+         uint32_t *word = (uint32_t *)dst;
+         for (unsigned w = 0; w < line_bytes / 4; w++)
+            word[w] = util_bswap32(word[w]);
+      }
       dst += dst_stride;
       src += src_stride;
    }
@@ -666,6 +682,33 @@ fallback_copy_image(struct st_context *st,
    } else {
       pipe_texture_unmap(st->pipe, src_transfer);
    }
+}
+
+/**
+ * On big endian the driver keeps texels little-endian and byte-swaps them per
+ * channel in transfers, so a raw GPU copy between formats whose channels have
+ * different widths reorders bytes as seen by the application.  Transfers see
+ * host order, which is what the raw copy of GL means there.
+ */
+static unsigned
+be_swap_unit(enum pipe_format format)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   return desc->is_array ? desc->channel[0].size / 8 : desc->block.bits / 8;
+}
+
+static bool
+be_copy_needs_transfer(const struct pipe_resource *src, const struct pipe_resource *dst)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || src->nr_samples > 1 || dst->nr_samples > 1 ||
+       util_format_is_compressed(src->format) || util_format_is_compressed(dst->format))
+      return false;
+   if (src->format == dst->format)
+      return false;
+   /* The GPU copy reinterprets packed formats through their numeric views. */
+   return !util_format_description(src->format)->is_array ||
+          !util_format_description(dst->format)->is_array ||
+          be_swap_unit(src->format) != be_swap_unit(dst->format);
 }
 
 void
@@ -721,7 +764,8 @@ st_CopyImageSubData(struct gl_context *ctx,
    u_box_2d_zslice(src_x, src_y, src_z, src_width, src_height, &box);
 
    if ((src_image && st_compressed_format_fallback(st, src_image->TexFormat)) ||
-       (dst_image && st_compressed_format_fallback(st, dst_image->TexFormat))) {
+       (dst_image && st_compressed_format_fallback(st, dst_image->TexFormat)) ||
+       be_copy_needs_transfer(src_res, dst_res)) {
       fallback_copy_image(st, dst_image, dst_res, dst_x, dst_y, orig_dst_z,
                           src_image, src_res, src_x, src_y, orig_src_z,
                           src_width, src_height);

@@ -29,15 +29,15 @@
 
 const int reverse_inverse_zscan[] =
 {
-   /* Reverse inverse z scan pattern */
-    0,  2,  3,  9, 10, 20, 21, 35,
-    1,  4,  8, 11, 19, 22, 34, 36,
-    5,  7, 12, 18, 23, 33, 37, 48,
-    6, 13, 17, 24, 32, 38, 47, 49,
-   14, 16, 25, 31, 39, 46, 50, 57,
-   15, 26, 30, 40, 45, 51, 56, 58,
-   27, 29, 41, 44, 52, 55, 59, 62,
-   28, 42, 43, 53, 54, 60, 61, 63,
+   /* Convert VA zig-zag indices to the pipe raster matrix layout. */
+    0,  1,  5,  6, 14, 15, 27, 28,
+    2,  4,  7, 13, 16, 26, 29, 42,
+    3,  8, 12, 17, 25, 30, 41, 43,
+    9, 11, 18, 24, 31, 40, 44, 53,
+   10, 19, 23, 32, 39, 45, 52, 54,
+   20, 22, 33, 38, 46, 51, 55, 60,
+   21, 34, 37, 47, 50, 56, 59, 61,
+   35, 36, 48, 49, 57, 58, 62, 63,
 };
 
 void vlVaHandlePictureParameterBufferMPEG12(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf)

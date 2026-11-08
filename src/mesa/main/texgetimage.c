@@ -164,7 +164,7 @@ get_tex_depth_stencil(struct gl_context *ctx, GLuint dimensions,
             default:
                unreachable("bad type in get_tex_depth_stencil()");
             }
-            if (ctx->Pack.SwapBytes) {
+            if (ctx->Pack.SwapBytes ^ _mesa_packed_float_needs_swap(type)) {
                _mesa_swap4((GLuint *) dest, width);
             }
          }
@@ -261,7 +261,7 @@ get_tex_ycbcr(struct gl_context *ctx, GLuint dimensions,
                if (!ctx->Pack.SwapBytes)
                   _mesa_swap2((GLushort *) dest, width);
             }
-            else if (ctx->Pack.SwapBytes) {
+            else if (ctx->Pack.SwapBytes ^ _mesa_packed_float_needs_swap(type)) {
                _mesa_swap2((GLushort *) dest, width);
             }
          }
@@ -380,7 +380,7 @@ get_tex_rgba_compressed(struct gl_context *ctx, GLuint dimensions,
                            needsRebase ? rebaseSwizzle : NULL);
 
       /* Handle byte swapping if required */
-      if (ctx->Pack.SwapBytes) {
+      if (ctx->Pack.SwapBytes ^ _mesa_packed_float_needs_swap(type)) {
          _mesa_swap_bytes_2d_image(format, type, &ctx->Pack,
                                    width, height, dest, dest);
       }
@@ -553,7 +553,7 @@ get_tex_rgba_uncompressed(struct gl_context *ctx, GLuint dimensions,
 
    do_swap:
       /* Handle byte swapping if required */
-      if (ctx->Pack.SwapBytes)
+      if (ctx->Pack.SwapBytes ^ _mesa_packed_float_needs_swap(type))
          _mesa_swap_bytes_2d_image(format, type, &ctx->Pack,
                                    width, height, dest, dest);
 

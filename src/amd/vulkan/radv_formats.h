@@ -11,6 +11,7 @@
 #ifndef RADV_FORMATS_H
 #define RADV_FORMATS_H
 
+#include "util/u_endian.h"
 #include <assert.h>
 #include <util/macros.h>
 #include <vulkan/vulkan.h>
@@ -170,5 +171,36 @@ bool radv_format_pack_clear_color(VkFormat format, uint32_t clear_vals[2], VkCle
 
 bool radv_dcc_formats_compatible(enum amd_gfx_level gfx_level, VkFormat format1, VkFormat format2,
                                  bool *sign_reinterpret);
+
+const struct util_format_description *radv_format_hw_description(const struct util_format_description *desc,
+                                                                 struct util_format_description *storage);
+
+uint32_t radv_get_cb_format(enum amd_gfx_level gfx_level, enum pipe_format format);
+
+/* The hardware applies sRGB to the first three bytes in memory, so storing packed
+ * A8B8G8R8 as bytes A,B,G,R with a swizzle would convert alpha instead of red. On
+ * big-endian hosts images of this family are stored as little-endian words, which
+ * is the R8G8B8A8 hardware layout. All views of an image must agree, so this covers
+ * the whole family. Buffers keep host order and do not use this.
+ */
+static inline VkFormat
+radv_native_image_format(VkFormat format)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN)
+      return format;
+   switch (format) {
+   case VK_FORMAT_A8B8G8R8_UNORM_PACK32: return VK_FORMAT_R8G8B8A8_UNORM;
+   case VK_FORMAT_A8B8G8R8_SNORM_PACK32: return VK_FORMAT_R8G8B8A8_SNORM;
+   case VK_FORMAT_A8B8G8R8_USCALED_PACK32: return VK_FORMAT_R8G8B8A8_USCALED;
+   case VK_FORMAT_A8B8G8R8_SSCALED_PACK32: return VK_FORMAT_R8G8B8A8_SSCALED;
+   case VK_FORMAT_A8B8G8R8_UINT_PACK32: return VK_FORMAT_R8G8B8A8_UINT;
+   case VK_FORMAT_A8B8G8R8_SINT_PACK32: return VK_FORMAT_R8G8B8A8_SINT;
+   case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return VK_FORMAT_R8G8B8A8_SRGB;
+   default: return format;
+   }
+}
+
+/* The size of the little-endian elements a format's image memory is made of. */
+unsigned radv_native_format_width(VkFormat format);
 
 #endif /* RADV_FORMATS_H */

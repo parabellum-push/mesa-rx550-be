@@ -9,7 +9,9 @@
  */
 
 #include "radv_cmd_buffer.h"
+#include "util/u_endian.h"
 #include "meta/radv_meta.h"
+#include "meta/radv_meta_native_indices.h"
 #include "radv_cp_dma.h"
 #include "radv_cs.h"
 #include "radv_debug.h"
@@ -3978,6 +3980,9 @@ lookup_vs_prolog(struct radv_cmd_buffer *cmd_buffer, const struct radv_shader *v
       cmd_buffer->state.vbo_misaligned_mask_invalid &= ~attribute_mask;
    }
    misaligned_mask |= state->nontrivial_formats;
+   /* Host-order attributes need the format-specific prolog. */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8)
+      misaligned_mask = attribute_mask;
    misaligned_mask &= attribute_mask;
 
    const bool can_use_simple_input =
@@ -4146,6 +4151,13 @@ emit_prolog_inputs(struct radv_cmd_buffer *cmd_buffer, const struct radv_shader 
             *(inputs++) = info.pre_shift | (info.increment << 8) | (info.post_shift << 16);
             *(inputs++) = info.multiplier;
          }
+      }
+
+      /* The prolog loads these with SMEM, which reads little-endian words. */
+      if (UTIL_ARCH_BIG_ENDIAN && radv_device_physical(device)->info.gfx_level == GFX8) {
+         uint32_t *words = inputs - size / 4;
+         for (unsigned i = 0; i < size / 4; ++i)
+            words[i] = util_cpu_to_le32(words[i]);
       }
 
       input_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + inputs_offset;
@@ -4702,7 +4714,9 @@ radv_flush_indirect_descriptor_sets(struct radv_cmd_buffer *cmd_buffer, VkPipeli
       if (descriptors_state->valid & (1u << i))
          set_va = radv_descriptor_get_va(descriptors_state, i);
 
-      uptr[0] = set_va & 0xffffffff;
+      uptr[0] = UTIL_ARCH_BIG_ENDIAN && radv_device_physical(radv_cmd_buffer_device(cmd_buffer))->info.gfx_level == GFX8
+                   ? util_cpu_to_le32(set_va & 0xffffffff)
+                   : set_va & 0xffffffff;
    }
 
    struct radeon_cmdbuf *cs = cmd_buffer->cs;
@@ -4891,6 +4905,13 @@ radv_flush_constants(struct radv_cmd_buffer *cmd_buffer, VkShaderStageFlags stag
       memcpy(ptr, cmd_buffer->push_constants, push_constants->size);
       memcpy((char *)ptr + push_constants->size, descriptors_state->dynamic_buffers,
              16 * push_constants->dynamic_offset_count);
+
+      /* Shaders read these as words, the same values inlined into user SGPRs. */
+      if (UTIL_ARCH_BIG_ENDIAN && radv_device_physical(device)->info.gfx_level == GFX8) {
+         uint32_t *words = ptr;
+         for (unsigned i = 0; i < (push_constants->size + 16 * push_constants->dynamic_offset_count) / 4; ++i)
+            words[i] = util_cpu_to_le32(words[i]);
+      }
 
       va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
       va += offset;
@@ -5095,6 +5116,13 @@ radv_write_vertex_descriptors(const struct radv_cmd_buffer *cmd_buffer, const st
       desc[2] = num_records;
       desc[3] = rsrc_word3;
    }
+
+   /* Include descriptors written by null/OOB branches as well. */
+   if (UTIL_ARCH_BIG_ENDIAN && chip == GFX8) {
+      uint32_t *words = vb_ptr;
+      for (unsigned i = 0; i < desc_index * 4; ++i)
+         words[i] = util_cpu_to_le32(words[i]);
+   }
 }
 
 static void
@@ -5222,6 +5250,11 @@ radv_flush_streamout_descriptors(struct radv_cmd_buffer *cmd_buffer)
          desc[1] = S_008F04_BASE_ADDRESS_HI(va >> 32);
          desc[2] = size;
          desc[3] = rsrc_word3;
+
+         if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+            for (unsigned j = 0; j < 4; ++j)
+               desc[j] = util_cpu_to_le32(desc[j]);
+         }
       }
 
       desc_va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
@@ -5407,12 +5440,14 @@ struct radv_draw_info {
    struct radv_buffer *indirect;
    uint64_t indirect_offset;
    uint32_t stride;
+   uint64_t indirect_va;
 
    /**
     * Draw count parameters resource.
     */
    struct radv_buffer *count_buffer;
    uint64_t count_buffer_offset;
+   uint64_t count_va;
 
    /**
     * Stream output parameters resource.
@@ -8147,6 +8182,34 @@ attachment_initial_layout(const VkRenderingAttachmentInfo *att)
    return att->imageLayout;
 }
 
+static void
+radv_be_swap_attachment_pairs(struct radv_cmd_buffer *cmd_buffer, bool entering)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN)
+      return;
+
+   struct radv_rendering_state *render = &cmd_buffer->state.render;
+   for (uint32_t i = 0; i < render->color_att_count; i++) {
+      struct radv_image_view *iview = render->color_att[i].iview;
+      if (!iview || iview->native_group != 2 || iview->image->vk.samples > 1 ||
+          vk_format_get_blocksize(iview->vk.format) != 8 || radv_native_format_width(iview->vk.format) != 2)
+         continue;
+
+      cmd_buffer->state.flush_bits |=
+         radv_src_access_flush(cmd_buffer, entering ? VK_ACCESS_2_MEMORY_WRITE_BIT : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                               iview->image) |
+         radv_dst_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                               iview->image) |
+         RADV_CMD_FLAG_PS_PARTIAL_FLUSH | RADV_CMD_FLAG_CS_PARTIAL_FLUSH;
+      radv_meta_be_swap_16bit_pairs(cmd_buffer, iview);
+      cmd_buffer->state.flush_bits |=
+         radv_src_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, iview->image) |
+         radv_dst_access_flush(cmd_buffer, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT, iview->image) |
+         RADV_CMD_FLAG_CS_PARTIAL_FLUSH;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 radv_CmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *pRenderingInfo)
 {
@@ -8370,8 +8433,11 @@ radv_CmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *pRe
 
    radv_emit_fb_mip_change_flush(cmd_buffer);
 
-   if (!(pRenderingInfo->flags & VK_RENDERING_RESUMING_BIT))
+   render->be_suspending = pRenderingInfo->flags & VK_RENDERING_SUSPENDING_BIT;
+   if (!(pRenderingInfo->flags & VK_RENDERING_RESUMING_BIT)) {
+      radv_be_swap_attachment_pairs(cmd_buffer, true);
       radv_cmd_buffer_clear_rendering(cmd_buffer, pRenderingInfo);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -8381,6 +8447,8 @@ radv_CmdEndRendering(VkCommandBuffer commandBuffer)
 
    radv_mark_noncoherent_rb(cmd_buffer);
    radv_cmd_buffer_resolve_rendering(cmd_buffer);
+   if (!cmd_buffer->state.render.be_suspending)
+      radv_be_swap_attachment_pairs(cmd_buffer, false);
    radv_cmd_buffer_reset_rendering(cmd_buffer);
 }
 
@@ -9155,10 +9223,8 @@ radv_emit_indirect_draw_packets(struct radv_cmd_buffer *cmd_buffer, const struct
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radeon_winsys *ws = device->ws;
    struct radeon_cmdbuf *cs = cmd_buffer->cs;
-   const uint64_t va = radv_buffer_get_va(info->indirect->bo) + info->indirect->offset + info->indirect_offset;
-   const uint64_t count_va = info->count_buffer ? radv_buffer_get_va(info->count_buffer->bo) +
-                                                     info->count_buffer->offset + info->count_buffer_offset
-                                                : 0;
+   const uint64_t va = info->indirect_va;
+   const uint64_t count_va = info->count_va;
 
    radv_cs_add_buffer(ws, cs, info->indirect->bo);
 
@@ -10039,6 +10105,71 @@ radv_CmdDrawMultiEXT(VkCommandBuffer commandBuffer, uint32_t drawCount, const Vk
    radv_after_draw(cmd_buffer, false);
 }
 
+struct radv_native_index_binding {
+   uint64_t va;
+   uint32_t max_count;
+   bool converted;
+};
+
+static bool
+radv_prepare_native_index_binding(struct radv_cmd_buffer *cmd_buffer, uint32_t first, uint32_t count,
+                                  struct radv_native_index_binding *saved)
+{
+   const struct radv_physical_device *pdev = radv_device_physical(radv_cmd_buffer_device(cmd_buffer));
+   *saved = (struct radv_native_index_binding){cmd_buffer->state.index_va,
+                                             cmd_buffer->state.max_index_count, false};
+   if (!UTIL_ARCH_BIG_ENDIAN || pdev->info.gfx_level != GFX8 || !count ||
+       !saved->va || first >= saved->max_count)
+      return true;
+   unsigned width = radv_get_vgt_index_size(cmd_buffer->state.index_type);
+   if (width == 1)
+      return true;
+   count = MIN2(count, saved->max_count - first);
+   uint64_t offset = (uint64_t)first * width, converted_va;
+   if (!radv_meta_convert_native_indices(cmd_buffer, saved->va + offset, count, width, &converted_va))
+      return false;
+   cmd_buffer->state.index_va = converted_va - offset;
+   cmd_buffer->state.max_index_count = first + count;
+   cmd_buffer->state.dirty |= RADV_CMD_DIRTY_INDEX_BUFFER;
+   saved->converted = true;
+   return true;
+}
+
+static void
+radv_restore_native_index_binding(struct radv_cmd_buffer *cmd_buffer, const struct radv_native_index_binding *saved)
+{
+   if (saved->converted) {
+      cmd_buffer->state.index_va = saved->va;
+      cmd_buffer->state.max_index_count = saved->max_count;
+      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_INDEX_BUFFER;
+   }
+}
+
+/* The CP reads indirect arguments and draw counts as little-endian words, while
+ * big-endian hosts and shaders store them natively. Give it converted copies,
+ * made at execution time because the GPU may write the arguments.
+ */
+static bool
+radv_prepare_native_indirect_args(struct radv_cmd_buffer *cmd_buffer, struct radv_draw_info *info, unsigned args_size)
+{
+   const struct radv_physical_device *pdev = radv_device_physical(radv_cmd_buffer_device(cmd_buffer));
+   info->indirect_va = radv_buffer_get_va(info->indirect->bo) + info->indirect->offset + info->indirect_offset;
+   info->count_va = info->count_buffer ? radv_buffer_get_va(info->count_buffer->bo) + info->count_buffer->offset +
+                                            info->count_buffer_offset
+                                       : 0;
+   if (!UTIL_ARCH_BIG_ENDIAN || pdev->info.gfx_level != GFX8 || !info->count)
+      return true;
+
+   /* maxDrawCount may extend past the buffer when a count buffer is used. */
+   uint64_t size = info->count > 1 ? (uint64_t)info->stride * (info->count - 1) + args_size : args_size;
+   size = MIN2(size, info->indirect->vk.size - info->indirect_offset);
+   if (!radv_meta_convert_native_indices(cmd_buffer, info->indirect_va, size / 4, 4, &info->indirect_va))
+      return false;
+   if (info->count_buffer && !radv_meta_convert_native_indices(cmd_buffer, info->count_va, 1, 4, &info->count_va))
+      return false;
+   return true;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 radv_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
                     int32_t vertexOffset, uint32_t firstInstance)
@@ -10053,11 +10184,16 @@ radv_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t
    info.strmout_buffer = NULL;
    info.indirect = NULL;
 
-   if (!radv_before_draw(cmd_buffer, &info, 1, false))
+   struct radv_native_index_binding saved;
+   if (!radv_prepare_native_index_binding(cmd_buffer, firstIndex, instanceCount ? indexCount : 0, &saved))
       return;
-   const VkMultiDrawIndexedInfoEXT minfo = {firstIndex, indexCount, vertexOffset};
-   radv_emit_draw_packets_indexed(cmd_buffer, &info, 1, &minfo, 0, NULL);
-   radv_after_draw(cmd_buffer, false);
+
+   if (radv_before_draw(cmd_buffer, &info, 1, false)) {
+      const VkMultiDrawIndexedInfoEXT minfo = {firstIndex, indexCount, vertexOffset};
+      radv_emit_draw_packets_indexed(cmd_buffer, &info, 1, &minfo, 0, NULL);
+      radv_after_draw(cmd_buffer, false);
+   }
+   radv_restore_native_index_binding(cmd_buffer, &saved);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -10071,18 +10207,35 @@ radv_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer, uint32_t drawCount,
    if (!drawCount)
       return;
 
-   const VkMultiDrawIndexedInfoEXT *minfo = pIndexInfo;
    info.indexed = true;
-   info.count = minfo->indexCount;
+   info.count = 0;
+   uint32_t range_first = UINT32_MAX, range_end = 0;
+   unsigned draw_index = 0;
+   vk_foreach_multi_draw_indexed (draw, draw_index, pIndexInfo, drawCount, stride) {
+      /* A zero-count first draw must not suppress later nonempty draws. */
+      info.count = MAX2(info.count, draw->indexCount);
+      if (!draw->indexCount || draw->firstIndex >= cmd_buffer->state.max_index_count)
+         continue;
+      uint32_t end = MIN2((uint64_t)draw->firstIndex + draw->indexCount,
+                         cmd_buffer->state.max_index_count);
+      range_first = MIN2(range_first, draw->firstIndex);
+      range_end = MAX2(range_end, end);
+   }
    info.instance_count = instanceCount;
    info.first_instance = firstInstance;
    info.strmout_buffer = NULL;
    info.indirect = NULL;
 
-   if (!radv_before_draw(cmd_buffer, &info, drawCount, false))
+   struct radv_native_index_binding saved;
+   bool has_range = range_end > range_first;
+   if (!radv_prepare_native_index_binding(cmd_buffer, has_range ? range_first : 0,
+                                         has_range && instanceCount ? range_end - range_first : 0, &saved))
       return;
-   radv_emit_draw_packets_indexed(cmd_buffer, &info, drawCount, pIndexInfo, stride, pVertexOffset);
-   radv_after_draw(cmd_buffer, false);
+   if (radv_before_draw(cmd_buffer, &info, drawCount, false)) {
+      radv_emit_draw_packets_indexed(cmd_buffer, &info, drawCount, pIndexInfo, stride, pVertexOffset);
+      radv_after_draw(cmd_buffer, false);
+   }
+   radv_restore_native_index_binding(cmd_buffer, &saved);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -10101,6 +10254,9 @@ radv_CmdDrawIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer, VkDeviceSi
    info.count_buffer = NULL;
    info.indexed = false;
    info.instance_count = 0;
+
+   if (!radv_prepare_native_indirect_args(cmd_buffer, &info, sizeof(VkDrawIndirectCommand)))
+      return;
 
    if (!radv_before_draw(cmd_buffer, &info, 1, false))
       return;
@@ -10125,10 +10281,19 @@ radv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer, VkD
    info.strmout_buffer = NULL;
    info.instance_count = 0;
 
-   if (!radv_before_draw(cmd_buffer, &info, 1, false))
+   if (!radv_prepare_native_indirect_args(cmd_buffer, &info, sizeof(VkDrawIndexedIndirectCommand)))
       return;
-   radv_emit_indirect_draw_packets(cmd_buffer, &info);
-   radv_after_draw(cmd_buffer, false);
+
+   /* The referenced index range is unknown until the GPU reads the arguments. */
+   struct radv_native_index_binding saved;
+   if (!radv_prepare_native_index_binding(cmd_buffer, 0, cmd_buffer->state.max_index_count, &saved))
+      return;
+
+   if (radv_before_draw(cmd_buffer, &info, 1, false)) {
+      radv_emit_indirect_draw_packets(cmd_buffer, &info);
+      radv_after_draw(cmd_buffer, false);
+   }
+   radv_restore_native_index_binding(cmd_buffer, &saved);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -10149,6 +10314,9 @@ radv_CmdDrawIndirectCount(VkCommandBuffer commandBuffer, VkBuffer _buffer, VkDev
    info.strmout_buffer = NULL;
    info.indexed = false;
    info.instance_count = 0;
+
+   if (!radv_prepare_native_indirect_args(cmd_buffer, &info, sizeof(VkDrawIndirectCommand)))
+      return;
 
    if (!radv_before_draw(cmd_buffer, &info, 1, false))
       return;
@@ -10176,10 +10344,19 @@ radv_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer, VkBuffer _buffer
    info.strmout_buffer = NULL;
    info.instance_count = 0;
 
-   if (!radv_before_draw(cmd_buffer, &info, 1, false))
+   if (!radv_prepare_native_indirect_args(cmd_buffer, &info, sizeof(VkDrawIndexedIndirectCommand)))
       return;
-   radv_emit_indirect_draw_packets(cmd_buffer, &info);
-   radv_after_draw(cmd_buffer, false);
+
+   /* The referenced index range is unknown until the GPU reads the arguments. */
+   struct radv_native_index_binding saved;
+   if (!radv_prepare_native_index_binding(cmd_buffer, 0, cmd_buffer->state.max_index_count, &saved))
+      return;
+
+   if (radv_before_draw(cmd_buffer, &info, 1, false)) {
+      radv_emit_indirect_draw_packets(cmd_buffer, &info);
+      radv_after_draw(cmd_buffer, false);
+   }
+   radv_restore_native_index_binding(cmd_buffer, &saved);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -10576,8 +10753,13 @@ radv_emit_dispatch_packets(struct radv_cmd_buffer *cmd_buffer, const struct radv
             radeon_emit(cs, blocks[1]);
             radeon_emit(cs, blocks[2]);
          } else {
+            /* The shader reads these through SMEM, which sees little-endian words. */
+            uint32_t grid_size[3];
+            for (unsigned i = 0; i < 3; i++)
+               grid_size[i] = pdev->info.gfx_level == GFX8 ? util_cpu_to_le32(blocks[i]) : blocks[i];
+
             uint32_t offset;
-            if (!radv_cmd_buffer_upload_data(cmd_buffer, 12, blocks, &offset))
+            if (!radv_cmd_buffer_upload_data(cmd_buffer, 12, grid_size, &offset))
                return;
 
             uint64_t va = radv_buffer_get_va(cmd_buffer->upload.upload_bo) + offset;
@@ -10812,6 +10994,11 @@ radv_CmdDispatchIndirect(VkCommandBuffer commandBuffer, VkBuffer _buffer, VkDevi
 
    info.indirect = buffer->bo;
    info.va = radv_buffer_get_va(buffer->bo) + buffer->offset + offset;
+
+   const struct radv_physical_device *pdev = radv_device_physical(radv_cmd_buffer_device(cmd_buffer));
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 &&
+       !radv_meta_convert_native_indices(cmd_buffer, info.va, sizeof(VkDispatchIndirectCommand) / 4, 4, &info.va))
+      return;
 
    radv_compute_dispatch(cmd_buffer, &info);
 }
@@ -12255,6 +12442,10 @@ radv_CmdWriteBufferMarker2AMD(VkCommandBuffer commandBuffer, VkPipelineStageFlag
    const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radeon_cmdbuf *cs = cmd_buffer->cs;
    const uint64_t va = radv_buffer_get_va(buffer->bo) + buffer->offset + dstOffset;
+
+   /* The GPU stores the packet's dword little endian; the application reads it in host order. */
+   if (UTIL_ARCH_BIG_ENDIAN)
+      marker = util_bswap32(marker);
 
    if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
       radeon_check_space(device->ws, cmd_buffer->cs, 4);

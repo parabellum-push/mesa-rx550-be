@@ -578,6 +578,31 @@ add_var_use_shader(nir_shader *shader, struct hash_table *live)
    ralloc_free(derefs);
 }
 
+/* Application-visible "referenced by" queries must not depend on what cross-stage
+ * optimisation later moved between stages or removed, so record the use first.
+ */
+void
+gl_nir_gather_source_uniform_use(struct gl_shader_program *prog)
+{
+   if (prog->data->spirv)
+      return;
+   for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
+      struct gl_linked_shader *sh = prog->_LinkedShaders[stage];
+      if (!sh)
+         continue;
+      prog->SourceUniformUse[stage] =
+         _mesa_hash_table_create(NULL, _mesa_hash_string, _mesa_key_string_equal);
+      add_var_use_shader(sh->Program->nir, prog->SourceUniformUse[stage]);
+   }
+}
+
+static bool
+source_use_has(const struct gl_shader_program *prog, unsigned stage, const char *name)
+{
+   return prog->SourceUniformUse[stage] &&
+          _mesa_hash_table_search(prog->SourceUniformUse[stage], name);
+}
+
 static void
 mark_stage_as_active(struct gl_uniform_storage *uniform,
                      unsigned stage)
@@ -986,6 +1011,8 @@ find_and_update_named_uniform_storage(const struct gl_constants *consts,
              glsl_get_base_type(type_no_array) == GLSL_TYPE_SUBROUTINE ||
              prog->data->spirv)
             uniform->active_shader_mask |= 1 << stage;
+         if (source_use_has(prog, stage, state->current_var->name))
+            uniform->query_stage_mask |= 1 << stage;
 
          if (!state->var_is_in_block)
             add_parameter(uniform, consts, prog, type, state);
@@ -1371,6 +1398,8 @@ nir_link_uniform(const struct gl_constants *consts,
           glsl_get_base_type(type_no_array) == GLSL_TYPE_SUBROUTINE ||
           prog->data->spirv)
          uniform->active_shader_mask |= 1 << stage;
+      if (source_use_has(prog, stage, state->current_var->name))
+         uniform->query_stage_mask |= 1 << stage;
 
       if (location >= 0) {
          /* Uniform has an explicit location */
@@ -1734,9 +1763,15 @@ gl_nir_link_uniforms(const struct gl_constants *consts,
                      if (entry) {
                         struct uniform_array_info *ainfo =
                            (struct uniform_array_info *) entry->data;
-                        if (BITSET_TEST(ainfo->indices, blocks[i].linearized_array_index))
+                        if (!prog->SourceUniformUse[shader_type] &&
+                            BITSET_TEST(ainfo->indices, blocks[i].linearized_array_index))
                            blocks[i].stageref |= 1U << shader_type;
                      }
+                     struct hash_entry *src = prog->SourceUniformUse[shader_type] ?
+                        _mesa_hash_table_search(prog->SourceUniformUse[shader_type], var->name) : NULL;
+                     if (src && BITSET_TEST(((struct uniform_array_info *)src->data)->indices,
+                                            blocks[i].linearized_array_index))
+                        blocks[i].stageref |= 1U << shader_type;
                   }
                }
             } else {
@@ -1754,7 +1789,9 @@ gl_nir_link_uniforms(const struct gl_constants *consts,
                         struct hash_entry *entry =
                            _mesa_hash_table_search(state.referenced_uniforms[shader_type],
                                                    var->name);
-                        if (entry)
+                        if (entry && !prog->SourceUniformUse[shader_type])
+                           blocks[i].stageref |= 1U << shader_type;
+                        if (source_use_has(prog, shader_type, var->name))
                            blocks[i].stageref |= 1U << shader_type;
                      }
 
@@ -1832,7 +1869,8 @@ gl_nir_link_uniforms(const struct gl_constants *consts,
 
                         struct hash_entry *entry =
                            _mesa_hash_table_search(state.referenced_uniforms[shader_type], var->name);
-                        if (entry)
+                        if (prog->SourceUniformUse[shader_type] ?
+                            source_use_has(prog, shader_type, var->name) : entry != NULL)
                            blocks[i].stageref |= 1U << shader_type;
 
                         break;
@@ -1936,6 +1974,13 @@ gl_nir_link_uniforms(const struct gl_constants *consts,
    gl_nir_set_uniform_initializers(consts, prog);
 
    _mesa_hash_table_destroy(state.uniform_hash, hash_free_uniform_name);
+
+   for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
+      if (prog->SourceUniformUse[stage]) {
+         _mesa_hash_table_destroy(prog->SourceUniformUse[stage], NULL);
+         prog->SourceUniformUse[stage] = NULL;
+      }
+   }
 
    return true;
 }

@@ -29,6 +29,7 @@
 #include "meta/radv_meta.h"
 #include "util/disk_cache.h"
 #include "util/u_debug.h"
+#include "util/u_endian.h"
 #include "radv_cs.h"
 #include "radv_debug.h"
 #include "radv_entrypoints.h"
@@ -691,7 +692,16 @@ radv_create_gfx_preamble(struct radv_device *device)
       device->gfx_init = NULL;
       goto fail;
    }
-   memcpy(map, cs->buf, cs->cdw * 4);
+   /* This reusable IB bypasses winsys CS finalization. Match the GPU command
+    * representation used for ordinary GFX8 graphics/compute command buffers.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+      uint32_t *words = map;
+      for (unsigned i = 0; i < cs->cdw; ++i)
+         words[i] = util_cpu_to_le32(cs->buf[i]);
+   } else {
+      memcpy(map, cs->buf, cs->cdw * 4);
+   }
 
    device->ws->buffer_unmap(device->ws, device->gfx_init, false);
    device->gfx_init_size_dw = cs->cdw;
@@ -1678,11 +1688,21 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    }
 
    ntype = ac_get_cb_number_type(desc->format);
-   format = ac_get_cb_format(pdev->info.gfx_level, desc->format);
+   format = radv_get_cb_format(pdev->info.gfx_level, desc->format);
    assert(format != V_028C70_COLOR_INVALID);
 
    swap = radv_translate_colorswap(iview->vk.format, false);
    endian = radv_colorformat_endian_swap(format);
+   if (iview->native_group > 1) {
+      if (iview->native_group == desc->nr_channels) {
+         swap = swap == V_028C70_SWAP_STD       ? V_028C70_SWAP_STD_REV
+                : swap == V_028C70_SWAP_ALT     ? V_028C70_SWAP_ALT_REV
+                : swap == V_028C70_SWAP_STD_REV ? V_028C70_SWAP_STD
+                                                : V_028C70_SWAP_ALT;
+      } else if (iview->native_group == 2 && desc->channel[0].size == 8) {
+         endian = V_028C70_ENDIAN_8IN16;
+      }
+   }
 
    /* blend clamp should be set for all NORM/SRGB types */
    if (ntype == V_028C70_NUMBER_UNORM || ntype == V_028C70_NUMBER_SNORM || ntype == V_028C70_NUMBER_SRGB)

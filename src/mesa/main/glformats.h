@@ -42,6 +42,12 @@ struct gl_context;
 extern void
 _mesa_compute_component_mapping(GLenum inFormat, GLenum outFormat, GLubyte *map);
 
+/* GL packed words are native endian; these internal packed-float formats
+ * use little-endian byte storage on every architecture.
+ */
+extern bool
+_mesa_packed_float_needs_swap(GLenum type);
+
 extern GLboolean
 _mesa_type_is_packed(GLenum type);
 

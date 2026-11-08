@@ -953,6 +953,8 @@ static struct pipe_context *si_pipe_create_context(struct pipe_screen *screen, v
                                        si_create_fence : NULL,
                                  .is_resource_busy = si_is_resource_busy,
                                  .driver_calls_flush_notify = true,
+                                 .const_buffer_le = UTIL_ARCH_BIG_ENDIAN &&
+                                                    sscreen->info.gfx_level == GFX8,
                                  .unsynchronized_create_fence_fd = true,
                               },
                               &((struct si_context *)ctx)->tc);

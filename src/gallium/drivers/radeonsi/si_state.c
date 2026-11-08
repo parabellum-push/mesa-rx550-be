@@ -2303,6 +2303,8 @@ static bool si_is_sampler_format_supported(struct pipe_screen *screen, enum pipe
       return true;
    }
 
+   struct util_format_description numeric;
+   desc = si_texture_format_description(sscreen->info.gfx_level, format, &numeric);
    return si_translate_texformat(screen, format, desc,
                                  util_format_get_first_non_void_channel(format)) != ~0U;
 }
@@ -2418,6 +2420,31 @@ static uint32_t si_translate_buffer_numformat(struct pipe_screen *screen,
    }
 }
 
+/* Packed vertex words keep numeric bit positions across CPU byte orders.
+ * Describe those positions to the GFX8 raw-fetch lowering, not BE memory order.
+ */
+static const struct util_format_description *
+si_vertex_format_description(struct pipe_screen *screen, enum pipe_format format,
+                             struct util_format_description *numeric)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   struct si_screen *sscreen = (struct si_screen *)screen;
+   bool packed10 = desc->nr_channels == 4 && desc->block.bits == 32 &&
+                   desc->channel[0].size == 2 && desc->channel[1].size == 10 &&
+                   desc->channel[2].size == 10 && desc->channel[3].size == 10;
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 &&
+       packed10) {
+      *numeric = *desc;
+      unsigned n = desc->nr_channels;
+      for (unsigned i = 0; i < n; i++)
+         numeric->channel[i] = desc->channel[n - 1 - i];
+      for (unsigned i = 0; i < 4; i++)
+         numeric->swizzle[i] = desc->swizzle[i] < n ? n - 1 - desc->swizzle[i] : desc->swizzle[i];
+      return numeric;
+   }
+   return desc;
+}
+
 static unsigned si_is_vertex_format_supported(struct pipe_screen *screen, enum pipe_format format,
                                               unsigned usage)
 {
@@ -2429,7 +2456,9 @@ static unsigned si_is_vertex_format_supported(struct pipe_screen *screen, enum p
    assert((usage & ~(PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_VERTEX_BUFFER)) ==
           0);
 
-   desc = util_format_description(format);
+   struct util_format_description numeric;
+   desc = usage == PIPE_BIND_VERTEX_BUFFER ?
+      si_vertex_format_description(screen, format, &numeric) : util_format_description(format);
 
    /* There are no native 8_8_8 or 16_16_16 data formats, and we currently
     * select 8_8_8_8 and 16_16_16_16 instead. This works reasonably well
@@ -2464,10 +2493,44 @@ static unsigned si_is_vertex_format_supported(struct pipe_screen *screen, enum p
    return usage;
 }
 
+static unsigned si_get_colorbuffer_format(enum amd_gfx_level gfx_level,
+                                          enum pipe_format format)
+{
+   if (UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8) {
+      switch (format) {
+      case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+      case PIPE_FORMAT_Z24X8_UNORM:
+      case PIPE_FORMAT_X24S8_UINT:
+         return V_028C70_COLOR_8_24;
+      case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+      case PIPE_FORMAT_X8Z24_UNORM:
+      case PIPE_FORMAT_S8X24_UINT:
+         return V_028C70_COLOR_24_8;
+      default:
+         break;
+      }
+   }
+   if (si_gfx8_be_packed_10bit(gfx_level, format))
+      return V_028C70_COLOR_2_10_10_10;
+   if (si_gfx8_be_packed16(gfx_level, format)) {
+      struct util_format_description numeric;
+      const struct util_format_description *d =
+         si_texture_format_description(gfx_level, format, &numeric);
+      if (d->nr_channels == 3)
+         return V_028C70_COLOR_5_6_5;
+      if (d->channel[0].size == 1)
+         return V_028C70_COLOR_5_5_5_1;
+      if (d->channel[3].size == 1)
+         return V_028C70_COLOR_1_5_5_5;
+      return V_028C70_COLOR_4_4_4_4;
+   }
+   return ac_get_cb_format(gfx_level, format);
+}
+
 static bool si_is_colorbuffer_format_supported(enum amd_gfx_level gfx_level,
                                                enum pipe_format format)
 {
-   return ac_get_cb_format(gfx_level, format) != V_028C70_COLOR_INVALID &&
+   return si_get_colorbuffer_format(gfx_level, format) != V_028C70_COLOR_INVALID &&
           si_translate_colorswap(gfx_level, format, false) != ~0U;
 }
 
@@ -2604,14 +2667,16 @@ static void si_initialize_color_surface(struct si_context *sctx, struct si_surfa
    desc = util_format_description(surf->base.format);
 
    ntype = ac_get_cb_number_type(surf->base.format);
-   format = ac_get_cb_format(sctx->gfx_level, surf->base.format);
+   format = si_get_colorbuffer_format(sctx->gfx_level, surf->base.format);
 
    if (format == V_028C70_COLOR_INVALID) {
       PRINT_ERR("Invalid CB format: %d, disabling CB.\n", surf->base.format);
    }
    assert(format != V_028C70_COLOR_INVALID);
    swap = si_translate_colorswap(sctx->gfx_level, surf->base.format, false);
-   endian = si_colorformat_endian_swap(format);
+   /* GFX8 software command conversion uses native little-endian surfaces. */
+   endian = sctx->gfx_level == GFX8 ? V_028C70_ENDIAN_NONE :
+                                    si_colorformat_endian_swap(format);
 
    /* blend clamp should be set for all NORM/SRGB types */
    if (ntype == V_028C70_NUMBER_UNORM || ntype == V_028C70_NUMBER_SNORM ||
@@ -3256,9 +3321,11 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
       si_mark_atom_dirty(sctx, &sctx->atoms.s.db_render_state);
 
       if (!sctx->sample_pos_buffer) {
+         /* Shaders read these as little-endian floats. */
+         uint32_t sample_pos_le[sizeof(sctx->sample_positions) / 4];
+         util_memcpy_cpu_to_le32(sample_pos_le, &sctx->sample_positions, sizeof(sample_pos_le));
          sctx->sample_pos_buffer = pipe_buffer_create_with_data(&sctx->b, 0, PIPE_USAGE_DEFAULT,
-                                                      sizeof(sctx->sample_positions),
-                                                      &sctx->sample_positions);
+                                                      sizeof(sample_pos_le), sample_pos_le);
       }
       constbuf.buffer = sctx->sample_pos_buffer;
 
@@ -4190,6 +4257,18 @@ void si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf
    unsigned num_records;
 
    desc = util_format_description(format);
+   struct util_format_description numeric;
+   if (UTIL_ARCH_BIG_ENDIAN && screen->info.gfx_level == GFX8 &&
+       desc->layout == UTIL_FORMAT_LAYOUT_PLAIN && !desc->is_array &&
+       desc->channel[0].size == 8 && desc->nr_channels > 1) {
+      numeric = *desc;
+      unsigned n = desc->nr_channels;
+      for (unsigned i = 0; i < n; i++)
+         numeric.channel[i] = desc->channel[n - 1 - i];
+      for (unsigned i = 0; i < 4; i++)
+         numeric.swizzle[i] = desc->swizzle[i] < n ? n - 1 - desc->swizzle[i] : desc->swizzle[i];
+      desc = &numeric;
+   }
    stride = desc->block.bits / 8;
 
    num_records = num_elements;
@@ -4608,7 +4687,8 @@ static void si_make_texture_descriptor(struct si_screen *screen, struct si_textu
    unsigned num_format, data_format, type, num_samples;
    uint64_t va;
 
-   desc = util_format_description(pipe_format);
+   struct util_format_description numeric;
+   desc = si_texture_format_description(screen->info.gfx_level, pipe_format, &numeric);
 
    num_samples = desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS ? MAX2(1, res->nr_samples)
                                                                : MAX2(1, res->nr_storage_samples);
@@ -4645,6 +4725,9 @@ static void si_make_texture_descriptor(struct si_screen *screen, struct si_textu
    first_non_void = util_format_get_first_non_void_channel(pipe_format);
 
    switch (pipe_format) {
+   /* Either CPU channel order describes the same normalized depth aspect.
+    * On BE, the first non-void Z24_S8 channel is the integer stencil. */
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
    case PIPE_FORMAT_S8_UINT_Z24_UNORM:
       num_format = V_008F14_IMG_NUM_FORMAT_UNORM;
       break;
@@ -4919,6 +5002,97 @@ static void si_make_texture_descriptor(struct si_screen *screen, struct si_textu
    }
 }
 
+/* Big endian: texture memory holds elements of the texture format in little-endian order,
+ * so a view with wider channels reads them with their bytes in the wrong order, and the
+ * hardware has no way to reorder inside a channel. Such a view gets a raw integer descriptor
+ * with identity swizzle, and shaders finish the job from this word:
+ *   [0] active  [1:2] 0 = none, 1 = bytes in 16 bits, 2 = bytes in 32, 3 = halves in 32
+ *   [3:6] type (see si_lower_native_wide_tex)  [7:9] channels  [10:21] original swizzle
+ * Linear filtering of such a view has no meaning and is not handled.
+ */
+static uint32_t si_native_wide_view_meta(struct si_screen *screen, struct si_texture *tex,
+                                         enum pipe_format format, uint32_t *state)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || screen->info.gfx_level != GFX8 || tex->is_depth ||
+       tex->buffer.b.b.nr_samples > 1 ||
+       util_format_get_blocksize(tex->buffer.b.b.format) != util_format_get_blocksize(format))
+      return 0;
+
+   const struct util_format_description *source = util_format_description(tex->buffer.b.b.format);
+   const struct util_format_description *target = util_format_description(format);
+
+   /* Narrower channels only sit reversed within each stored element. */
+   const enum pipe_format stored = tex->buffer.b.b.format;
+   const bool packed_source = stored == PIPE_FORMAT_R11G11B10_FLOAT || stored == PIPE_FORMAT_R9G9B9E5_FLOAT ||
+                              stored == PIPE_FORMAT_R10G10B10A2_UNORM || stored == PIPE_FORMAT_R10G10B10A2_UINT;
+   const unsigned source_bits = packed_source ? 32 :
+      source->layout == UTIL_FORMAT_LAYOUT_PLAIN && source->is_array ? source->channel[0].size : 0;
+   if (target->layout == UTIL_FORMAT_LAYOUT_PLAIN && target->is_array &&
+       (target->channel[0].size == 8 || target->channel[0].size == 16) &&
+       source_bits > target->channel[0].size) {
+      const unsigned group = source_bits / target->channel[0].size;
+      for (unsigned i = 0; i < 4; i++) {
+         const unsigned shift = 3 * i;
+         const unsigned sel = (state[3] >> shift) & 0x7;
+         if (sel >= V_008F1C_SQ_SEL_X)
+            state[3] = (state[3] & ~(0x7u << shift)) |
+                       ((V_008F1C_SQ_SEL_X + ((sel - V_008F1C_SQ_SEL_X) ^ (group - 1))) << shift);
+      }
+
+      /* Hardware sRGB goes by memory position, which would now hit the wrong channels, so
+       * read unorm and let the shader convert. Type 10, no byte swap, identity swizzle.
+       */
+      if (target->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
+         state[1] = (state[1] & C_008F14_NUM_FORMAT) | S_008F14_NUM_FORMAT(V_008F14_IMG_NUM_FORMAT_UNORM);
+         const uint32_t identity = V_008F1C_SQ_SEL_X | (V_008F1C_SQ_SEL_Y << 3) |
+                                   (V_008F1C_SQ_SEL_Z << 6) | (V_008F1C_SQ_SEL_W << 9);
+         return 1 | (10u << 3) | ((uint32_t)target->nr_channels << 7) | (identity << 10);
+      }
+      return 0;
+   }
+
+   if (source->layout != UTIL_FORMAT_LAYOUT_PLAIN || !source->is_array ||
+       (source->channel[0].size != 8 && source->channel[0].size != 16))
+      return 0;
+
+   unsigned type, bits;
+   switch (format) {
+   case PIPE_FORMAT_R10G10B10A2_UNORM: type = 6; bits = 32; break;
+   case PIPE_FORMAT_R10G10B10A2_UINT: type = 7; bits = 32; break;
+   case PIPE_FORMAT_R11G11B10_FLOAT: type = 8; bits = 32; break;
+   case PIPE_FORMAT_R9G9B9E5_FLOAT: type = 9; bits = 32; break;
+   default:
+      if (target->layout != UTIL_FORMAT_LAYOUT_PLAIN || !target->is_array)
+         return 0;
+      bits = target->channel[0].size;
+      if (bits == 32)
+         type = 0;
+      else if (bits != 16)
+         return 0;
+      else if (target->channel[0].type == UTIL_FORMAT_TYPE_FLOAT)
+         type = 5;
+      else if (target->channel[0].normalized)
+         type = target->channel[0].type == UTIL_FORMAT_TYPE_SIGNED ? 4 : 3;
+      else
+         type = target->channel[0].type == UTIL_FORMAT_TYPE_SIGNED ? 2 : 1;
+      break;
+   }
+   if (bits <= source->channel[0].size)
+      return 0;
+
+   const unsigned kind = bits == 16 ? 1 : source->channel[0].size == 8 ? 2 : 3;
+   const unsigned sel = state[3] & 0xfff;
+   uint32_t meta = 1 | (kind << 1) | (type << 3) | ((uint32_t)target->nr_channels << 7) | (sel << 10);
+
+   state[1] = (state[1] & C_008F14_NUM_FORMAT) | S_008F14_NUM_FORMAT(V_008F14_IMG_NUM_FORMAT_UINT);
+   if (type >= 6)
+      state[1] = (state[1] & C_008F14_DATA_FORMAT) | S_008F14_DATA_FORMAT(V_008F14_IMG_DATA_FORMAT_32);
+   state[3] = (state[3] & ~0xfffu) | S_008F1C_DST_SEL_X(V_008F1C_SQ_SEL_X) |
+              S_008F1C_DST_SEL_Y(V_008F1C_SQ_SEL_Y) | S_008F1C_DST_SEL_Z(V_008F1C_SQ_SEL_Z) |
+              S_008F1C_DST_SEL_W(V_008F1C_SQ_SEL_W);
+   return meta;
+}
+
 /**
  * Create a sampler view.
  *
@@ -5032,6 +5206,14 @@ static struct pipe_sampler_view *si_create_sampler_view(struct pipe_context *ctx
       state->u.tex.first_layer, last_layer, texture->width0, texture->height0, texture->depth0,
       false, view->state, view->fmask_state);
 
+   /* Driver copies reinterpret formats as raw integers of the same size (for example
+    * RGBA16F through R32G32_UINT so NaNs survive) and must stay byte-exact; u_blitter
+    * shaders come from TGSI, so they are not marked internal and would get converted.
+    */
+   if (!sctx->blitter_running && !sctx->native_raw_view)
+      view->native_wide_meta =
+         si_native_wide_view_meta(sctx->screen, tex, state->format, view->state);
+
    view->base_level_info = &surflevel[0];
    view->block_width = util_format_get_blockwidth(pipe_format);
    return &view->base;
@@ -5111,6 +5293,94 @@ static uint32_t si_translate_border_color(struct si_context *sctx,
           S_008F3C_BORDER_COLOR_TYPE(V_008F3C_SQ_TEX_BORDER_COLOR_REGISTER);
 }
 
+/* Polaris11 border-color routing depends on the resource format and all
+ * destination selectors. Gallium supplies a border color in output-channel
+ * order; invert the resource's routing before uploading it.
+ *
+ * The compact table enumerates every valid selector combination for
+ * two-component resources (R, G, zero, one). Each entry holds a two-bit
+ * border-color register index per source component. This routing is shared
+ * by 8/16/32-bit float, normalized, signed/unsigned integer, and BC5 formats.
+ * Other tested formats use the first-selector permutation below.
+ */
+uint32_t si_gfx8_border_color_for_view(struct si_context *sctx,
+                                      const struct si_sampler_state *sstate,
+                                      const struct si_sampler_view *sview)
+{
+   static const uint8_t remap[4][4] = {
+      {0, 1, 2, 3}, {3, 0, 1, 2}, {2, 1, 0, 3}, {3, 2, 1, 0},
+   };
+   unsigned word = sview->state[3];
+   unsigned sel[4] = {G_008F1C_DST_SEL_X(word), G_008F1C_DST_SEL_Y(word),
+                      G_008F1C_DST_SEL_Z(word), G_008F1C_DST_SEL_W(word)};
+   static const uint8_t two_component_routes[256] = {
+      0x03, 0x0c, 0x00, 0x00, 0x03, 0x03, 0x04, 0x04, 0x03, 0x03, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00,
+      0x03, 0x0c, 0x04, 0x04, 0x03, 0x03, 0x04, 0x04, 0x03, 0x03, 0x04, 0x04, 0x03, 0x03, 0x04, 0x04,
+      0x03, 0x0c, 0x00, 0x00, 0x03, 0x03, 0x04, 0x04, 0x03, 0x03, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00,
+      0x03, 0x0c, 0x00, 0x00, 0x03, 0x03, 0x04, 0x04, 0x03, 0x03, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01, 0x03, 0x03, 0x01, 0x01,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+      0x03, 0x0c, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+   };
+   unsigned components = 0;
+   switch (G_008F14_DATA_FORMAT(sview->state[1])) {
+   case V_008F14_IMG_DATA_FORMAT_8_8:
+   case V_008F14_IMG_DATA_FORMAT_16_16:
+   case V_008F14_IMG_DATA_FORMAT_32_32:
+   case V_008F14_IMG_DATA_FORMAT_BC5:
+      components = 2;
+      break;
+   }
+   union pipe_color_union color = sstate->border_state.border_color;
+   if (components) {
+      unsigned key = 0;
+      bool supported = true;
+      for (unsigned i = 0; i < 4; ++i) {
+         unsigned digit;
+         if (sel[i] >= V_008F1C_SQ_SEL_X && sel[i] < V_008F1C_SQ_SEL_X + components)
+            digit = sel[i] - V_008F1C_SQ_SEL_X;
+         else if (sel[i] == V_008F1C_SQ_SEL_0)
+            digit = components;
+         else if (sel[i] == V_008F1C_SQ_SEL_1)
+            digit = components + 1;
+         else {
+            supported = false;
+            break;
+         }
+         key = key * (components + 2) + digit;
+      }
+      if (supported) {
+         unsigned routes = two_component_routes[key];
+         for (unsigned i = 0; i < 4; ++i) {
+            if (sel[i] >= V_008F1C_SQ_SEL_X && sel[i] < V_008F1C_SQ_SEL_X + components) {
+               unsigned source = sel[i] - V_008F1C_SQ_SEL_X;
+               color.ui[(routes >> (2 * source)) & 3] = sstate->border_state.border_color.ui[i];
+            }
+         }
+         return si_translate_border_color(sctx, &sstate->border_state, &color,
+                                           sstate->border_state.border_color_is_integer);
+      }
+   }
+   unsigned first = sel[0] >= V_008F1C_SQ_SEL_X && sel[0] <= V_008F1C_SQ_SEL_Z ?
+                       sel[0] - V_008F1C_SQ_SEL_X : 3;
+   for (unsigned i = 0; i < 4; ++i) {
+      if (sel[i] >= V_008F1C_SQ_SEL_X && sel[i] <= V_008F1C_SQ_SEL_W)
+         color.ui[remap[first][sel[i] - V_008F1C_SQ_SEL_X]] =
+            sstate->border_state.border_color.ui[i];
+   }
+   return si_translate_border_color(sctx, &sstate->border_state, &color,
+                                     sstate->border_state.border_color_is_integer);
+}
+
 static inline int S_FIXED(float value, unsigned frac_bits)
 {
    return value * (1 << frac_bits);
@@ -5171,6 +5441,7 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
 #ifndef NDEBUG
    rstate->magic = SI_SAMPLER_STATE_MAGIC;
 #endif
+   rstate->border_state = *state;
    rstate->val[0] =
       (S_008F30_CLAMP_X(si_tex_wrap(state->wrap_s)) | S_008F30_CLAMP_Y(si_tex_wrap(state->wrap_t)) |
        S_008F30_CLAMP_Z(si_tex_wrap(state->wrap_r)) | S_008F30_MAX_ANISO_RATIO(max_aniso_ratio) |
@@ -5331,7 +5602,8 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
          }
       }
 
-      desc = util_format_description(elements[i].src_format);
+      struct util_format_description numeric;
+      desc = si_vertex_format_description(ctx->screen, elements[i].src_format, &numeric);
       first_non_void = util_format_get_first_non_void_channel(elements[i].src_format);
       channel = first_non_void >= 0 ? &desc->channel[first_non_void] : NULL;
 
@@ -5441,6 +5713,11 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
             log_hw_load_size >= 1 &&
             (sscreen->info.gfx_level == GFX6 || sscreen->info.gfx_level >= GFX10);
       bool opencode = sscreen->options.vs_fetch_always_opencode;
+      /* Decode native BE 16/32-bit vertex components explicitly on GFX8. */
+      if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 &&
+          ((channel && (channel->size == 16 || channel->size == 32)) ||
+           (fix_fetch.u.log_size == 3 && fix_fetch.u.format != AC_FETCH_FORMAT_FLOAT)))
+         opencode = true;
 
       if (check_alignment && ((elements[i].src_offset & ((1 << log_hw_load_size) - 1)) != 0 ||
                               elements[i].src_stride & 3))
@@ -5500,7 +5777,8 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
       }
       void *map =
          sscreen->ws->buffer_map(sscreen->ws, v->instance_divisor_factor_buffer->buf, NULL, PIPE_MAP_WRITE);
-      memcpy(map, divisor_factors, num_divisors * sizeof(divisor_factors[0]));
+      /* Shaders read these as little-endian dwords. */
+      util_memcpy_cpu_to_le32(map, divisor_factors, num_divisors * sizeof(divisor_factors[0]));
    }
    return v;
 }
@@ -5636,7 +5914,8 @@ si_create_vertex_state(struct pipe_screen *screen,
 
    assert(!state->velems.instance_divisor_is_one);
    assert(!state->velems.instance_divisor_is_fetched);
-   assert(!state->velems.fix_fetch_always);
+   assert(!state->velems.fix_fetch_always ||
+          (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8));
    assert(buffer->buffer_offset % 4 == 0);
    assert(!buffer->is_user_buffer);
    for (unsigned i = 0; i < num_elements; i++) {
@@ -5724,7 +6003,10 @@ static void si_memory_barrier(struct pipe_context *ctx, unsigned flags)
 {
    struct si_context *sctx = (struct si_context *)ctx;
 
-   if (!(flags & ~PIPE_BARRIER_UPDATE))
+   /* Update barriers still have to wait: the copy behind a following readback must not
+    * start while shaders are writing the image.
+    */
+   if (!flags)
       return;
 
    /* Subsequent commands must wait for all shader invocations to

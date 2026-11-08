@@ -25,9 +25,76 @@
 #include "util/half_float.h"
 #include "ac_drm_fourcc.h"
 
+/* On big-endian hosts the generated tables list packed formats from the most
+ * significant field down, which suits CPU packing. The hardware format and swap
+ * selection needs the little-endian view: fields listed from bit 0 upward.
+ */
+const struct util_format_description *
+radv_format_hw_description(const struct util_format_description *desc, struct util_format_description *storage)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || desc->layout != UTIL_FORMAT_LAYOUT_PLAIN || desc->nr_channels < 2 ||
+       desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS)
+      return desc;
+
+   const unsigned n = desc->nr_channels;
+   *storage = *desc;
+   if (!desc->is_array) {
+      for (unsigned i = 0; i < n; i++)
+         storage->channel[i] = desc->channel[n - 1 - i];
+      for (unsigned i = 0; i < 4; i++) {
+         if (desc->swizzle[i] <= PIPE_SWIZZLE_W)
+            storage->swizzle[i] = PIPE_SWIZZLE_X + (n - 1 - (desc->swizzle[i] - PIPE_SWIZZLE_X));
+      }
+   }
+
+   /* Array formats keep their order, but their shifts also count from the host's top. */
+   unsigned shift = 0;
+   for (unsigned i = 0; i < n; i++) {
+      storage->channel[i].shift = shift;
+      shift += storage->channel[i].size;
+   }
+   return storage;
+}
+
+unsigned
+radv_native_format_width(VkFormat format)
+{
+   const struct util_format_description *desc = vk_format_description(format);
+   if (desc->block.width > 1 || desc->block.height > 1)
+      return 1;
+   if (radv_native_image_format(format) != format)
+      return 4;
+   return desc->is_array ? desc->channel[0].size / 8 : desc->block.bits / 8;
+}
+
+uint32_t
+radv_get_cb_format(enum amd_gfx_level gfx_level, enum pipe_format format)
+{
+   uint32_t cb_format = ac_get_cb_format(gfx_level, format);
+   const struct util_format_description *desc = util_format_description(format);
+   if (UTIL_ARCH_BIG_ENDIAN && !desc->is_array && desc->is_bitmask) {
+      /* The common selection reads channel sizes in table order. */
+      switch (cb_format) {
+      case V_028C70_COLOR_2_10_10_10:
+         return V_028C70_COLOR_10_10_10_2;
+      case V_028C70_COLOR_10_10_10_2:
+         return V_028C70_COLOR_2_10_10_10;
+      case V_028C70_COLOR_1_5_5_5:
+         return V_028C70_COLOR_5_5_5_1;
+      case V_028C70_COLOR_5_5_5_1:
+         return V_028C70_COLOR_1_5_5_5;
+      default:
+         break;
+      }
+   }
+   return cb_format;
+}
+
 uint32_t
 radv_translate_buffer_dataformat(const struct util_format_description *desc, int first_non_void)
 {
+   struct util_format_description hw_desc;
+   desc = radv_format_hw_description(desc, &hw_desc);
    unsigned type;
    int i;
 
@@ -151,8 +218,11 @@ radv_is_vertex_buffer_format_supported(VkFormat format)
    if (type == UTIL_FORMAT_TYPE_FIXED)
       return false;
 
-   if (desc->nr_channels == 4 && desc->channel[0].size == 10 && desc->channel[1].size == 10 &&
-       desc->channel[2].size == 10 && desc->channel[3].size == 2)
+   /* Big endian tables list packed fields from the top bit, so look at the hardware order. */
+   struct util_format_description hw_storage;
+   const struct util_format_description *hw = radv_format_hw_description(desc, &hw_storage);
+   if (hw->nr_channels == 4 && hw->channel[0].size == 10 && hw->channel[1].size == 10 &&
+       hw->channel[2].size == 10 && hw->channel[3].size == 2)
       return true;
 
    switch (desc->channel[first_non_void].size) {
@@ -170,6 +240,8 @@ uint32_t
 radv_translate_tex_dataformat(const struct radv_physical_device *pdev, VkFormat format,
                               const struct util_format_description *desc, int first_non_void)
 {
+   struct util_format_description hw_desc;
+   desc = radv_format_hw_description(desc, &hw_desc);
    bool uniform = true;
    int i;
 
@@ -562,7 +634,7 @@ bool
 radv_is_colorbuffer_format_supported(const struct radv_physical_device *pdev, VkFormat format, bool *blendable)
 {
    const struct util_format_description *desc = vk_format_description(format);
-   uint32_t color_format = ac_get_cb_format(pdev->info.gfx_level, desc->format);
+   uint32_t color_format = radv_get_cb_format(pdev->info.gfx_level, desc->format);
    uint32_t color_swap = radv_translate_colorswap(format, false);
    uint32_t color_num_format = ac_get_cb_number_type(desc->format);
 
@@ -756,6 +828,13 @@ radv_physical_device_get_format_properties(struct radv_physical_device *pdev, Vk
 
       /* Fails for unknown reasons with linear tiling & subsampled formats. */
       out_properties->linearTilingFeatures = desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED ? 0 : tiling;
+      /* As below, the host would see the GPU's byte order in wider plane elements. */
+      if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && multiplanar) {
+         for (unsigned p = 0; p < vk_format_get_plane_count(format); p++) {
+            if (vk_format_description(vk_format_get_plane_format(format, p))->channel[0].size != 8)
+               out_properties->linearTilingFeatures = 0;
+         }
+      }
       out_properties->optimalTilingFeatures = tiling;
       out_properties->bufferFeatures = 0;
       return;
@@ -896,6 +975,14 @@ radv_physical_device_get_format_properties(struct radv_physical_device *pdev, Vk
    if (vk_format_is_compressed(format))
       linear = 0;
 
+   /* The host maps linear images directly, so it would see the GPU's byte order
+    * in any element wider than a byte.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 &&
+       (!desc->is_array || desc->channel[0].size != 8 || vk_format_is_depth_or_stencil(format) ||
+        radv_native_image_format(format) != format))
+      linear = 0;
+
    /* From the Vulkan spec 1.2.163:
     *
     * "VK_FORMAT_FEATURE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT must be supported for the
@@ -978,7 +1065,9 @@ radv_translate_dbformat(VkFormat format)
 unsigned
 radv_translate_colorswap(VkFormat format, bool do_endian_swap)
 {
-   const struct util_format_description *desc = vk_format_description(format);
+   format = radv_native_image_format(format);
+   struct util_format_description hw_desc;
+   const struct util_format_description *desc = radv_format_hw_description(vk_format_description(format), &hw_desc);
 
 #define HAS_SWIZZLE(chan, swz) (desc->swizzle[chan] == PIPE_SWIZZLE_##swz)
 
@@ -1040,7 +1129,8 @@ radv_translate_colorswap(VkFormat format, bool do_endian_swap)
 bool
 radv_format_pack_clear_color(VkFormat format, uint32_t clear_vals[2], VkClearColorValue *value)
 {
-   const struct util_format_description *desc = vk_format_description(format);
+   struct util_format_description hw_desc;
+   const struct util_format_description *desc = radv_format_hw_description(vk_format_description(format), &hw_desc);
 
    if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
       clear_vals[0] = float3_to_r11g11b10f(value->float32);
@@ -1117,7 +1207,7 @@ radv_format_pack_clear_color(VkFormat format, uint32_t clear_vals[2], VkClearCol
          }
       } else if (channel->type == UTIL_FORMAT_TYPE_FLOAT) {
          if (channel->size == 32) {
-            memcpy(&v, &value->float32[c], 4);
+            v = fui(value->float32[c]);
          } else if (channel->size == 16) {
             v = _mesa_float_to_float16_rtz(value->float32[c]);
          } else {

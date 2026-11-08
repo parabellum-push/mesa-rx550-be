@@ -67,6 +67,8 @@ bool gl_nir_link_spirv(const struct gl_constants *consts,
 bool gl_nir_link_glsl(struct gl_context *ctx,
                       struct gl_shader_program *prog);
 
+void gl_nir_gather_source_uniform_use(struct gl_shader_program *prog);
+
 bool gl_nir_link_uniforms(const struct gl_constants *consts,
                           struct gl_shader_program *prog,
                           bool fill_parameters);

@@ -36,6 +36,7 @@
  */
 
 #include "si_pipe.h"
+#include "util/glheader.h"
 #include "si_build_pm4.h"
 #include "sid.h"
 #include "util/format/u_format.h"
@@ -456,7 +457,7 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
    }
 }
 
-static void si_set_sampler_state_desc(struct si_sampler_state *sstate,
+static void si_set_sampler_state_desc(struct si_context *sctx, struct si_sampler_state *sstate,
                                       struct si_sampler_view *sview, struct si_texture *tex,
                                       uint32_t *desc)
 {
@@ -464,6 +465,10 @@ static void si_set_sampler_state_desc(struct si_sampler_state *sstate,
       memcpy(desc, sstate->upgraded_depth_val, 4 * 4);
    else
       memcpy(desc, sstate->val, 4 * 4);
+   if (UTIL_ARCH_BIG_ENDIAN && sctx && sctx->gfx_level == GFX8 &&
+       sctx->screen->info.family == CHIP_POLARIS11 && tex && sview &&
+       !tex->is_depth && !sview->is_stencil_sampler)
+      desc[3] = si_gfx8_border_color_for_view(sctx, sstate, sview);
 }
 
 static void si_set_sampler_view_desc(struct si_context *sctx, struct si_sampler_view *sview,
@@ -503,9 +508,10 @@ static void si_set_sampler_view_desc(struct si_context *sctx, struct si_sampler_
    } else {
       /* Disable FMASK and bind sampler state in [12:15]. */
       memcpy(desc + 8, null_texture_descriptor, 4 * 4);
+      desc[8] = sview->native_wide_meta;
 
       if (sstate)
-         si_set_sampler_state_desc(sstate, sview, tex, desc + 12);
+         si_set_sampler_state_desc(sctx, sstate, sview, tex, desc + 12);
    }
 }
 
@@ -539,7 +545,7 @@ static void si_reset_sampler_view_slot(struct si_samplers *samplers, unsigned sl
    memcpy(desc + 8, null_texture_descriptor, 4 * 4);
    /* Re-set the sampler state if we are transitioning from FMASK. */
    if (samplers->sampler_states[slot])
-      si_set_sampler_state_desc(samplers->sampler_states[slot], NULL, NULL, desc + 12);
+      si_set_sampler_state_desc(NULL, samplers->sampler_states[slot], NULL, NULL, desc + 12);
 }
 
 static void si_set_sampler_views(struct si_context *sctx, unsigned shader,
@@ -788,11 +794,50 @@ static void si_set_shader_image_desc(struct si_context *ctx, const struct pipe_i
       uint32_t elements = si_clamp_texture_texel_count(screen->max_texel_buffer_elements,
                                                        view->format, view->u.buf.size);
 
-      si_make_buffer_descriptor(screen, res, view->format, view->u.buf.offset, elements,
+      enum pipe_format desc_format = view->format;
+      if (UTIL_ARCH_BIG_ENDIAN && screen->info.gfx_level == GFX8 &&
+          (desc_format == PIPE_FORMAT_R10G10B10A2_UNORM ||
+           desc_format == PIPE_FORMAT_R10G10B10A2_UINT))
+         desc_format = PIPE_FORMAT_R32_UINT;
+      si_make_buffer_descriptor(screen, res, desc_format, view->u.buf.offset, elements,
                                 desc);
       si_set_buf_desc_address(res, view->u.buf.offset, desc + 4);
    } else {
-      static const unsigned char swizzle[4] = {0, 1, 2, 3};
+      unsigned char swizzle[4] = {0, 1, 2, 3};
+      const struct util_format_description *source = util_format_description(res->b.b.format);
+      const struct util_format_description *target = util_format_description(view->format);
+      /* Packed maps are canonical LE words, while their GL transfer
+       * type is a native 32-bit packed word. Narrow views split that word.
+       */
+      bool source_packed_word = res->b.b.format == PIPE_FORMAT_R11G11B10_FLOAT ||
+                                 res->b.b.format == PIPE_FORMAT_R9G9B9E5_FLOAT ||
+                                 si_gfx8_be_packed_10bit(screen->info.gfx_level, res->b.b.format);
+      unsigned source_component_bits = source_packed_word ? 32 : source->channel[0].size;
+      /* The resource component selectors apply to both loads and stores,
+       * so writable native narrow views need the same permutation.
+       */
+      if (UTIL_ARCH_BIG_ENDIAN && screen->info.gfx_level == GFX8 &&
+          !(view->access & PIPE_IMAGE_ACCESS_DRIVER_INTERNAL) &&
+          ((source->layout == UTIL_FORMAT_LAYOUT_PLAIN && source->is_array) || source_packed_word) &&
+          target->layout == UTIL_FORMAT_LAYOUT_PLAIN &&
+          util_format_get_blocksize(res->b.b.format) == util_format_get_blocksize(view->format) &&
+          (target->channel[0].size == 8 || target->channel[0].size == 16) &&
+          (source_component_bits == 16 || source_component_bits == 32) &&
+          target->channel[0].size < source_component_bits) {
+         unsigned group = source_component_bits / target->channel[0].size;
+         for (unsigned i = 0; i < target->nr_channels; ++i)
+            swizzle[i] = i ^ (group - 1);
+      }
+      unsigned packed_target = view->format == PIPE_FORMAT_R11G11B10_FLOAT ? 3 :
+                               view->format == PIPE_FORMAT_R10G10B10A2_UNORM ? 1 :
+                               view->format == PIPE_FORMAT_R10G10B10A2_UINT ? 2 : 0;
+      bool native_packed_view = UTIL_ARCH_BIG_ENDIAN && screen->info.gfx_level == GFX8 &&
+         fmask_desc && packed_target &&
+         !(view->access & PIPE_IMAGE_ACCESS_DRIVER_INTERNAL) &&
+         source->layout == UTIL_FORMAT_LAYOUT_PLAIN && source->is_array &&
+         (source->channel[0].size == 8 || source->channel[0].size == 16) &&
+         util_format_get_blocksize(res->b.b.format) == 4;
+      enum pipe_format descriptor_format = native_packed_view ? PIPE_FORMAT_R32_UINT : view->format;
       struct si_texture *tex = (struct si_texture *)res;
       unsigned level = view->u.tex.level;
       bool uses_dcc = vi_dcc_enabled(tex, level);
@@ -849,12 +894,34 @@ static void si_set_shader_image_desc(struct si_context *ctx, const struct pipe_i
       }
 
       screen->make_texture_descriptor(
-         screen, tex, false, res->b.b.target, view->format, swizzle, hw_level, hw_level,
+         screen, tex, false, res->b.b.target, descriptor_format, swizzle, hw_level, hw_level,
          view->u.tex.first_layer, view->u.tex.last_layer, width, height, depth, false,
          desc, fmask_desc);
       si_set_mutable_tex_desc_fields(screen, tex, &tex->surface.u.legacy.level[level], level, level,
                                      util_format_get_blockwidth(view->format),
                                      false, access, desc);
+
+      /* Single-sample images use the otherwise unused FMASK descriptor.
+       * MSAA images retain their real FMASK fields and use its unused last
+       * word; shader lowering clears that word before hardware FMASK reads.
+       */
+      if (UTIL_ARCH_BIG_ENDIAN && screen->info.gfx_level == GFX8 &&
+          fmask_desc) {
+         unsigned native_word = res->b.b.nr_samples > 1 ? 7 : 0;
+         fmask_desc[native_word] = 0;
+         if (!(view->access & PIPE_IMAGE_ACCESS_DRIVER_INTERNAL) &&
+             source->layout == UTIL_FORMAT_LAYOUT_PLAIN && source->is_array &&
+             target->layout == UTIL_FORMAT_LAYOUT_PLAIN && target->is_array &&
+             util_format_get_blocksize(res->b.b.format) == util_format_get_blocksize(view->format) &&
+             (source->channel[0].size == 8 || source->channel[0].size == 16) &&
+             (target->channel[0].size == 16 || target->channel[0].size == 32) &&
+             source->channel[0].size < target->channel[0].size)
+            fmask_desc[native_word] = source->channel[0].size | (target->channel[0].size << 8) |
+                             (target->nr_channels << 16);
+         if (native_packed_view)
+            fmask_desc[native_word] = source->channel[0].size | (32 << 8) |
+                             ((packed_target == 3 ? 3 : 4) << 16) | (packed_target << 24);
+      }
    }
 }
 
@@ -1101,7 +1168,7 @@ static void si_bind_sampler_states(struct pipe_context *ctx, enum pipe_shader_ty
       if (tex && tex->surface.fmask_size)
          continue;
 
-      si_set_sampler_state_desc(sstates[i], sview, tex, desc->list + desc_slot * 16 + 12);
+      si_set_sampler_state_desc(sctx, sstates[i], sview, tex, desc->list + desc_slot * 16 + 12);
 
       sctx->descriptors_dirty |= 1u << si_sampler_and_image_descriptors_idx(shader);
       if (shader != PIPE_SHADER_COMPUTE)
@@ -1996,7 +2063,8 @@ static void si_upload_bindless_descriptors(struct si_context *sctx)
       if (!(*img_handle)->desc_dirty)
          continue;
 
-      si_upload_bindless_descriptor(sctx, desc_slot, 8);
+      si_upload_bindless_descriptor(sctx, desc_slot,
+                                    UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8 ? 16 : 8);
       (*img_handle)->desc_dirty = false;
    }
 
@@ -2034,7 +2102,11 @@ static void si_update_bindless_image_descriptor(struct si_context *sctx,
    struct pipe_image_view *view = &img_handle->view;
    struct pipe_resource *res = view->resource;
    uint32_t image_desc[16];
-   unsigned desc_size = (res->nr_samples >= 2 ? 16 : 8) * 4;
+   /* Native single-sample conversion metadata lives after the hardware
+    * descriptor, just like FMASK for multisample images.
+    */
+   unsigned desc_size = (res->nr_samples >= 2 ||
+                         (UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8) ? 16 : 8) * 4;
 
    if (res->target == PIPE_BUFFER)
       return;
@@ -2764,6 +2836,12 @@ static void si_make_image_handle_resident(struct pipe_context *ctx, uint64_t han
    res = si_resource(view->resource);
 
    if (resident) {
+      /* GetImageHandle creates a read/write view. Residency supplies the
+       * actual access mode needed by native readonly reinterpretation.
+       */
+      if (UTIL_ARCH_BIG_ENDIAN && sctx->gfx_level == GFX8)
+         view->access = access == GL_READ_ONLY ? PIPE_IMAGE_ACCESS_READ :
+                        access == GL_WRITE_ONLY ? PIPE_IMAGE_ACCESS_WRITE : PIPE_IMAGE_ACCESS_READ_WRITE;
       if (res->b.b.target != PIPE_BUFFER) {
          struct si_texture *tex = (struct si_texture *)res;
          unsigned level = view->u.tex.level;
@@ -2795,7 +2873,7 @@ static void si_make_image_handle_resident(struct pipe_context *ctx, uint64_t han
        * is not going to be called.
        */
       si_sampler_view_add_buffer(sctx, view->resource,
-                                 (access & PIPE_IMAGE_ACCESS_WRITE) ?
+                                 access != GL_READ_ONLY ?
                                     RADEON_USAGE_READWRITE : RADEON_USAGE_READ, false);
    } else {
       /* Remove the image handle from the per-context list. */

@@ -276,6 +276,19 @@ dri_image_drawable_get_buffers(struct dri_drawable *drawable,
     *    st_api_make_current
     *    st_manager_validate_framebuffers (part of st_validate_state)
     */
+   /* Loader image-format tokens are native-endian, even when the
+    * internal renderbuffer uses DRM's fixed byte storage layout.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN) {
+      switch (color_format) {
+      case PIPE_FORMAT_B8G8R8A8_UNORM: color_format = PIPE_FORMAT_BGRA8888_UNORM; break;
+      case PIPE_FORMAT_B8G8R8X8_UNORM: color_format = PIPE_FORMAT_BGRX8888_UNORM; break;
+      case PIPE_FORMAT_R8G8B8A8_UNORM: color_format = PIPE_FORMAT_RGBA8888_UNORM; break;
+      case PIPE_FORMAT_R8G8B8X8_UNORM: color_format = PIPE_FORMAT_RGBX8888_UNORM; break;
+      default: break;
+      }
+   }
+
    return drawable->screen->image.loader->getBuffers(
                                           opaque_dri_drawable(drawable),
                                           color_format,

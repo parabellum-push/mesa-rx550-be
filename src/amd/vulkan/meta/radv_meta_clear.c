@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "util/format/u_format.h"
+#include "util/format_srgb.h"
 #include "nir/nir_builder.h"
 #include "radv_debug.h"
 #include "radv_entrypoints.h"
@@ -1949,7 +1951,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *im
                                                 .baseArrayLayer = range->baseArrayLayer,
                                                 .layerCount = layer_count},
                         },
-                        0, NULL);
+                        0, &(struct radv_image_view_extra_create_info){.native_channels = true});
 
    VkClearAttachment clear_att = {
       .aspectMask = range->aspectMask,
@@ -2029,7 +2031,7 @@ radv_fast_clear_range(struct radv_cmd_buffer *cmd_buffer, struct radv_image *ima
                                  .layerCount = vk_image_subresource_layer_count(&image->vk, range),
                               },
                         },
-                        0, NULL);
+                        0, &(struct radv_image_view_extra_create_info){.native_channels = true});
 
    VkClearRect clear_rect = {
       .rect =
@@ -2104,6 +2106,35 @@ radv_cmd_clear_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
             }
          }
       }
+   }
+
+   /* A 64-bit clear value is two uint32s in host memory order, so on a big-endian host the
+    * first is the high half. The hardware's first channel is the low half.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && (ranges->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) &&
+       (format == VK_FORMAT_R64_UINT || format == VK_FORMAT_R64_SINT)) {
+      internal_clear_value.color.uint32[0] = clear_value->color.uint32[1];
+      internal_clear_value.color.uint32[1] = clear_value->color.uint32[0];
+   }
+
+   /* Four 16-bit channels on 32-bit storage: the CB cannot reorder them within each word, so
+    * clear the words directly. The first channel is the high half of the first word.
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && (ranges->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) &&
+       vk_format_get_blocksize(format) == 8 && radv_native_format_width(format) == 2 && image->native_width == 4) {
+      uint16_t channels[4];
+      util_format_pack_rgba(vk_format_to_pipe_format(format), channels, clear_value->color.uint32, 1);
+      format = VK_FORMAT_R32G32_UINT;
+      internal_clear_value.color.uint32[0] = ((uint32_t)channels[0] << 16) | channels[1];
+      internal_clear_value.color.uint32[1] = ((uint32_t)channels[2] << 16) | channels[3];
+   }
+
+   /* On widened big-endian storage the hardware's sRGB conversion would hit the wrong bytes. */
+   if ((ranges->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && vk_format_is_srgb(format) &&
+       radv_native_format_width(format) < image->native_width) {
+      format = vk_format_no_srgb(format);
+      for (unsigned i = 0; i < 3; i++)
+         internal_clear_value.color.float32[i] = util_format_linear_to_srgb_float(clear_value->color.float32[i]);
    }
 
    if (format == VK_FORMAT_R4G4_UNORM_PACK8) {

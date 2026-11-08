@@ -187,6 +187,40 @@ VAStatus vlVaMapBuffer2(VADriverContextP ctx, VABufferID buf_id,
 
       assert(usage);
 
+      if (buf->derived_surface.fixed_le_shadow) {
+         /* A default image map must preserve the existing surface contents,
+          * including surfaces which have no associated decoder context. */
+         if (flags == VA_MAPBUFFER_FLAG_DEFAULT)
+            usage |= PIPE_MAP_READ;
+         VAImage *image = buf->derived_surface.image;
+         VASurfaceID surface = buf->derived_surface.surface;
+         if (buf->derived_surface.map_usage) {
+            mtx_unlock(&drv->mutex);
+            return VA_STATUS_ERROR_INVALID_BUFFER;
+         }
+         if (!buf->data)
+            buf->data = CALLOC(1, image->data_size);
+         if (!buf->data) {
+            mtx_unlock(&drv->mutex);
+            return VA_STATUS_ERROR_ALLOCATION_FAILED;
+         }
+         buf->derived_surface.map_usage = usage;
+         *pbuff = buf->data;
+         mtx_unlock(&drv->mutex);
+         if (usage & PIPE_MAP_READ) {
+            VAStatus status = vlVaGetImage(ctx, surface, 0, 0, image->width,
+                                          image->height, image->image_id);
+            if (status != VA_STATUS_SUCCESS) {
+               mtx_lock(&drv->mutex);
+               buf->derived_surface.map_usage = 0;
+               mtx_unlock(&drv->mutex);
+               *pbuff = NULL;
+            }
+            return status;
+         }
+         return VA_STATUS_SUCCESS;
+      }
+
       *pbuff = map_func(drv->pipe, resource, 0, usage,
                         &box, &buf->derived_surface.transfer);
       mtx_unlock(&drv->mutex);
@@ -262,6 +296,21 @@ vlVaUnmapBuffer(VADriverContextP ctx, VABufferID buf_id)
    if (!buf || buf->export_refcount > 0) {
       mtx_unlock(&drv->mutex);
       return VA_STATUS_ERROR_INVALID_BUFFER;
+   }
+
+   if (buf->derived_surface.fixed_le_shadow) {
+      VAImage *image = buf->derived_surface.image;
+      VASurfaceID surface = buf->derived_surface.surface;
+      unsigned usage = buf->derived_surface.map_usage;
+      buf->derived_surface.map_usage = 0;
+      mtx_unlock(&drv->mutex);
+      if (!usage)
+         return VA_STATUS_ERROR_INVALID_BUFFER;
+      if (usage & PIPE_MAP_WRITE)
+         return vlVaPutImage(ctx, surface, image->image_id, 0, 0,
+                             image->width, image->height, 0, 0,
+                             image->width, image->height);
+      return VA_STATUS_SUCCESS;
    }
 
    resource = buf->derived_surface.resource;

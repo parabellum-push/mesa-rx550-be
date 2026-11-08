@@ -37,7 +37,7 @@ struct aco_vs_prolog_info {
    uint32_t alpha_adjust_lo;
    uint32_t alpha_adjust_hi;
 
-   uint8_t formats[ACO_MAX_VERTEX_ATTRIBS];
+   uint16_t formats[ACO_MAX_VERTEX_ATTRIBS];
 
    unsigned num_attributes;
    uint32_t misaligned_mask;

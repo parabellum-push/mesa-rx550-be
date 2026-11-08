@@ -58,6 +58,28 @@ radv_occlusion_query_use_l2(const struct radv_physical_device *pdev)
    return pdev->info.gfx_level >= GFX9;
 }
 
+/* Query memory holds the GPU's little-endian values. */
+static inline uint64_t
+radv_query_read64(const volatile uint64_t *value)
+{
+   return util_le64_to_cpu(p_atomic_read(value));
+}
+
+/* Copied results land in application memory, which uses the host's order. */
+static nir_def *
+radv_query_native(nir_builder *b, nir_def *value)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN)
+      return value;
+   if (value->bit_size == 64) {
+      nir_def *low = radv_query_native(b, nir_unpack_64_2x32_split_x(b, value));
+      nir_def *high = radv_query_native(b, nir_unpack_64_2x32_split_y(b, value));
+      return nir_pack_64_2x32_split(b, high, low);
+   }
+   return nir_ior(b, nir_ior(b, nir_ushr_imm(b, value, 24), nir_iand_imm(b, nir_ushr_imm(b, value, 8), 0x0000ff00)),
+                  nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, value, 8), 0x00ff0000), nir_ishl_imm(b, value, 24)));
+}
+
 static void
 radv_store_availability(nir_builder *b, nir_def *flags, nir_def *dst_buf, nir_def *offset, nir_def *value32)
 {
@@ -65,11 +87,11 @@ radv_store_availability(nir_builder *b, nir_def *flags, nir_def *dst_buf, nir_de
 
    nir_push_if(b, nir_test_mask(b, flags, VK_QUERY_RESULT_64_BIT));
 
-   nir_store_ssbo(b, nir_vec2(b, value32, nir_imm_int(b, 0)), dst_buf, offset, .align_mul = 8);
+   nir_store_ssbo(b, radv_query_native(b, nir_pack_64_2x32_split(b, value32, nir_imm_int(b, 0))), dst_buf, offset, .align_mul = 8);
 
    nir_push_else(b, NULL);
 
-   nir_store_ssbo(b, value32, dst_buf, offset);
+   nir_store_ssbo(b, radv_query_native(b, value32), dst_buf, offset);
 
    nir_pop_if(b, NULL);
 
@@ -214,11 +236,11 @@ build_occlusion_query_shader(struct radv_device *device)
 
    nir_push_if(&b, result_is_64bit);
 
-   nir_store_ssbo(&b, nir_load_var(&b, result), dst_buf, output_base, .align_mul = 8);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_load_var(&b, result)), dst_buf, output_base, .align_mul = 8);
 
    nir_push_else(&b, NULL);
 
-   nir_store_ssbo(&b, nir_u2u32(&b, nir_load_var(&b, result)), dst_buf, output_base, .align_mul = 8);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_u2u32(&b, nir_load_var(&b, result))), dst_buf, output_base, .align_mul = 8);
 
    nir_pop_if(&b, NULL);
    nir_pop_if(&b, NULL);
@@ -347,11 +369,11 @@ build_pipeline_statistics_query_shader(struct radv_device *device)
       /* Store result */
       nir_push_if(&b, result_is_64bit);
 
-      nir_store_ssbo(&b, nir_load_var(&b, result), dst_buf, nir_load_var(&b, output_offset));
+      nir_store_ssbo(&b, radv_query_native(&b, nir_load_var(&b, result)), dst_buf, nir_load_var(&b, output_offset));
 
       nir_push_else(&b, NULL);
 
-      nir_store_ssbo(&b, nir_u2u32(&b, nir_load_var(&b, result)), dst_buf, nir_load_var(&b, output_offset));
+      nir_store_ssbo(&b, radv_query_native(&b, nir_u2u32(&b, nir_load_var(&b, result))), dst_buf, nir_load_var(&b, output_offset));
 
       nir_pop_if(&b, NULL);
 
@@ -493,11 +515,11 @@ build_tfb_query_shader(struct radv_device *device)
    /* Store result. */
    nir_push_if(&b, result_is_64bit);
 
-   nir_store_ssbo(&b, nir_load_var(&b, result), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_load_var(&b, result)), dst_buf, output_base);
 
    nir_push_else(&b, NULL);
 
-   nir_store_ssbo(&b, nir_u2u32(&b, nir_load_var(&b, result)), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_u2u32(&b, nir_load_var(&b, result))), dst_buf, output_base);
 
    nir_pop_if(&b, NULL);
    nir_pop_if(&b, NULL);
@@ -594,11 +616,11 @@ build_timestamp_query_shader(struct radv_device *device)
    /* Store result. */
    nir_push_if(&b, result_is_64bit);
 
-   nir_store_ssbo(&b, nir_load_var(&b, result), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_load_var(&b, result)), dst_buf, output_base);
 
    nir_push_else(&b, NULL);
 
-   nir_store_ssbo(&b, nir_u2u32(&b, nir_load_var(&b, result)), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_u2u32(&b, nir_load_var(&b, result))), dst_buf, output_base);
 
    nir_pop_if(&b, NULL);
 
@@ -741,11 +763,11 @@ build_pg_query_shader(struct radv_device *device)
    /* Store result. */
    nir_push_if(&b, result_is_64bit);
 
-   nir_store_ssbo(&b, nir_load_var(&b, result), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_load_var(&b, result)), dst_buf, output_base);
 
    nir_push_else(&b, NULL);
 
-   nir_store_ssbo(&b, nir_u2u32(&b, nir_load_var(&b, result)), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_u2u32(&b, nir_load_var(&b, result))), dst_buf, output_base);
 
    nir_pop_if(&b, NULL);
    nir_pop_if(&b, NULL);
@@ -851,11 +873,11 @@ build_ms_prim_gen_query_shader(struct radv_device *device)
    /* Store result. */
    nir_push_if(&b, result_is_64bit);
 
-   nir_store_ssbo(&b, nir_load_var(&b, result), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_load_var(&b, result)), dst_buf, output_base);
 
    nir_push_else(&b, NULL);
 
-   nir_store_ssbo(&b, nir_u2u32(&b, nir_load_var(&b, result)), dst_buf, output_base);
+   nir_store_ssbo(&b, radv_query_native(&b, nir_u2u32(&b, nir_load_var(&b, result))), dst_buf, output_base);
 
    nir_pop_if(&b, NULL);
    nir_pop_if(&b, NULL);
@@ -1395,7 +1417,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          uint64_t value;
 
          do {
-            value = p_atomic_read(&src64->value);
+            value = radv_query_read64(&src64->value);
          } while (value == TIMESTAMP_NOT_READY && (flags & VK_QUERY_RESULT_WAIT_BIT) &&
                   !(timed_out = (atimeout < os_time_get_nano())));
 
@@ -1431,8 +1453,8 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
                continue;
 
             do {
-               start = p_atomic_read(&src64[2 * i].value);
-               end = p_atomic_read(&src64[2 * i + 1].value);
+               start = radv_query_read64(&src64[2 * i].value);
+               end = radv_query_read64(&src64[2 * i + 1].value);
             } while ((!(start & (1ull << 63)) || !(end & (1ull << 63))) && (flags & VK_QUERY_RESULT_WAIT_BIT) &&
                      !(timed_out = (atimeout < os_time_get_nano())));
 
@@ -1464,7 +1486,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          const uint32_t *avail_ptr = (const uint32_t *)(pool->ptr + pool->availability_offset + 4 * query);
 
          do {
-            available = p_atomic_read(avail_ptr);
+            available = util_le32_to_cpu(p_atomic_read(avail_ptr));
 
             if (pool->uses_ace && pdev->emulate_mesh_shader_queries) {
                const uint32_t task_invoc_offset =
@@ -1473,7 +1495,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
                const uint32_t *avail_ptr_stop =
                   (const uint32_t *)(src + pipelinestat_block_size + task_invoc_offset + 4);
 
-               if (!(p_atomic_read(avail_ptr_start) & 0x80000000) || !(p_atomic_read(avail_ptr_stop) & 0x80000000))
+               if (!(util_le32_to_cpu(p_atomic_read(avail_ptr_start)) & 0x80000000) || !(util_le32_to_cpu(p_atomic_read(avail_ptr_stop)) & 0x80000000))
                   available = 0;
             }
          } while (!available && (flags & VK_QUERY_RESULT_WAIT_BIT) && !(timed_out = (atimeout < os_time_get_nano())));
@@ -1491,7 +1513,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
             for (int i = 0; i < ARRAY_SIZE(pipeline_statistics_indices); ++i) {
                if (pool->vk.pipeline_statistics & (1u << i)) {
                   if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT)) {
-                     *dst = stop[pipeline_statistics_indices[i]] - start[pipeline_statistics_indices[i]];
+                     *dst = util_le64_to_cpu(stop[pipeline_statistics_indices[i]]) - util_le64_to_cpu(start[pipeline_statistics_indices[i]]);
                   }
                   dst++;
                }
@@ -1503,7 +1525,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
             for (int i = 0; i < ARRAY_SIZE(pipeline_statistics_indices); ++i) {
                if (pool->vk.pipeline_statistics & (1u << i)) {
                   if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT)) {
-                     *dst = stop[pipeline_statistics_indices[i]] - start[pipeline_statistics_indices[i]];
+                     *dst = util_le64_to_cpu(stop[pipeline_statistics_indices[i]]) - util_le64_to_cpu(start[pipeline_statistics_indices[i]]);
                   }
                   dst++;
                }
@@ -1525,7 +1547,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          do {
             available = 1;
             for (int j = 0; j < 4; j++) {
-               if (!(p_atomic_read(&src64[j].value) & 0x8000000000000000UL))
+               if (!(radv_query_read64(&src64[j].value) & 0x8000000000000000UL))
                   available = 0;
             }
          } while (!available && (flags & VK_QUERY_RESULT_WAIT_BIT) && !(timed_out = (atimeout < os_time_get_nano())));
@@ -1535,8 +1557,8 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          else if (!available && !(flags & VK_QUERY_RESULT_PARTIAL_BIT))
             result = VK_NOT_READY;
 
-         num_primitives_written = p_atomic_read_relaxed(&src64[3].value) - p_atomic_read_relaxed(&src64[1].value);
-         primitive_storage_needed = p_atomic_read_relaxed(&src64[2].value) - p_atomic_read_relaxed(&src64[0].value);
+         num_primitives_written = radv_query_read64(&src64[3].value) - radv_query_read64(&src64[1].value);
+         primitive_storage_needed = radv_query_read64(&src64[2].value) - radv_query_read64(&src64[0].value);
 
          if (flags & VK_QUERY_RESULT_64_BIT) {
             if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT))
@@ -1568,12 +1590,12 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
           */
          do {
             available = 1;
-            if (!(p_atomic_read(&src64[0].value) & 0x8000000000000000UL) ||
-                !(p_atomic_read(&src64[2].value) & 0x8000000000000000UL)) {
+            if (!(radv_query_read64(&src64[0].value) & 0x8000000000000000UL) ||
+                !(radv_query_read64(&src64[2].value) & 0x8000000000000000UL)) {
                available = 0;
             }
-            if (uses_gds_query && (!(p_atomic_read(&src64[4].value) & 0x8000000000000000UL) ||
-                                   !(p_atomic_read(&src64[5].value) & 0x8000000000000000UL))) {
+            if (uses_gds_query && (!(radv_query_read64(&src64[4].value) & 0x8000000000000000UL) ||
+                                   !(radv_query_read64(&src64[5].value) & 0x8000000000000000UL))) {
                available = 0;
             }
          } while (!available && (flags & VK_QUERY_RESULT_WAIT_BIT) && !(timed_out = (atimeout < os_time_get_nano())));
@@ -1583,11 +1605,11 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          else if (!available && !(flags & VK_QUERY_RESULT_PARTIAL_BIT))
             result = VK_NOT_READY;
 
-         primitive_storage_needed = p_atomic_read_relaxed(&src64[2].value) - p_atomic_read_relaxed(&src64[0].value);
+         primitive_storage_needed = radv_query_read64(&src64[2].value) - radv_query_read64(&src64[0].value);
 
          if (uses_gds_query) {
             /* Accumulate the result that was copied from GDS in case NGG shader has been used. */
-            primitive_storage_needed += p_atomic_read_relaxed(&src64[5].value) - p_atomic_read_relaxed(&src64[4].value);
+            primitive_storage_needed += radv_query_read64(&src64[5].value) - radv_query_read64(&src64[4].value);
          }
 
          if (flags & VK_QUERY_RESULT_64_BIT) {
@@ -1608,7 +1630,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          do {
             avail = true;
             for (unsigned i = 0; i < pc_pool->num_passes; ++i)
-               if (!p_atomic_read(&src64[pool->stride / 8 - i - 1].value))
+               if (!radv_query_read64(&src64[pool->stride / 8 - i - 1].value))
                   avail = false;
          } while (!avail && (flags & VK_QUERY_RESULT_WAIT_BIT) && !(timed_out = (atimeout < os_time_get_nano())));
 
@@ -1626,27 +1648,27 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
             const uint32_t *avail_ptr = (const uint32_t *)(pool->ptr + pool->availability_offset + 4 * query);
 
             do {
-               available = p_atomic_read(avail_ptr);
+               available = util_le32_to_cpu(p_atomic_read(avail_ptr));
             } while (!available && (flags & VK_QUERY_RESULT_WAIT_BIT) &&
                      !(timed_out = (atimeout < os_time_get_nano())));
 
             const uint64_t *start = (uint64_t *)src;
             const uint64_t *stop = (uint64_t *)(src + pipelinestat_block_size);
 
-            ms_prim_gen = stop[pipeline_statistics_indices[13]] - start[pipeline_statistics_indices[13]];
+            ms_prim_gen = util_le64_to_cpu(stop[pipeline_statistics_indices[13]]) - util_le64_to_cpu(start[pipeline_statistics_indices[13]]);
          } else {
             p_atomic_uint64_t const *src64 = (p_atomic_uint64_t const *)src;
 
             do {
                available = 1;
-               if (!(p_atomic_read(&src64[0].value) & 0x8000000000000000UL) ||
-                   !(p_atomic_read(&src64[1].value) & 0x8000000000000000UL)) {
+               if (!(radv_query_read64(&src64[0].value) & 0x8000000000000000UL) ||
+                   !(radv_query_read64(&src64[1].value) & 0x8000000000000000UL)) {
                   available = 0;
                }
             } while (!available && (flags & VK_QUERY_RESULT_WAIT_BIT) &&
                      !(timed_out = (atimeout < os_time_get_nano())));
 
-            ms_prim_gen = p_atomic_read_relaxed(&src64[1].value) - p_atomic_read_relaxed(&src64[0].value);
+            ms_prim_gen = radv_query_read64(&src64[1].value) - radv_query_read64(&src64[0].value);
          }
 
          if (timed_out)
@@ -1669,7 +1691,7 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          uint32_t *src32 = (uint32_t *)src;
          uint32_t value;
          do {
-            value = p_atomic_read(&src32[1]);
+            value = util_le32_to_cpu(p_atomic_read(&src32[1]));
          } while (value != 1 && (flags & VK_QUERY_RESULT_WAIT_BIT));
 
          available = value != 0;
@@ -1680,8 +1702,8 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          if (flags & VK_QUERY_RESULT_64_BIT) {
             uint64_t *dest64 = (uint64_t *)dest;
             if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT)) {
-               dest64[0] = src32[5];
-               dest64[1] = src32[6];
+               dest64[0] = util_le32_to_cpu(src32[5]);
+               dest64[1] = util_le32_to_cpu(src32[6]);
             }
             dest += 16;
             if (flags & VK_QUERY_RESULT_WITH_STATUS_BIT_KHR) {
@@ -1691,8 +1713,8 @@ radv_GetQueryPoolResults(VkDevice _device, VkQueryPool queryPool, uint32_t first
          } else {
             uint32_t *dest32 = (uint32_t *)dest;
             if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT)) {
-               dest32[0] = src32[5];
-               dest32[1] = src32[6];
+               dest32[0] = util_le32_to_cpu(src32[5]);
+               dest32[1] = util_le32_to_cpu(src32[6]);
             }
             dest += 8;
             if (flags & VK_QUERY_RESULT_WITH_STATUS_BIT_KHR) {

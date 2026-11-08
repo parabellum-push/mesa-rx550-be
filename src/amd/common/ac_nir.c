@@ -610,7 +610,7 @@ get_output_and_type(struct shader_outputs *outputs, unsigned slot, bool high_16b
 
 static void
 emit_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info,
-               struct shader_outputs *outputs)
+               struct shader_outputs *outputs, enum amd_gfx_level gfx_level)
 {
    nir_def *so_vtx_count = nir_ubfe_imm(b, nir_load_streamout_config_amd(b), 16, 7);
    nir_def *tid = nir_load_subgroup_invocation(b);
@@ -643,7 +643,9 @@ emit_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info,
       nir_def *vec[4] = {undef, undef, undef, undef};
       uint8_t mask = 0;
       u_foreach_bit(j, output->component_mask) {
-         nir_def *data = output_data[j];
+         bool native_be = UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8;
+         unsigned source = native_be && (output->component_mask_64bit & (1 << j)) ? j ^ 1 : j;
+         nir_def *data = output_data[source];
 
          if (data) {
             if (data->bit_size < 32) {
@@ -654,6 +656,16 @@ emit_streamout(nir_builder *b, unsigned stream, nir_xfb_info *info,
                data = nir_convert_to_bit_size(b, data, base_type, 32);
             }
 
+            if (native_be) {
+               /* Transform feedback is API buffer storage, so each native
+                * dword is BE. Rasterization exports keep the original values.
+                */
+               data = nir_ior(b,
+                  nir_ior(b, nir_ushr_imm(b, data, 24),
+                             nir_iand_imm(b, nir_ushr_imm(b, data, 8), 0xff00)),
+                  nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, data, 8), 0xff0000),
+                             nir_ishl_imm(b, data, 24)));
+            }
             unsigned comp = j - output->component_offset;
             vec[comp] = data;
             mask |= 1 << comp;
@@ -765,7 +777,7 @@ ac_nir_create_gs_copy_shader(const nir_shader *gs_nir,
       }
 
       if (stream_id)
-         emit_streamout(&b, stream, info, &outputs);
+         emit_streamout(&b, stream, info, &outputs, gfx_level);
 
       if (stream == 0) {
          uint64_t export_outputs = b.shader->info.outputs_written | VARYING_BIT_POS;
@@ -895,7 +907,7 @@ ac_nir_lower_legacy_vs(nir_shader *nir,
    }
 
    if (!disable_streamout && nir->xfb_info) {
-      emit_streamout(&b, 0, nir->xfb_info, &outputs);
+      emit_streamout(&b, 0, nir->xfb_info, &outputs, gfx_level);
       preserved = nir_metadata_none;
    }
 

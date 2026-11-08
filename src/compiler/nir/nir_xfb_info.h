@@ -45,6 +45,8 @@ typedef struct {
    bool high_16bits;
    uint8_t component_mask;
    uint8_t component_offset;
+   /* Dword pairs that form native 64-bit components, before IO lowering. */
+   uint8_t component_mask_64bit;
 } nir_xfb_output_info;
 
 typedef struct {

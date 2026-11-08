@@ -718,6 +718,8 @@ void
 radv_compose_swizzle(const struct util_format_description *desc, const VkComponentMapping *mapping,
                      enum pipe_swizzle swizzle[4])
 {
+   struct util_format_description hw_desc;
+   desc = radv_format_hw_description(desc, &hw_desc);
    if (desc->format == PIPE_FORMAT_R64_UINT || desc->format == PIPE_FORMAT_R64_SINT) {
       /* 64-bit formats only support storage images and storage images
        * require identity component mappings. We use 32-bit
@@ -1322,6 +1324,42 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
 
    image->plane_count = vk_format_get_plane_count(format);
    image->disjoint = image->plane_count > 1 && pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT;
+   image->native_width = radv_native_format_width(format);
+   if (pCreateInfo->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) {
+      const VkImageFormatListCreateInfo *format_list = vk_find_struct_const(pCreateInfo->pNext, IMAGE_FORMAT_LIST_CREATE_INFO);
+      if (format_list && format_list->viewFormatCount) {
+         for (unsigned i = 0; i < format_list->viewFormatCount; i++)
+            radv_image_widen_native_storage(image, format_list->pViewFormats[i]);
+      } else {
+         /* Any compatible view may appear, possibly after data was written, so choose
+          * the widest layout up front. Images shared with other processes stay in the
+          * layout those expect.
+          */
+         const unsigned blocksize = vk_format_get_blocksize(format);
+         const bool shared = vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO) ||
+                             vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA);
+         if (blocksize == 2 && !shared)
+            radv_image_widen_native_storage(image, VK_FORMAT_R16_UINT);
+         else if ((blocksize == 4 || blocksize == 8) && !shared)
+            radv_image_widen_native_storage(image, VK_FORMAT_R32_UINT);
+      }
+
+      /* A view may be wider than a plane's channels. Planes are read through their own
+       * descriptors, so they can hold whole elements unless something else reads them.
+       */
+      if (UTIL_ARCH_BIG_ENDIAN && image->plane_count > 1 &&
+          !vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO) &&
+          !vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA) &&
+          /* Storage writes to a plane view do not go through the channel reversal. */
+          !(pCreateInfo->usage & (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR |
+                                  VK_IMAGE_USAGE_VIDEO_DECODE_SRC_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR))) {
+         for (unsigned p = 0; p < image->plane_count; p++) {
+            const VkFormat plane_format = vk_format_get_plane_format(format, p);
+            if (vk_format_description(plane_format)->nr_channels > 1)
+               image->native_plane_width[p] = vk_format_get_blocksize(plane_format);
+         }
+      }
+   }
 
    image->exclusive = pCreateInfo->sharingMode == VK_SHARING_MODE_EXCLUSIVE;
    if (pCreateInfo->sharingMode == VK_SHARING_MODE_CONCURRENT) {
@@ -1407,6 +1445,18 @@ radv_plane_from_aspect(VkImageAspectFlags mask)
    default:
       return 0;
    }
+}
+
+void
+radv_image_widen_native_storage(struct radv_image *image, VkFormat view_format)
+{
+   /* Host-mapped linear images must keep host order; compressed blocks are byte streams. */
+   if (!UTIL_ARCH_BIG_ENDIAN || view_format == VK_FORMAT_UNDEFINED || image->plane_count > 1 ||
+       image->vk.tiling == VK_IMAGE_TILING_LINEAR || vk_format_is_depth_or_stencil(image->vk.format) ||
+       vk_format_is_compressed(image->vk.format) || vk_format_is_compressed(view_format) ||
+       vk_format_get_blocksize(view_format) != vk_format_get_blocksize(image->vk.format) && view_format != VK_FORMAT_R32_UINT)
+      return;
+   image->native_width = MAX2(image->native_width, radv_native_format_width(view_format));
 }
 
 VkFormat

@@ -232,6 +232,7 @@ struct radv_attachment {
 };
 
 struct radv_rendering_state {
+   bool be_suspending; /* big-endian 16-bit pair swap: this pass continues later */
    bool active;
    bool has_image_views;
    VkRect2D area;

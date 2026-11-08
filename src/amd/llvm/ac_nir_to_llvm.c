@@ -3426,6 +3426,16 @@ static bool visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
                                 ? comp_type
                                 : LLVMVectorType(comp_type, instr->def.num_components);
       result = LLVMBuildLoad2(ctx->ac.builder, vec_type, ptr, "");
+      if (UTIL_ARCH_BIG_ENDIAN && ctx->ac.gfx_level == GFX8 && instr->def.bit_size >= 16) {
+         /* NIR's constant blob contains native CPU scalars. The target
+          * GPU loads LE values, including scalar/vector 16/32/64-bit data.
+          */
+         char type[64], name[80];
+         ac_build_type_name_for_intr(vec_type, type, sizeof(type));
+         snprintf(name, sizeof(name), "llvm.bswap.%s", type);
+         LLVMValueRef args[] = {result};
+         result = ac_build_intrinsic(&ctx->ac, name, vec_type, args, 1, 0);
+      }
       break;
    }
    case nir_intrinsic_set_vertex_and_primitive_count:
@@ -3715,7 +3725,8 @@ static bool visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       return false;
    }
    if (result) {
-      ctx->ssa_defs[instr->def.index] = result;
+      /* Like ALU results, so integer ALU can consume it (BE streamout byte swap). */
+      ctx->ssa_defs[instr->def.index] = ac_to_integer_or_pointer(&ctx->ac, result);
    }
    return true;
 }

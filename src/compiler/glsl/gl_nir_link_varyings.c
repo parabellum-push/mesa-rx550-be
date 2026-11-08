@@ -1969,6 +1969,9 @@ xfb_decl_store(struct xfb_decl *xfb_decl, const struct gl_constants *consts,
             info->Outputs[info->NumOutputs].StreamId = xfb_decl->stream_id;
             info->Outputs[info->NumOutputs].OutputBuffer = buffer;
             info->Outputs[info->NumOutputs].DstOffset = xfb_offset;
+            info->Outputs[info->NumOutputs].ComponentMask64Bit =
+               _mesa_gl_datatype_is_64bit(xfb_decl->type) ?
+                  BITFIELD_RANGE(location_frac, output_size) : 0;
             ++info->NumOutputs;
          }
          info->Buffers[buffer].Stream = xfb_decl->stream_id;

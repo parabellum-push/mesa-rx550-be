@@ -24,6 +24,89 @@
 extern "C" {
 #endif
 
+/* These packed CPU words use canonical little-endian storage on GFX8. */
+static inline bool si_gfx8_be_packed_10bit(enum amd_gfx_level gfx_level, enum pipe_format format)
+{
+   return UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8 &&
+          (format == PIPE_FORMAT_R10G10B10A2_UINT || format == PIPE_FORMAT_B10G10R10A2_UINT ||
+           format == PIPE_FORMAT_R10G10B10A2_UNORM || format == PIPE_FORMAT_B10G10R10A2_UNORM);
+}
+
+static inline bool si_gfx8_be_packed16(enum amd_gfx_level gfx_level,
+                                      enum pipe_format format)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || gfx_level != GFX8)
+      return false;
+   const struct util_format_description *d = util_format_description(format);
+   if (d->layout != UTIL_FORMAT_LAYOUT_PLAIN || d->colorspace != UTIL_FORMAT_COLORSPACE_RGB ||
+       d->block.bits != 16 || d->is_array || !d->is_unorm)
+      return false;
+   return (d->nr_channels == 3 && d->channel[0].size == 5 &&
+           d->channel[1].size == 6 && d->channel[2].size == 5) ||
+          (d->nr_channels == 4 && d->channel[0].size == 4 &&
+           d->channel[1].size == 4 && d->channel[2].size == 4 && d->channel[3].size == 4) ||
+          (d->nr_channels == 4 && d->channel[1].size == 5 && d->channel[2].size == 5 &&
+           ((d->channel[0].size == 1 && d->channel[3].size == 5) ||
+            (d->channel[0].size == 5 && d->channel[3].size == 1)));
+}
+
+static inline bool si_gfx8_be_packed_texture(enum amd_gfx_level gfx_level,
+                                            enum pipe_format format)
+{
+   return si_gfx8_be_packed_10bit(gfx_level, format) ||
+          si_gfx8_be_packed16(gfx_level, format);
+}
+
+static inline unsigned si_gfx8_be_texture_swap_bytes(enum amd_gfx_level gfx_level,
+                                                        enum pipe_format format)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || gfx_level != GFX8)
+      return 0;
+   if (si_gfx8_be_packed_texture(gfx_level, format))
+      return util_format_get_blocksize(format);
+   /* Gallium depth/stencil maps contain native CPU words, while DB and
+    * depth staging resources use little-endian component words. */
+   switch (format) {
+   case PIPE_FORMAT_Z16_UNORM:
+      return 2;
+   case PIPE_FORMAT_Z32_UNORM:
+   case PIPE_FORMAT_Z32_FLOAT:
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+   case PIPE_FORMAT_X24S8_UINT:
+   case PIPE_FORMAT_S8X24_UINT:
+   case PIPE_FORMAT_Z24X8_UNORM:
+   case PIPE_FORMAT_X8Z24_UNORM:
+   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+   case PIPE_FORMAT_X32_S8X24_UINT:
+      return 4;
+   default:
+      break;
+   }
+   const struct util_format_description *desc = util_format_description(format);
+   if (desc->is_array &&
+       (desc->channel[0].size == 16 || desc->channel[0].size == 32))
+      return desc->channel[0].size / 8;
+   return 0;
+}
+
+static inline const struct util_format_description *
+si_texture_format_description(enum amd_gfx_level gfx_level, enum pipe_format format,
+                              struct util_format_description *numeric)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   if (si_gfx8_be_packed_texture(gfx_level, format)) {
+      *numeric = *desc;
+      unsigned n = desc->nr_channels;
+      for (unsigned i = 0; i < n; i++)
+         numeric->channel[i] = desc->channel[n - 1 - i];
+      for (unsigned i = 0; i < 4; i++)
+         numeric->swizzle[i] = desc->swizzle[i] < n ? n - 1 - desc->swizzle[i] : desc->swizzle[i];
+      return numeric;
+   }
+   return desc;
+}
+
 struct ac_llvm_compiler;
 
 #define SHADER_DEBUG_LOG 0
@@ -367,6 +450,10 @@ struct si_resource {
 struct si_transfer {
    struct threaded_transfer b;
    struct si_resource *staging;
+   void *native_map;
+   void *gpu_map;
+   unsigned gpu_stride;
+   unsigned gpu_layer_stride;
 };
 
 struct si_texture {
@@ -740,6 +827,10 @@ struct si_sampler_view {
     * [4..7] = buffer descriptor */
    uint32_t state[8];
    uint32_t fmask_state[8];
+   /* Big endian: non-zero if the view has wider channels than the texture; see
+    * si_lower_native_wide_tex(). Stored in the unused FMASK slot of the descriptor.
+    */
+   uint32_t native_wide_meta;
    const struct legacy_surf_level *base_level_info;
    uint8_t block_width;
    bool is_stencil_sampler;
@@ -754,7 +845,12 @@ struct si_sampler_state {
 #endif
    uint32_t val[4];
    uint32_t upgraded_depth_val[4];
+   struct pipe_sampler_state border_state;
 };
+
+uint32_t si_gfx8_border_color_for_view(struct si_context *sctx,
+                                      const struct si_sampler_state *sstate,
+                                      const struct si_sampler_view *sview);
 
 struct si_cs_shader_state {
    struct si_compute *program;
@@ -1044,6 +1140,7 @@ struct si_context {
    uint16_t prefetch_L2_mask;
 
    bool blitter_running:1;
+   bool native_raw_view:1; /* big endian: sampler views made now are raw driver copies */
    bool suppress_update_ps_colorbuf0_slot:1;
    bool is_noop:1;
    bool has_graphics:1;

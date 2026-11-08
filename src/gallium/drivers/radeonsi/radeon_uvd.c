@@ -12,6 +12,7 @@
 #include "radeon_video.h"
 #include "radeonsi/si_pipe.h"
 #include "util/u_memory.h"
+#include "util/u_math.h"
 #include "util/u_video.h"
 #include "vl/vl_defines.h"
 #include "vl/vl_mpeg12_decoder.h"
@@ -151,6 +152,78 @@ static void map_msg_fb_it_buf(struct ruvd_decoder *dec)
       dec->it = (uint8_t *)(ptr + FB_BUFFER_OFFSET + dec->fb_size);
 }
 
+/* UVD's RB/IB byte swap does not apply to firmware message payloads.
+ * Encode typed fields, preserving byte-sized codec parameters and matrices.
+ */
+static void ruvd_le32_array(uint32_t *words, unsigned count)
+{
+   for (unsigned i = 0; i < count; i++)
+      words[i] = util_cpu_to_le32(words[i]);
+}
+
+static void ruvd_le16_array(uint16_t *words, unsigned count)
+{
+   for (unsigned i = 0; i < count; i++)
+      words[i] = util_cpu_to_le16(words[i]);
+}
+
+static void ruvd_encode_message_le(struct ruvd_msg *msg)
+{
+   if (msg->msg_type == RUVD_MSG_CREATE) {
+      ruvd_le32_array(&msg->body.create.stream_type, sizeof(msg->body.create) / 4);
+   } else if (msg->msg_type == RUVD_MSG_DECODE) {
+      unsigned stream_type = msg->body.decode.stream_type;
+      ruvd_le32_array(&msg->body.decode.stream_type,
+         (offsetof(struct ruvd_msg, body.decode.codec) -
+          offsetof(struct ruvd_msg, body.decode.stream_type)) / 4);
+      switch (stream_type) {
+      case RUVD_CODEC_H264:
+      case RUVD_CODEC_H264_PERF: {
+         struct ruvd_h264 *h = &msg->body.decode.codec.h264;
+         ruvd_le32_array(&h->profile, 4);
+         ruvd_le16_array(&h->slice_group_change_rate_minus1, 2);
+         ruvd_le32_array(&h->frame_num,
+            (offsetof(struct ruvd_h264, ref_frame_list) -
+             offsetof(struct ruvd_h264, frame_num)) / 4);
+         ruvd_le32_array(h->reserved, ARRAY_SIZE(h->reserved));
+         ruvd_le32_array(&h->mvc.numViews, 2);
+         ruvd_le16_array((uint16_t *)h->mvc.mvcElements, sizeof(h->mvc.mvcElements) / 2);
+         break;
+      }
+      case RUVD_CODEC_H265: {
+         struct ruvd_h265 *h = &msg->body.decode.codec.h265;
+         ruvd_le32_array(&h->sps_info_flags, 2);
+         ruvd_le16_array(h->column_width_minus1, ARRAY_SIZE(h->column_width_minus1));
+         ruvd_le16_array(h->row_height_minus1, ARRAY_SIZE(h->row_height_minus1));
+         h->curr_poc = util_cpu_to_le32(h->curr_poc);
+         ruvd_le32_array((uint32_t *)h->poc_list, ARRAY_SIZE(h->poc_list));
+         break;
+      }
+      case RUVD_CODEC_VC1:
+         ruvd_le32_array(&msg->body.decode.codec.vc1.profile,
+                        sizeof(msg->body.decode.codec.vc1) / 4);
+         break;
+      case RUVD_CODEC_MPEG2:
+         ruvd_le32_array(&msg->body.decode.codec.mpeg2.decoded_pic_idx, 3);
+         break;
+      case RUVD_CODEC_MPEG4: {
+         struct ruvd_mpeg4 *m = &msg->body.decode.codec.mpeg4;
+         ruvd_le32_array(&m->decoded_pic_idx, 4);
+         ruvd_le16_array(&m->video_object_layer_width, 4);
+         m->flags = util_cpu_to_le32(m->flags);
+         ruvd_le16_array(&m->sprite_config.sprite_width, 4);
+         m->divx_311_config.flags = util_cpu_to_le32(m->divx_311_config.flags);
+         break;
+      }
+      default:
+         break;
+      }
+      ruvd_le32_array(msg->body.decode.extension_reserved,
+                     ARRAY_SIZE(msg->body.decode.extension_reserved));
+   }
+   ruvd_le32_array(&msg->size, 4);
+}
+
 /* unmap and send a message command to the VCPU */
 static void send_msg_buf(struct ruvd_decoder *dec)
 {
@@ -162,6 +235,11 @@ static void send_msg_buf(struct ruvd_decoder *dec)
 
    /* grab the current message buffer */
    buf = &dec->msg_fb_it_buffers[dec->cur_buffer];
+
+   if (UTIL_ARCH_BIG_ENDIAN && ((struct si_screen *)dec->screen)->info.gfx_level == GFX8) {
+      ruvd_encode_message_le(dec->msg);
+      dec->fb[0] = util_cpu_to_le32(dec->fb[0]);
+   }
 
    /* unmap the buffer */
    dec->ws->buffer_unmap(dec->ws, buf->res->buf);

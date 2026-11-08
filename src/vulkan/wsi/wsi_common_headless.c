@@ -325,6 +325,38 @@ wsi_headless_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
 }
 
 static VkResult
+wsi_headless_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+                                        uint64_t present_id,
+                                        uint64_t timeout)
+{
+   /* Nothing is displayed, so a frame is done once its present has been queued. */
+   return wsi_swapchain_wait_for_present_semaphore(wsi_chain, present_id, timeout);
+}
+
+static VkResult
+wsi_headless_swapchain_release_images(struct wsi_swapchain *wsi_chain,
+                                      uint32_t count, const uint32_t *indices)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+
+   for (uint32_t i = 0; i < count; i++)
+      chain->images[indices[i]].busy = false;
+
+   return VK_SUCCESS;
+}
+
+static void
+wsi_headless_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
+                                        VkPresentModeKHR mode)
+{
+   struct wsi_headless_swapchain *chain =
+      (struct wsi_headless_swapchain *)wsi_chain;
+
+   chain->present_mode = mode;
+}
+
+static VkResult
 wsi_headless_swapchain_destroy(struct wsi_swapchain *wsi_chain,
                                const VkAllocationCallbacks *pAllocator)
 {
@@ -472,11 +504,16 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->base.get_wsi_image = wsi_headless_swapchain_get_wsi_image;
    chain->base.acquire_next_image = wsi_headless_swapchain_acquire_next_image;
    chain->base.queue_present = wsi_headless_swapchain_queue_present;
+   chain->base.wait_for_present = wsi_headless_swapchain_wait_for_present;
+   chain->base.release_images = wsi_headless_swapchain_release_images;
+   chain->base.set_present_mode = wsi_headless_swapchain_set_present_mode;
    chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
    chain->base.image_count = num_images;
    chain->extent = pCreateInfo->imageExtent;
    chain->vk_format = pCreateInfo->imageFormat;
 
+   /* wsi_swapchain_init() already configured it; this replaces that. */
+   wsi_destroy_image_info(&chain->base, &chain->base.image_info);
    result = wsi_configure_image(&chain->base, pCreateInfo,
                                 0, &chain->base.image_info);
    if (result != VK_SUCCESS) {
@@ -488,8 +525,11 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    for (uint32_t i = 0; i < chain->base.image_count; i++) {
       result = wsi_create_image(&chain->base, &chain->base.image_info,
                                 &chain->images[i].base);
-      if (result != VK_SUCCESS)
-         return result;
+      if (result != VK_SUCCESS) {
+         /* wsi_create_image already cleaned this image up but leaves the handle set. */
+         chain->images[i].base.image = VK_NULL_HANDLE;
+         goto fail;
+      }
 
       chain->images[i].busy = false;
    }

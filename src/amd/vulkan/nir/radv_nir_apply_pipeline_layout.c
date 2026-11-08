@@ -6,6 +6,7 @@
 #include "ac_shader_util.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir_format_convert.h"
 #include "radv_descriptor_set.h"
 #include "radv_device.h"
 #include "radv_nir.h"
@@ -13,6 +14,7 @@
 #include "radv_shader.h"
 #include "radv_shader_args.h"
 #include "sid.h"
+#include "util/u_endian.h"
 
 typedef struct {
    enum amd_gfx_level gfx_level;
@@ -483,6 +485,373 @@ apply_layout_to_tex(nir_builder *b, apply_layout_state *state, nir_tex_instr *te
    }
 }
 
+/* Texel buffers are host-mapped, so they hold host-order elements that the typed
+ * hardware paths would decode as little-endian. The format is only known from the
+ * descriptor at run time, so read it there and handle elements wider than a byte in
+ * the shader.
+ */
+#define TEXEL_DST_SEL(word3, chan) nir_ubfe_imm(b, word3, 3 * (chan), 3)
+#define TEXEL_NUM_FORMAT(word3)    nir_ubfe_imm(b, word3, 12, 3)
+#define TEXEL_DATA_FORMAT(word3)   nir_ubfe_imm(b, word3, 15, 4)
+
+static nir_def *
+texel_bswap16(nir_builder *b, nir_def *value)
+{
+   return nir_iand_imm(b, nir_ior(b, nir_ushr_imm(b, value, 8), nir_ishl_imm(b, value, 8)), 0xffff);
+}
+
+static nir_def *
+texel_bswap32(nir_builder *b, nir_def *value)
+{
+   return nir_ior(b, nir_ior(b, nir_ushr_imm(b, value, 24), nir_iand_imm(b, nir_ushr_imm(b, value, 8), 0xff00)),
+                  nir_ior(b, nir_iand_imm(b, nir_ishl_imm(b, value, 8), 0xff0000), nir_ishl_imm(b, value, 24)));
+}
+
+/* Swaps a 32-bit or 64-bit value. */
+static nir_def *
+texel_bswap(nir_builder *b, nir_def *value)
+{
+   if (value->bit_size == 32)
+      return texel_bswap32(b, value);
+   return nir_pack_64_2x32_split(b, texel_bswap32(b, nir_unpack_64_2x32_split_y(b, value)),
+                                 texel_bswap32(b, nir_unpack_64_2x32_split_x(b, value)));
+}
+
+/* R64 texels hold their value in the first channel; the others are constants. */
+static nir_def *
+texel_swap_r64(nir_builder *b, nir_def *value)
+{
+   nir_def *c[NIR_MAX_VEC_COMPONENTS];
+   for (unsigned i = 0; i < value->num_components; i++)
+      c[i] = i ? nir_channel(b, value, i) : texel_bswap(b, nir_channel(b, value, 0));
+   return nir_vec(b, c, value->num_components);
+}
+
+static nir_def *
+texel_is_any(nir_builder *b, nir_def *value, unsigned count, const unsigned *options)
+{
+   nir_def *result = nir_imm_false(b);
+   for (unsigned i = 0; i < count; i++)
+      result = nir_ior(b, result, nir_ieq_imm(b, value, options[i]));
+   return result;
+}
+
+static const unsigned texel_32_formats[] = {V_008F0C_BUF_DATA_FORMAT_32, V_008F0C_BUF_DATA_FORMAT_32_32,
+                                            V_008F0C_BUF_DATA_FORMAT_32_32_32, V_008F0C_BUF_DATA_FORMAT_32_32_32_32};
+static const unsigned texel_16_formats[] = {V_008F0C_BUF_DATA_FORMAT_16, V_008F0C_BUF_DATA_FORMAT_16_16,
+                                            V_008F0C_BUF_DATA_FORMAT_16_16_16_16};
+
+static nir_def *
+texel_needs_native(nir_builder *b, nir_def *data_format)
+{
+   return nir_ior(b, nir_ior(b, texel_is_any(b, data_format, ARRAY_SIZE(texel_32_formats), texel_32_formats),
+                             texel_is_any(b, data_format, ARRAY_SIZE(texel_16_formats), texel_16_formats)),
+                  nir_ior(b, nir_ieq_imm(b, data_format, V_008F0C_BUF_DATA_FORMAT_2_10_10_10),
+                          nir_ieq_imm(b, data_format, V_008F0C_BUF_DATA_FORMAT_10_11_11)));
+}
+
+static nir_def *
+texel_decode(nir_builder *b, nir_def *bits, unsigned size, nir_def *num_format)
+{
+   nir_def *sext = nir_ibfe_imm(b, bits, 0, size);
+   nir_def *fu = nir_u2f32(b, bits), *fs = nir_i2f32(b, sext);
+   nir_def *result = bits; /* UINT */
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SINT), sext, result);
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_USCALED), fu, result);
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SSCALED), fs, result);
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_UNORM),
+                      nir_fdiv_imm(b, fu, (double)((1u << size) - 1)), result);
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SNORM),
+                      nir_fmax(b, nir_fdiv_imm(b, fs, (double)((1u << (size - 1)) - 1)), nir_imm_float(b, -1.0f)),
+                      result);
+   if (size == 16)
+      result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_FLOAT),
+                         nir_unpack_half_2x16_split_x(b, bits), result);
+   return result;
+}
+
+static nir_def *
+texel_encode(nir_builder *b, nir_def *value, unsigned size, nir_def *num_format)
+{
+   const unsigned mask = (1u << size) - 1;
+   nir_def *result = nir_iand_imm(b, value, mask); /* UINT and SINT */
+   nir_def *unorm = nir_f2u32(b, nir_fadd_imm(b, nir_fmul_imm(b, nir_fsat(b, value), (double)mask), 0.5));
+   nir_def *snorm = nir_iand_imm(b,
+                                 nir_f2i32(b, nir_fround_even(b, nir_fmul_imm(b, nir_fclamp(b, value, nir_imm_float(b, -1.0f), nir_imm_float(b, 1.0f)),
+                                                                              (double)(mask >> 1)))),
+                                 mask);
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_UNORM), unorm, result);
+   result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SNORM), snorm, result);
+   if (size == 16)
+      result = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_FLOAT),
+                         nir_pack_half_2x16_split(b, value, nir_imm_float(b, 0.0f)), result);
+   return result;
+}
+
+static nir_def *
+texel_raw_load(nir_builder *b, nir_def *desc, nir_def *index, unsigned offset, enum pipe_format format)
+{
+   nir_def *zero = nir_imm_int(b, 0);
+   return nir_load_typed_buffer_amd(b, 1, 32, desc, zero, zero, index, .base = offset, .format = format,
+                                    .align_mul = format == PIPE_FORMAT_R16_UINT ? 2 : 4, .align_offset = 0,
+                                    .memory_modes = nir_var_image);
+}
+
+/* Returns the texel as 32-bit channel bits, already swizzled as the descriptor asks. */
+static nir_def *
+texel_native_fetch(nir_builder *b, nir_def *desc, nir_def *index)
+{
+   nir_def *word3 = nir_channel(b, desc, 3);
+   nir_def *data_format = TEXEL_DATA_FORMAT(word3);
+   nir_def *num_format = TEXEL_NUM_FORMAT(word3);
+   nir_variable *var = nir_local_variable_create(b->impl, glsl_uvec4_type(), "native_texel");
+
+   nir_push_if(b, texel_is_any(b, data_format, ARRAY_SIZE(texel_32_formats), texel_32_formats));
+   {
+      nir_def *c[4];
+      for (unsigned i = 0; i < 4; i++)
+         c[i] = texel_bswap32(b, texel_raw_load(b, desc, index, i * 4, PIPE_FORMAT_R32_UINT));
+      nir_store_var(b, var, nir_vec(b, c, 4), 0xf);
+   }
+   nir_push_else(b, NULL);
+   nir_push_if(b, texel_is_any(b, data_format, ARRAY_SIZE(texel_16_formats), texel_16_formats));
+   {
+      nir_def *c[4];
+      for (unsigned i = 0; i < 4; i++) {
+         nir_def *bits = texel_bswap16(b, texel_raw_load(b, desc, index, i * 2, PIPE_FORMAT_R16_UINT));
+         c[i] = texel_decode(b, bits, 16, num_format);
+      }
+      nir_store_var(b, var, nir_vec(b, c, 4), 0xf);
+   }
+   nir_push_else(b, NULL);
+   {
+      nir_def *word = texel_bswap32(b, texel_raw_load(b, desc, index, 0, PIPE_FORMAT_R32_UINT));
+      nir_def *c[4];
+      nir_push_if(b, nir_ieq_imm(b, data_format, V_008F0C_BUF_DATA_FORMAT_10_11_11));
+      nir_def *r = nir_ubfe_imm(b, word, 0, 11), *g = nir_ubfe_imm(b, word, 11, 11), *bl = nir_ubfe_imm(b, word, 22, 10);
+      /* Small floats share the half-float layout once aligned to its mantissa. */
+      nir_def *packed = nir_unpack_half_2x16_split_x(b, nir_ishl_imm(b, r, 4));
+      nir_store_var(b, var,
+                    nir_vec4(b, packed, nir_unpack_half_2x16_split_x(b, nir_ishl_imm(b, g, 4)),
+                             nir_unpack_half_2x16_split_x(b, nir_ishl_imm(b, bl, 5)), nir_imm_int(b, 0)),
+                    0xf);
+      nir_push_else(b, NULL);
+      for (unsigned i = 0; i < 4; i++) {
+         const unsigned size = i == 3 ? 2 : 10;
+         c[i] = texel_decode(b, nir_ubfe_imm(b, word, i * 10, size), size, num_format);
+      }
+      nir_store_var(b, var, nir_vec(b, c, 4), 0xf);
+      nir_pop_if(b, NULL);
+   }
+   nir_pop_if(b, NULL);
+   nir_pop_if(b, NULL);
+
+   nir_def *raw = nir_load_var(b, var);
+   nir_def *is_int = nir_ior(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_UINT),
+                             nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SINT));
+   nir_def *one = nir_bcsel(b, is_int, nir_imm_int(b, 1), nir_imm_int(b, 0x3f800000));
+   nir_def *out[4];
+   for (unsigned i = 0; i < 4; i++) {
+      nir_def *sel = TEXEL_DST_SEL(word3, i);
+      nir_def *value = nir_imm_int(b, 0);
+      value = nir_bcsel(b, nir_ieq_imm(b, sel, V_008F0C_SQ_SEL_1), one, value);
+      value = nir_bcsel(b, nir_ieq_imm(b, sel, V_008F0C_SQ_SEL_X), nir_channel(b, raw, 0), value);
+      value = nir_bcsel(b, nir_ieq_imm(b, sel, V_008F0C_SQ_SEL_Y), nir_channel(b, raw, 1), value);
+      value = nir_bcsel(b, nir_ieq_imm(b, sel, V_008F0C_SQ_SEL_Z), nir_channel(b, raw, 2), value);
+      out[i] = nir_bcsel(b, nir_ieq_imm(b, sel, V_008F0C_SQ_SEL_W), nir_channel(b, raw, 3), value);
+   }
+   return nir_vec(b, out, 4);
+}
+
+static void
+texel_store_word(nir_builder *b, nir_def *desc, nir_def *index, unsigned offset, nir_def *value)
+{
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_store_buffer_amd(b, value, desc, zero, zero, index, .base = offset, .memory_modes = nir_var_image);
+}
+
+static void
+texel_native_store(nir_builder *b, nir_def *desc, nir_def *index, nir_def *value)
+{
+   nir_def *word3 = nir_channel(b, desc, 3);
+   nir_def *data_format = TEXEL_DATA_FORMAT(word3);
+   nir_def *num_format = TEXEL_NUM_FORMAT(word3);
+
+   nir_push_if(b, texel_is_any(b, data_format, ARRAY_SIZE(texel_32_formats), texel_32_formats));
+   {
+      for (unsigned i = 0; i < 4; i++) {
+         /* Channels past the format's count would land in the next element. */
+         nir_push_if(b, i == 0 ? nir_imm_true(b)
+                               : texel_is_any(b, data_format, 4 - i, texel_32_formats + i));
+         texel_store_word(b, desc, index, i * 4, texel_bswap32(b, nir_channel(b, value, i)));
+         nir_pop_if(b, NULL);
+      }
+   }
+   nir_push_else(b, NULL);
+   nir_push_if(b, texel_is_any(b, data_format, ARRAY_SIZE(texel_16_formats), texel_16_formats));
+   {
+      for (unsigned i = 0; i < 4; i++) {
+         nir_def *present = i == 0   ? nir_imm_true(b)
+                            : i == 1 ? texel_is_any(b, data_format, 2, texel_16_formats + 1)
+                                     : nir_ieq_imm(b, data_format, V_008F0C_BUF_DATA_FORMAT_16_16_16_16);
+         nir_push_if(b, present);
+         nir_def *bits = texel_encode(b, nir_channel(b, value, i), 16, num_format);
+         texel_store_word(b, desc, index, i * 2, nir_u2u16(b, texel_bswap16(b, bits)));
+         nir_pop_if(b, NULL);
+      }
+   }
+   nir_push_else(b, NULL);
+   nir_push_if(b, nir_ieq_imm(b, data_format, V_008F0C_BUF_DATA_FORMAT_10_11_11));
+   {
+      nir_def *word = nir_format_pack_11f11f10f(b, nir_trim_vector(b, value, 3));
+      texel_store_word(b, desc, index, 0, texel_bswap32(b, word));
+   }
+   nir_push_else(b, NULL);
+   {
+      nir_def *word = nir_imm_int(b, 0);
+      for (unsigned i = 0; i < 4; i++) {
+         const unsigned size = i == 3 ? 2 : 10;
+         word = nir_ior(b, word, nir_ishl_imm(b, texel_encode(b, nir_channel(b, value, i), size, num_format), i * 10));
+      }
+      texel_store_word(b, desc, index, 0, texel_bswap32(b, word));
+   }
+   nir_pop_if(b, NULL);
+   nir_pop_if(b, NULL);
+   nir_pop_if(b, NULL);
+}
+
+static bool
+lower_native_texel_buffer(nir_builder *b, nir_instr *instr, UNUSED void *data)
+{
+   nir_def *desc, *index, *def;
+
+   if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      if (tex->sampler_dim != GLSL_SAMPLER_DIM_BUF || tex->op != nir_texop_txf || tex->def.bit_size != 32)
+         return false;
+      int handle = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+      int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+      if (handle < 0 || coord < 0)
+         return false;
+      desc = tex->src[handle].src.ssa;
+      index = tex->src[coord].src.ssa;
+      def = &tex->def;
+   } else if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      switch (intr->intrinsic) {
+      case nir_intrinsic_bindless_image_load:
+         if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF && intr->def.bit_size == 64) {
+            b->cursor = nir_after_instr(instr);
+            nir_def *swapped = texel_swap_r64(b, &intr->def);
+            nir_def_rewrite_uses_after(&intr->def, swapped, swapped->parent_instr);
+            return true;
+         }
+         if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF || intr->def.bit_size != 32)
+            return false;
+         desc = intr->src[0].ssa;
+         index = intr->src[1].ssa;
+         def = &intr->def;
+         break;
+      case nir_intrinsic_bindless_image_store: {
+         if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF && nir_src_bit_size(intr->src[3]) == 64) {
+            b->cursor = nir_before_instr(instr);
+            nir_src_rewrite(&intr->src[3], texel_swap_r64(b, intr->src[3].ssa));
+            return true;
+         }
+         if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF || nir_src_bit_size(intr->src[3]) != 32)
+            return false;
+         b->cursor = nir_before_instr(instr);
+         nir_def *handle = intr->src[0].ssa;
+         nir_def *element = nir_channel(b, intr->src[1].ssa, 0);
+         nir_def *value = intr->src[3].ssa;
+         b->cursor = nir_instr_remove(instr);
+         nir_def *data_format = TEXEL_DATA_FORMAT(nir_channel(b, handle, 3));
+         nir_push_if(b, texel_needs_native(b, data_format));
+         /* Earlier passes may have shrunk the value to the format's channel count. */
+         texel_native_store(b, handle, element, nir_pad_vector_imm_int(b, value, 0, 4));
+         nir_push_else(b, NULL);
+         nir_builder_instr_insert(b, instr);
+         nir_pop_if(b, NULL);
+         return true;
+      }
+      case nir_intrinsic_bindless_image_atomic:
+      case nir_intrinsic_bindless_image_atomic_swap: {
+         if (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF)
+            return false;
+         /* Only R32 and R64 formats allow atomics, so values just need their bytes swapped. */
+         const unsigned bits = intr->def.bit_size;
+         if (bits != 32 && bits != 64)
+            return false;
+         nir_atomic_op op = nir_intrinsic_atomic_op(intr);
+         enum pipe_format format = nir_intrinsic_format(intr);
+         nir_def *handle = intr->src[0].ssa, *coord = intr->src[1].ssa, *sample = intr->src[2].ssa;
+         b->cursor = nir_instr_remove(instr);
+         nir_def *zero = nir_imm_intN_t(b, 0, bits);
+#define TEXEL_CMPXCHG(cmp, val)                                                                                        \
+   nir_bindless_image_atomic_swap(b, bits, handle, coord, sample, cmp, val, .image_dim = GLSL_SAMPLER_DIM_BUF,           \
+                                  .image_array = false, .format = format, .access = 0,                                 \
+                                  .atomic_op = nir_atomic_op_cmpxchg)
+         nir_def *result;
+         if (intr->intrinsic == nir_intrinsic_bindless_image_atomic_swap) {
+            result = TEXEL_CMPXCHG(texel_bswap(b, intr->src[3].ssa), texel_bswap(b, intr->src[4].ssa));
+         } else {
+            nir_variable *raw = nir_local_variable_create(b->impl, glsl_uintN_t_type(bits), "native_texel_atomic");
+            nir_store_var(b, raw, TEXEL_CMPXCHG(zero, zero), 1);
+            nir_loop *loop = nir_push_loop(b);
+            nir_def *old = nir_load_var(b, raw);
+            nir_def *native_old = texel_bswap(b, old), *arg = intr->src[3].ssa, *updated;
+            switch (op) {
+            case nir_atomic_op_iadd: updated = nir_iadd(b, native_old, arg); break;
+            case nir_atomic_op_imin: updated = nir_imin(b, native_old, arg); break;
+            case nir_atomic_op_umin: updated = nir_umin(b, native_old, arg); break;
+            case nir_atomic_op_imax: updated = nir_imax(b, native_old, arg); break;
+            case nir_atomic_op_umax: updated = nir_umax(b, native_old, arg); break;
+            case nir_atomic_op_iand: updated = nir_iand(b, native_old, arg); break;
+            case nir_atomic_op_ior: updated = nir_ior(b, native_old, arg); break;
+            case nir_atomic_op_ixor: updated = nir_ixor(b, native_old, arg); break;
+            case nir_atomic_op_fmin: updated = nir_fmin(b, native_old, arg); break;
+            case nir_atomic_op_fmax: updated = nir_fmax(b, native_old, arg); break;
+            default: updated = arg; break;
+            }
+            nir_def *observed = TEXEL_CMPXCHG(old, texel_bswap(b, updated));
+            nir_store_var(b, raw, observed, 1);
+            nir_push_if(b, nir_ieq(b, observed, old));
+            nir_jump(b, nir_jump_break);
+            nir_pop_if(b, NULL);
+            nir_pop_loop(b, loop);
+            result = nir_load_var(b, raw);
+         }
+#undef TEXEL_CMPXCHG
+         nir_def_rewrite_uses(&intr->def, texel_bswap(b, result));
+         return true;
+      }
+      default:
+         return false;
+      }
+   } else {
+      return false;
+   }
+
+   b->cursor = nir_before_instr(instr);
+   nir_variable *var = nir_local_variable_create(b->impl, glsl_uvec4_type(), "native_texel_result");
+   index = nir_channel(b, index, 0);
+   b->cursor = nir_instr_remove(instr);
+
+   /* Uses move to the merged result before the original instruction is reinserted. */
+   nir_def *result_placeholder = nir_load_var(b, var);
+   nir_def_rewrite_uses(def, nir_trim_vector(b, result_placeholder, def->num_components));
+   b->cursor = nir_before_instr(result_placeholder->parent_instr);
+
+   nir_def *data_format = TEXEL_DATA_FORMAT(nir_channel(b, desc, 3));
+   nir_push_if(b, texel_needs_native(b, data_format));
+   nir_store_var(b, var, texel_native_fetch(b, desc, index), 0xf);
+   nir_push_else(b, NULL);
+   nir_builder_instr_insert(b, instr);
+   nir_store_var(b, var, nir_pad_vector_imm_int(b, def, 0, 4), 0xf);
+   nir_pop_if(b, NULL);
+   return true;
+}
+
 void
 radv_nir_apply_pipeline_layout(nir_shader *shader, struct radv_device *device, const struct radv_shader_stage *stage)
 {
@@ -522,5 +891,12 @@ radv_nir_apply_pipeline_layout(nir_shader *shader, struct radv_device *device, c
       }
 
       nir_metadata_preserve(function->impl, nir_metadata_block_index | nir_metadata_dominance);
+   }
+
+   /* This runs after the regular variable lowering, so finish its own variables. */
+   if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && !shader->info.internal &&
+       nir_shader_instructions_pass(shader, lower_native_texel_buffer, nir_metadata_none, NULL)) {
+      nir_lower_vars_to_ssa(shader);
+      nir_opt_dce(shader);
    }
 }

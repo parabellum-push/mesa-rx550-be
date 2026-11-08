@@ -1095,10 +1095,10 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
                         ctx->TransformFeedback.CurrentBuffer->Name : 0;
       break;
    case GL_TRANSFORM_FEEDBACK_BUFFER_PAUSED:
-      v->value_int = ctx->TransformFeedback.CurrentObject->Paused;
+      v->value_bool = ctx->TransformFeedback.CurrentObject->Paused;
       break;
    case GL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE:
-      v->value_int = ctx->TransformFeedback.CurrentObject->Active;
+      v->value_bool = ctx->TransformFeedback.CurrentObject->Active;
       break;
    case GL_TRANSFORM_FEEDBACK_BINDING:
       v->value_int = ctx->TransformFeedback.CurrentObject->Name;
@@ -1215,6 +1215,9 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    /* GL_KHR_DEBUG */
    case GL_DEBUG_OUTPUT:
    case GL_DEBUG_OUTPUT_SYNCHRONOUS:
+      /* These are TYPE_BOOLEAN: read back through value_bool. */
+      v->value_bool = _mesa_get_debug_state_int(ctx, d->pname) != 0;
+      break;
    case GL_DEBUG_LOGGED_MESSAGES:
    case GL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH:
    case GL_DEBUG_GROUP_STACK_DEPTH:

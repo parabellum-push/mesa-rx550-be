@@ -870,7 +870,7 @@ _mesa_swap_bytes_2d_image(GLenum format, GLenum type,
 {
    GLint swapSize = _mesa_sizeof_packed_type(type);
 
-   assert(packing->SwapBytes);
+   assert(packing->SwapBytes || _mesa_packed_float_needs_swap(type));
 
    if (swapSize == 2 || swapSize == 4) {
       int swapsPerPixel = _mesa_bytes_per_pixel(format, type) / swapSize;

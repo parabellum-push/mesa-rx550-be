@@ -1451,7 +1451,17 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
             radv_get_compiler_string(pdev));
 
    if (radv_is_conformant(pdev)) {
-      if (pdev->info.gfx_level >= GFX10_3) {
+      /* GFX8 on big endian advertises Vulkan 1.3: report the suite this port is
+       * tested with. This is not a Khronos conformance submission.
+       */
+      if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8) {
+         p->conformanceVersion = (VkConformanceVersion){
+            .major = 1,
+            .minor = 3,
+            .subminor = 8,
+            .patch = 3,
+         };
+      } else if (pdev->info.gfx_level >= GFX10_3) {
          p->conformanceVersion = (VkConformanceVersion){
             .major = 1,
             .minor = 3,

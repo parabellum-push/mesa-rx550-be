@@ -422,11 +422,11 @@ store_query_result(struct gl_context *ctx, struct gl_query_object *q,
     * do with the GPU end of the query. Write it in "by hand".
     */
    if (pname == GL_QUERY_TARGET) {
-      /* Assume that the data must be LE. The endianness situation wrt CPU and
-       * GPU is incredibly confusing, but the vast majority of GPUs are
-       * LE. When a BE one comes along, this needs some form of resolution.
-       */
-      unsigned data[2] = { CPU_TO_LE32(q->Target), 0 };
+      /* The buffer holds the application's view of the value: host order. */
+      const bool is64 = ptype == GL_INT64_ARB || ptype == GL_UNSIGNED_INT64_ARB;
+      uint64_t data64 = q->Target;
+      unsigned data32 = q->Target;
+      const void *data = is64 ? (const void *)&data64 : (const void *)&data32;
       pipe_buffer_write(pipe, buf->buffer, offset,
                         (ptype == GL_INT64_ARB ||
                          ptype == GL_UNSIGNED_INT64_ARB) ? 8 : 4,

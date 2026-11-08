@@ -643,11 +643,11 @@ static bool apply_relocs(const struct ac_rtld_upload_info *u, unsigned part_idx,
       case R_AMDGPU_REL32:
       case R_AMDGPU_REL32_LO:
       case R_AMDGPU_REL32_HI:
-         addend = *(const uint32_t *)orig_ptr;
+         addend = util_le32_to_cpu(*(const uint32_t *)orig_ptr);
          break;
       case R_AMDGPU_ABS64:
       case R_AMDGPU_REL64:
-         addend = *(const uint64_t *)orig_ptr;
+         addend = util_le64_to_cpu(*(const uint64_t *)orig_ptr);
          break;
       default:
          report_errorf("unsupported r_type == %u", r_type);

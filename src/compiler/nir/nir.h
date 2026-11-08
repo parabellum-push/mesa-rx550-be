@@ -3642,6 +3642,12 @@ typedef enum {
 
    nir_io_16bit_input_output_support = BITFIELD_BIT(2),
 
+   /* Native CPU vertex buffers place the high dword of a 64-bit attribute
+    * first. Lower its input load to high/low UINT32 words, while keeping
+    * shader varyings and ordinary UINT32 vectors in their usual order.
+    */
+   nir_io_64bit_vertex_inputs_high_word_first = BITFIELD_BIT(3),
+
    /* Options affecting the GLSL compiler are below. */
 
    /**

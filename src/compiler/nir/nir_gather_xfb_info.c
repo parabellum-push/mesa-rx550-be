@@ -148,6 +148,8 @@ add_var_xfb_outputs(nir_xfb_info *xfb,
          output->offset = *offset;
          output->location = *location;
          output->component_mask = comp_mask & 0xf;
+         output->component_mask_64bit = glsl_type_contains_64bit(type) ?
+                                          output->component_mask : 0;
          output->component_offset = comp_offset;
 
          *offset += util_bitcount(output->component_mask) * 4;
@@ -341,7 +343,7 @@ nir_gather_xfb_info_from_intrinsics(nir_shader *nir)
 
             if (xfb.out[index % 2].num_components) {
                nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
-               nir_xfb_output_info out;
+               nir_xfb_output_info out = {0};
 
                out.component_offset = index;
                out.component_mask =
@@ -350,6 +352,14 @@ nir_gather_xfb_info_from_intrinsics(nir_shader *nir)
                out.high_16bits = sem.high_16bits;
                out.buffer = xfb.out[index % 2].buffer;
                out.offset = (uint32_t)xfb.out[index % 2].offset * 4;
+               if (nir->xfb_info) {
+                  for (unsigned j = 0; j < nir->xfb_info->output_count; j++) {
+                     const nir_xfb_output_info *old = &nir->xfb_info->outputs[j];
+                     if (old->buffer == out.buffer && old->location == out.location &&
+                         old->high_16bits == out.high_16bits)
+                        out.component_mask_64bit |= old->component_mask_64bit & out.component_mask;
+                  }
+               }
                util_dynarray_append(&array, nir_xfb_output_info, out);
 
                uint8_t stream = (sem.gs_streams >> (i * 2)) & 0x3;
@@ -401,6 +411,7 @@ nir_gather_xfb_info_from_intrinsics(nir_shader *nir)
                   /* Merge outputs. */
                   cur->component_offset = merged_offset;
                   cur->component_mask = merged_mask;
+                  cur->component_mask_64bit |= outputs[j].component_mask_64bit;
                   cur->offset = (uint32_t)cur->offset -
                                 (uint32_t)cur->component_offset * 4 +
                                 (uint32_t)merged_offset * 4;
