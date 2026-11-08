@@ -366,6 +366,11 @@ typedef struct {
       struct pipe_resource *resource;
       struct pipe_transfer *transfer;
       enum pipe_video_entrypoint entrypoint;
+      /* P010/P016 expose fixed LE samples, unlike native Gallium maps. */
+      VAImage *image;
+      VASurfaceID surface;
+      unsigned map_usage;
+      bool fixed_le_shadow;
    } derived_surface;
    unsigned int export_refcount;
    VABufferInfo export_state;

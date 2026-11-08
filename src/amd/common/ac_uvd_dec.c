@@ -13,6 +13,7 @@
 #include "util/os_time.h"
 #include "util/detect_os.h"
 #include "util/u_math.h"
+#include "util/u_endian.h"
 #include "util/u_memory.h"
 
 #if DETECT_OS_POSIX
@@ -145,6 +146,73 @@ get_embedded_size(struct ac_uvd_decoder *dec)
    return size;
 }
 
+/* Big endian GFX8: UVD's ring/IB byte swap does not apply to firmware message payloads.
+ * Encode typed fields as little endian, preserving byte-sized parameters and matrices.
+ */
+static void
+ruvd_le32_array(uint32_t *words, unsigned count)
+{
+   for (unsigned i = 0; i < count; i++)
+      words[i] = util_cpu_to_le32(words[i]);
+}
+
+static void
+ruvd_le16_array(uint16_t *words, unsigned count)
+{
+   for (unsigned i = 0; i < count; i++)
+      words[i] = util_cpu_to_le16(words[i]);
+}
+
+static void
+ruvd_encode_message_le(const struct ac_uvd_decoder *dec, struct ruvd_msg *msg)
+{
+   if (!UTIL_ARCH_BIG_ENDIAN || dec->gfx_level != GFX8)
+      return;
+
+   if (msg->msg_type == RUVD_MSG_CREATE) {
+      ruvd_le32_array(&msg->body.create.stream_type, sizeof(msg->body.create) / 4);
+   } else if (msg->msg_type == RUVD_MSG_DECODE) {
+      unsigned stream_type = msg->body.decode.stream_type;
+      ruvd_le32_array(&msg->body.decode.stream_type,
+                      (offsetof(struct ruvd_msg, body.decode.codec) -
+                       offsetof(struct ruvd_msg, body.decode.stream_type)) / 4);
+      switch (stream_type) {
+      case RUVD_CODEC_H264:
+      case RUVD_CODEC_H264_PERF: {
+         struct ruvd_h264 *h = &msg->body.decode.codec.h264;
+         ruvd_le32_array(&h->profile, 4);
+         ruvd_le16_array(&h->slice_group_change_rate_minus1, 2);
+         ruvd_le32_array(&h->frame_num,
+                         (offsetof(struct ruvd_h264, ref_frame_list) -
+                          offsetof(struct ruvd_h264, frame_num)) / 4);
+         ruvd_le32_array(h->reserved, ARRAY_SIZE(h->reserved));
+         ruvd_le32_array(&h->mvc.numViews, 2);
+         ruvd_le16_array((uint16_t *)h->mvc.mvcElements, sizeof(h->mvc.mvcElements) / 2);
+         break;
+      }
+      case RUVD_CODEC_H265: {
+         struct ruvd_h265 *h = &msg->body.decode.codec.h265;
+         ruvd_le32_array(&h->sps_info_flags, 2);
+         ruvd_le16_array(h->column_width_minus1, ARRAY_SIZE(h->column_width_minus1));
+         ruvd_le16_array(h->row_height_minus1, ARRAY_SIZE(h->row_height_minus1));
+         h->curr_poc = util_cpu_to_le32(h->curr_poc);
+         ruvd_le32_array((uint32_t *)h->poc_list, ARRAY_SIZE(h->poc_list));
+         break;
+      }
+      case RUVD_CODEC_VC1:
+         ruvd_le32_array(&msg->body.decode.codec.vc1.profile, sizeof(msg->body.decode.codec.vc1) / 4);
+         break;
+      case RUVD_CODEC_MPEG2:
+         ruvd_le32_array(&msg->body.decode.codec.mpeg2.decoded_pic_idx, 3);
+         break;
+      default:
+         break;
+      }
+      ruvd_le32_array(msg->body.decode.extension_reserved, ARRAY_SIZE(msg->body.decode.extension_reserved));
+   }
+   ruvd_le32_array(&msg->size, 4);
+}
+
 static uint32_t
 get_stream_handle()
 {
@@ -192,6 +260,7 @@ uvd_build_create_cmd(struct ac_video_dec *decoder, struct ac_video_dec_create_cm
 
    if (dec->sw_ctx_size)
       send_cmd(&cmd_buf, RUVD_CMD_SESSION_CONTEXT_BUFFER, cmd->session_va);
+   ruvd_encode_message_le(dec, msg);
    send_cmd(&cmd_buf, RUVD_CMD_MSG_BUFFER, cmd->embedded_va);
 
    cmd->out.cmd_dw = cmd_buf.cs.cdw;
@@ -208,6 +277,7 @@ uvd_build_destroy_cmd(struct ac_video_dec *decoder, struct ac_video_dec_destroy_
    msg->size = sizeof(*msg);
    msg->msg_type = RUVD_MSG_DESTROY;
    msg->stream_handle = dec->stream_handle;
+   ruvd_encode_message_le(dec, msg);
 
    struct cmd_buffer cmd_buf = {
       .dec = dec,
@@ -556,6 +626,10 @@ uvd_build_decode_cmd(struct ac_video_dec *decoder, struct ac_video_dec_decode_cm
    default:
       break;
    }
+
+   ruvd_encode_message_le(dec, msg);
+   if (UTIL_ARCH_BIG_ENDIAN && dec->gfx_level == GFX8)
+      feedback[0] = util_cpu_to_le32(feedback[0]);
 
    if (dec->sw_ctx_size)
       send_cmd(&cmd_buf, RUVD_CMD_SESSION_CONTEXT_BUFFER, cmd->session_va);

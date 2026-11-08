@@ -88,6 +88,22 @@ vlVaVideoSurfaceSize(vlVaSurface *p_surf, int component,
                                p_surf->templat.interlaced);
 }
 
+/* VA's P010/P016 sample bytes are little endian even on a BE host. */
+static void
+vlVaCopy16LittleEndian(uint8_t *dst, unsigned dst_stride,
+                       const uint8_t *src, unsigned src_stride,
+                       unsigned row_bytes, unsigned height)
+{
+   for (unsigned y = 0; y < height; y++) {
+      for (unsigned x = 0; x < row_bytes; x += 2) {
+         dst[x] = src[x + 1];
+         dst[x + 1] = src[x];
+      }
+      dst += dst_stride;
+      src += src_stride;
+   }
+}
+
 VAStatus
 vlVaQueryImageFormats(VADriverContextP ctx, VAImageFormat *format_list, int *num_formats)
 {
@@ -370,6 +386,11 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
    img_buf->num_elements = 1;
 
    pipe_resource_reference(&img_buf->derived_surface.resource, buf_resources[0]);
+   img_buf->derived_surface.image = img;
+   img_buf->derived_surface.surface = surface;
+   img_buf->derived_surface.fixed_le_shadow = UTIL_ARCH_BIG_ENDIAN &&
+      (surf->buffer->buffer_format == PIPE_FORMAT_P010 ||
+       surf->buffer->buffer_format == PIPE_FORMAT_P016);
 
    if (surf->ctx)
       img_buf->derived_surface.entrypoint = surf->ctx->templat.entrypoint;
@@ -563,10 +584,19 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
             mtx_unlock(&drv->mutex);
             return VA_STATUS_ERROR_OPERATION_FAILED;
          }
-         util_copy_rect((uint8_t*)(data[i] + pitches[i] * j),
-            view_resources[i]->format,
-            pitches[i] * view_resources[i]->array_size, 0, 0,
-            box.width, box.height, map, transfer->stride, 0, 0);
+         if (UTIL_ARCH_BIG_ENDIAN &&
+             (surf->buffer->buffer_format == PIPE_FORMAT_P010 ||
+              surf->buffer->buffer_format == PIPE_FORMAT_P016))
+            vlVaCopy16LittleEndian((uint8_t *)(data[i] + pitches[i] * j),
+                                   pitches[i] * view_resources[i]->array_size,
+                                   map, transfer->stride,
+                                   box.width * util_format_get_blocksize(view_resources[i]->format),
+                                   box.height);
+         else
+            util_copy_rect((uint8_t*)(data[i] + pitches[i] * j),
+               view_resources[i]->format,
+               pitches[i] * view_resources[i]->array_size, 0, 0,
+               box.width, box.height, map, transfer->stride, 0, 0);
          pipe_texture_unmap(drv->pipe, transfer);
       }
    }
@@ -588,7 +618,7 @@ vlVaUploadImage(vlVaDriver *drv, vlVaSurface *surf, vlVaBuffer *buf, VAImage *im
 
    surf->buffer->get_resources(surf->buffer, view_resources);
 
-   if (buf->derived_surface.resource) {
+   if (buf->derived_surface.resource && !buf->derived_surface.fixed_le_shadow) {
       struct pipe_box box = {
          .width = buf->derived_surface.resource->width0,
          .height = buf->derived_surface.resource->height0,
@@ -616,10 +646,28 @@ vlVaUploadImage(vlVaDriver *drv, vlVaSurface *surf, vlVaBuffer *buf, VAImage *im
       for (unsigned j = 0; j < tex->array_size; ++j) {
          struct pipe_box dst_box;
          u_box_3d(0, 0, j, width, height, 1, &dst_box);
-         drv->pipe->texture_subdata(drv->pipe, tex, 0,
-                                    PIPE_MAP_WRITE, &dst_box,
-                                    data[i] + pitches[i] * j,
-                                    pitches[i] * view_resources[i]->array_size, 0);
+         if (UTIL_ARCH_BIG_ENDIAN &&
+             (surf->buffer->buffer_format == PIPE_FORMAT_P010 ||
+              surf->buffer->buffer_format == PIPE_FORMAT_P016)) {
+            struct pipe_transfer *le_transfer;
+            uint8_t *map = drv->pipe->texture_map(drv->pipe, tex, 0,
+                              PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE, &dst_box, &le_transfer);
+            if (!map) {
+               if (transfer)
+                  drv->pipe->texture_unmap(drv->pipe, transfer);
+               return VA_STATUS_ERROR_OPERATION_FAILED;
+            }
+            vlVaCopy16LittleEndian(map, le_transfer->stride,
+                                   data[i] + pitches[i] * j, pitches[i] * tex->array_size,
+                                   dst_box.width * util_format_get_blocksize(tex->format),
+                                   dst_box.height);
+            pipe_texture_unmap(drv->pipe, le_transfer);
+         } else {
+            drv->pipe->texture_subdata(drv->pipe, tex, 0,
+                                       PIPE_MAP_WRITE, &dst_box,
+                                       data[i] + pitches[i] * j,
+                                       pitches[i] * view_resources[i]->array_size, 0);
+         }
       }
    }
 
