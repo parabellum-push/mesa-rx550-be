@@ -1164,7 +1164,7 @@ spirv_version_to_llvm_spirv_translator_version(enum clc_spirv_version version)
 
 #if UTIL_ARCH_BIG_ENDIAN
 /* SPIRV-LLVM-Translator writes words in host order but literal strings as a
- * plain byte stream. SPIR-V (and SPIRV-Tools, spirv_to_nir) expect four
+ * plain byte stream (decoration literals excepted). SPIR-V (and SPIRV-Tools, spirv_to_nir) expect four
  * octets per word with the first octet in the lowest-order bits, so on a
  * big-endian host every string word must be byte-swapped.
  */
@@ -1195,22 +1195,14 @@ spirv_fix_translator_strings_be(uint32_t *words, size_t count)
          first = 0; break;
       case SpvOpName: case SpvOpString: case SpvOpExtInstImport: case SpvOpTypeOpaque:
          first = 1; break;
-      case SpvOpMemberName: case SpvOpEntryPoint: case SpvOpDecorateString:
+      case SpvOpMemberName: case SpvOpEntryPoint:
          first = 2; break;
-      case SpvOpMemberDecorateString:
-         first = 3; break;
       case SpvOpSource:
          if (n > 4) first = 3;
          break;
-      case SpvOpDecorate:
-         if (n > 3 && (words[i + 2] == SpvDecorationLinkageAttributes ||
-                       words[i + 2] == SpvDecorationUserSemantic))
-            first = 2;
-         break;
-      case SpvOpMemberDecorate:
-         if (n > 4 && words[i + 3] == SpvDecorationUserSemantic)
-            first = 3;
-         break;
+      /* Decoration literals (LinkageAttributes, UserSemantic, OpDecorateString)
+       * are already packed into words by value by the translator.
+       */
       default:
          break;
       }
