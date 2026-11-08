@@ -907,8 +907,10 @@ static nir_def *si_native_formatted_buffer_load(nir_builder *b, nir_def *desc, n
    }
    value = nir_vec4(b, swizzled[0], swizzled[1], swizzled[2], swizzled[3]);
    nir_def *stride = nir_ubfe_imm(b, nir_channel(b, desc, 1), 16, 14);
+   /* GFX8 NUM_RECORDS is in bytes. No udiv here: this runs after integer division lowering. */
+   nir_def *end = nir_imul(b, nir_iadd_imm(b, nir_u2u64(b, coord), 1), nir_u2u64(b, stride));
    nir_def *valid = nir_iand(b, nir_ine_imm(b, stride, 0),
-                              nir_ult(b, coord, nir_udiv(b, nir_channel(b, desc, 2), stride)));
+                              nir_uge(b, nir_u2u64(b, nir_channel(b, desc, 2)), end));
    return nir_bcsel(b, valid, value, nir_imm_ivec4(b, 0, 0, 0, 0));
 }
 

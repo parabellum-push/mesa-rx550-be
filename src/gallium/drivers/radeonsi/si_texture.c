@@ -288,6 +288,13 @@ static int si_init_surface(struct si_screen *sscreen, struct radeon_surf *surfac
          if (si_gfx8_be_packed_texture(sscreen->info.gfx_level, ptex->format))
             flags |= RADEON_SURF_DISABLE_DCC;
 
+         /* Big endian GFX8: Mesa 26 gives 3D textures 2D tiling with DCC (24.1.6 used 1D tiling,
+          * no DCC). The DCC decompress before image atomics then leaves compressed blocks, which
+          * the atomics read as texels (GLES31 image_load_store.3d). Keep 3D textures uncompressed.
+          */
+         if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && ptex->target == PIPE_TEXTURE_3D)
+            flags |= RADEON_SURF_DISABLE_DCC;
+
          /* Shared textures must always set up DCC. If it's not present, it will be disabled by
           * si_get_opaque_metadata later.
           */
