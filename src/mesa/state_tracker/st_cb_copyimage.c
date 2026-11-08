@@ -555,12 +555,14 @@ copy_image(struct pipe_context *pipe,
                  src_box);
 }
 
-/* Transfers show these as little-endian words, every other format in host order. */
+/* Mesa 24 transfers showed these as little-endian words. Since Mesa 25 util_format packs them
+ * as host-order words and radeonsi maps them in host order like every other format, so a raw
+ * CPU copy must not swap them any more.
+ */
 static bool
 be_is_packed_float(enum pipe_format format)
 {
-   return UTIL_ARCH_BIG_ENDIAN &&
-          (format == PIPE_FORMAT_R9G9B9E5_FLOAT || format == PIPE_FORMAT_R11G11B10_FLOAT);
+   return false;
 }
 
 static void

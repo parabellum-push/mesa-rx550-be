@@ -1031,6 +1031,8 @@ lower_native_texel_buffer(nir_builder *b, nir_instr *instr, UNUSED void *data)
             nir_def *native_old = texel_bswap(b, old), *arg = intr->src[3].ssa, *updated;
             switch (op) {
             case nir_atomic_op_iadd: updated = nir_iadd(b, native_old, arg); break;
+            case nir_atomic_op_isub: updated = nir_isub(b, native_old, arg); break;
+            case nir_atomic_op_fadd: updated = nir_fadd(b, native_old, arg); break;
             case nir_atomic_op_imin: updated = nir_imin(b, native_old, arg); break;
             case nir_atomic_op_umin: updated = nir_umin(b, native_old, arg); break;
             case nir_atomic_op_imax: updated = nir_imax(b, native_old, arg); break;

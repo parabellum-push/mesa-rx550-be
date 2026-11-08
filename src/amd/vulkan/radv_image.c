@@ -1481,7 +1481,7 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
                                   VK_IMAGE_USAGE_VIDEO_DECODE_SRC_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR))) {
          for (unsigned p = 0; p < image->plane_count; p++) {
             const VkFormat plane_format = vk_format_get_plane_format(format, p);
-            if (vk_format_description(plane_format)->nr_channels > 1)
+            if (radv_format_description(plane_format)->nr_channels > 1)
                image->native_plane_width[p] = vk_format_get_blocksize(plane_format);
          }
       }

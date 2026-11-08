@@ -769,6 +769,7 @@ static void si_lower_native_wide_image_atomic(nir_builder *b, nir_intrinsic_inst
       nir_def *old = nir_load_var(b, raw), *native = si_wide_image_word(b, old, source_width), *next;
       switch (op) {
       case nir_atomic_op_iadd: next = nir_iadd(b, native, arg); break;
+      case nir_atomic_op_isub: next = nir_isub(b, native, arg); break;
       case nir_atomic_op_imin: next = nir_imin(b, native, arg); break;
       case nir_atomic_op_umin: next = nir_umin(b, native, arg); break;
       case nir_atomic_op_imax: next = nir_imax(b, native, arg); break;
@@ -1347,6 +1348,7 @@ static void si_native_imagebuffer32(nir_builder *b, nir_intrinsic_instr *intrin,
          nir_def *old = nir_load_var(b, raw), *native = si_tbo_bswap(b, old), *next;
          switch (op) {
          case nir_atomic_op_iadd: next = nir_iadd(b, native, arg); break;
+         case nir_atomic_op_isub: next = nir_isub(b, native, arg); break;
          case nir_atomic_op_imin: next = nir_imin(b, native, arg); break;
          case nir_atomic_op_umin: next = nir_umin(b, native, arg); break;
          case nir_atomic_op_imax: next = nir_imax(b, native, arg); break;

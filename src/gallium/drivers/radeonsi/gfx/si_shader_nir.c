@@ -134,6 +134,7 @@ static nir_def *si_native_atomic_value(nir_builder *b, nir_atomic_op op,
 {
    switch (op) {
    case nir_atomic_op_iadd: return nir_iadd(b, old, data);
+   case nir_atomic_op_isub: return nir_isub(b, old, data);
    case nir_atomic_op_imin: return nir_imin(b, old, data);
    case nir_atomic_op_umin: return nir_umin(b, old, data);
    case nir_atomic_op_imax: return nir_imax(b, old, data);
@@ -205,6 +206,60 @@ static bool si_lower_native_be_atomic(nir_builder *b, nir_intrinsic_instr *intr)
    result = si_nir_bswap_scalar(b, result);
    nir_def_rewrite_uses(&intr->def, result);
    return true;
+}
+
+/* Big endian GFX8: every image access is decoded at run time from the
+ * descriptor format (~120 instructions each, see si_nir_lower_resource), but
+ * NIR prices it as one instruction when deciding to unroll. Mesa 26 fully
+ * unrolls loops that 24.1.6 kept (e.g. 32 x 18 cube array image ops after
+ * uniform inlining), and LLVM 22 then spent over 10 minutes on one shader.
+ * Keep such loops rolled, as 24.1.6 did.
+ */
+static bool si_be_cf_has_image_access(struct exec_list *list)
+{
+   foreach_list_typed(nir_cf_node, node, node, list) {
+      switch (node->type) {
+      case nir_cf_node_block:
+         nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const char *name = nir_intrinsic_infos[nir_instr_as_intrinsic(instr)->intrinsic].name;
+            if (strstr(name, "image_") &&
+                (strstr(name, "load") || strstr(name, "store") || strstr(name, "atomic")))
+               return true;
+         }
+         break;
+      case nir_cf_node_if: {
+         nir_if *nif = nir_cf_node_as_if(node);
+         if (si_be_cf_has_image_access(&nif->then_list) ||
+             si_be_cf_has_image_access(&nif->else_list))
+            return true;
+         break;
+      }
+      case nir_cf_node_loop:
+         if (si_be_cf_has_image_access(&nir_cf_node_as_loop(node)->body))
+            return true;
+         break;
+      default:
+         break;
+      }
+   }
+   return false;
+}
+
+static void si_be_keep_image_loops(struct exec_list *list)
+{
+   foreach_list_typed(nir_cf_node, node, node, list) {
+      if (node->type == nir_cf_node_if) {
+         si_be_keep_image_loops(&nir_cf_node_as_if(node)->then_list);
+         si_be_keep_image_loops(&nir_cf_node_as_if(node)->else_list);
+      } else if (node->type == nir_cf_node_loop) {
+         nir_loop *loop = nir_cf_node_as_loop(node);
+         if (loop->control != nir_loop_control_unroll && si_be_cf_has_image_access(&loop->body))
+            loop->control = nir_loop_control_dont_unroll;
+         si_be_keep_image_loops(&loop->body);
+      }
+   }
 }
 
 static bool si_lower_native_be_ssbo(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
@@ -280,6 +335,10 @@ void si_finalize_nir(struct pipe_screen *screen, struct nir_shader *nir,
    if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && !nir->info.internal)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, si_lower_native_be_ssbo,
                nir_metadata_none, NULL);
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 && !nir->info.internal) {
+      nir_foreach_function_impl(impl, nir)
+         si_be_keep_image_loops(&impl->body);
+   }
 
    if (optimize) {
       si_nir_opts(sscreen, nir, true);

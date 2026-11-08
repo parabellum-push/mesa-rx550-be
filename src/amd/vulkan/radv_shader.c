@@ -496,6 +496,7 @@ static nir_def *radv_native_atomic_value(nir_builder *b, nir_atomic_op op,
 {
    switch (op) {
    case nir_atomic_op_iadd: return nir_iadd(b, old, data);
+   case nir_atomic_op_isub: return nir_isub(b, old, data);
    case nir_atomic_op_imin: return nir_imin(b, old, data);
    case nir_atomic_op_umin: return nir_umin(b, old, data);
    case nir_atomic_op_imax: return nir_imax(b, old, data);
@@ -570,6 +571,12 @@ static bool radv_lower_native_be_atomic(nir_builder *b, nir_intrinsic_instr *int
 static bool radv_lower_native_be_global(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
 {
    switch (intr->intrinsic) {
+   /* Mesa 26 nir_lower_explicit_io turns readonly reorderable BDA loads into load_global_constant. */
+   case nir_intrinsic_load_global_constant:
+   case nir_intrinsic_load_global_constant_offset:
+   case nir_intrinsic_load_global_constant_bounded:
+   case nir_intrinsic_load_global_bounded:
+   case nir_intrinsic_load_global_offset:
    case nir_intrinsic_load_global: {
       if (intr->def.bit_size <= 8)
          return false;

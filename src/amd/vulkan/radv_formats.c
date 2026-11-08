@@ -61,7 +61,10 @@ radv_format_hw_description(const struct util_format_description *desc, struct ut
 unsigned
 radv_native_format_width(VkFormat format)
 {
-   const struct util_format_description *desc = vk_format_description(format);
+   /* radv_format_description: Mesa 26 maps the 10X6/12X4 formats to packed X6R10-style
+    * pipe formats; RADV (and the hardware) treat them as 16-bit array formats.
+    */
+   const struct util_format_description *desc = radv_format_description(format);
    if (desc->block.width > 1 || desc->block.height > 1)
       return 1;
    if (radv_native_image_format(format) != format)
@@ -449,7 +452,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *pdev, Vk
       /* As below, the host would see the GPU's byte order in wider plane elements. */
       if (UTIL_ARCH_BIG_ENDIAN && pdev->info.gfx_level == GFX8 && multiplanar) {
          for (unsigned p = 0; p < vk_format_get_plane_count(format); p++) {
-            if (vk_format_description(vk_format_get_plane_format(format, p))->channel[0].size != 8)
+            if (radv_format_description(vk_format_get_plane_format(format, p))->channel[0].size != 8)
                linear = 0;
          }
       }

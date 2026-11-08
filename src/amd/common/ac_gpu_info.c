@@ -1791,7 +1791,12 @@ ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
        * "LOW" or "HIGH" address space. This is needed to implement the SMEM
        * with NULL PRT workaround.
        */
-      r = ac_drm_query_sw_info(dev, amdgpu_sw_info_address_prt_wa_control_bit, &info->address_prt_wa_control_bit);
+      /* libdrm stores a 32-bit value: reading it straight into the uint8_t
+       * field gives 0 on big endian and overwrites the next 3 bytes.
+       */
+      uint32_t prt_wa_control_bit = 0;
+      r = ac_drm_query_sw_info(dev, amdgpu_sw_info_address_prt_wa_control_bit, &prt_wa_control_bit);
+      info->address_prt_wa_control_bit = prt_wa_control_bit;
       if (r) {
          fprintf(stderr, "amdgpu: amdgpu_query_sw_info(amdgpu_sw_info_address_prt_wa_control_bit) failed.\n");
          return AC_QUERY_GPU_INFO_FAIL;
