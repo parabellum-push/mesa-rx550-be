@@ -1473,6 +1473,13 @@ si_texture_create_with_modifier(struct pipe_screen *screen,
    bool tc_compatible_htile = is_zs && !is_flushed_depth &&
                               !(sscreen->debug_flags & DBG(NO_HYPERZ)) &&
                               sscreen->info.has_tc_compatible_htile;
+   /* Big endian GFX8: keep Mesa 24.1.6's rule (TC-compatible HTILE only for depth that is likely
+    * to be sampled). Mesa 26 enables it for every depth buffer, and MSAA depth/stencil
+    * renderbuffers then resolve wrongly (GLES3 fbo.msaa depth24_stencil8, fbo.invalidate msaa).
+    */
+   if (UTIL_ARCH_BIG_ENDIAN && sscreen->info.gfx_level == GFX8 &&
+       !(templ->flags & PIPE_RESOURCE_FLAG_TEXTURING_MORE_LIKELY))
+      tc_compatible_htile = false;
 
    enum radeon_surf_mode tile_mode = si_choose_tiling(sscreen, templ, tc_compatible_htile);
 

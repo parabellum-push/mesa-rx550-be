@@ -4766,6 +4766,10 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
          .gfx10_oob_select = v->elem[i].stride ? V_008F0C_OOB_SELECT_STRUCTURED
                                                : V_008F0C_OOB_SELECT_RAW,
          .has_desc_resource_level = sscreen->info.compiler_info.has_desc_resource_level,
+         /* Big endian: word3 must use the same numeric description as the fetch fixups
+          * (packed formats in LE channel order; otherwise 2_10_10_10 gets DATA_FORMAT_INVALID).
+          */
+         .be_desc = desc == &numeric ? desc : NULL,
       };
 
       ac_set_buf_desc_word3(sscreen->info.gfx_level, &buffer_state, &v->elem[i].rsrc_word3);
