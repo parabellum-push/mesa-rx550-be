@@ -1777,7 +1777,9 @@ impl Kernel {
                     .resource_create_buffer(printf_size, ResourceType::Staging, PIPE_BIND_GLOBAL, 0)
                     .unwrap();
 
-                let init_data: [u8; 1] = [4];
+                // The buffer starts with the u32 write offset, initially 4 (past itself). Write the
+                // whole word in host order: a single byte [4] is 4 only on little endian.
+                let init_data: [u8; 4] = 4u32.to_ne_bytes();
                 ctx.buffer_subdata(&buf, 0, init_data.as_ptr().cast(), init_data.len() as u32);
 
                 printf_buf = Some(buf);
