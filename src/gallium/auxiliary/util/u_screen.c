@@ -130,6 +130,8 @@ u_init_pipe_screen_caps(struct pipe_screen *pscreen, int accel)
 
    caps->max_varyings = 8;
 
+   caps->max_texture_upload_memory_budget = 64 * 1024 * 1024;
+
    caps->throttle = true;
 
 #if defined(HAVE_LIBDRM) && (DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_MANAGARM)
