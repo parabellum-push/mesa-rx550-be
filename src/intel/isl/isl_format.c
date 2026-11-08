@@ -266,7 +266,7 @@ static const struct surface_format_info format_info[] = {
    SF( 90,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  I8_SINT)
    SF( 45,  45,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  DXT1_RGB_SRGB)
    SF(  Y,   Y,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  R1_UNORM)
-   SF(  Y,   Y,   x,   Y,   Y,   x,   x,   x,  60,   x,   x, 120,    x,  YCRCB_NORMAL)
+   SF(  Y,   Y,   x,   Y,   Y,   x,   x,   x,  60,   x,   x,   x,    x,  YCRCB_NORMAL)
    SF(  Y,   Y,   x,   Y,   Y,   x,   x,   x,  60,   x,   x,   x,    x,  YCRCB_SWAPUVY)
    SF( 45,  45,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  P2_UNORM_PALETTE0)
    SF( 45,  45,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  P2_UNORM_PALETTE1)
@@ -280,7 +280,7 @@ static const struct surface_format_info format_info[] = {
    SF(  Y,   Y,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  BC3_UNORM_SRGB)
    SF(  Y,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  MONO8)
    SF(  Y,   Y,   x,   x,   Y,   x,   x,   x,  60,   x,   x,   x,    x,  YCRCB_SWAPUV)
-   SF(  Y,   Y,   x,   x,   Y,   x,   x,   x,  60,   x,   x, 120,    x,  YCRCB_SWAPY)
+   SF(  Y,   Y,   x,   x,   Y,   x,   x,   x,  60,   x,   x,   x,    x,  YCRCB_SWAPY)
    SF(  Y,   Y,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  DXT1_RGB)
 /*    smpl filt  shad  CK   RT   AB   VB   SO color TW   TR  ccs_e  TA */
    SF(  Y,   Y,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,    x,  FXT1)
@@ -600,6 +600,9 @@ isl_format_for_pipe_format(enum pipe_format pf)
       [PIPE_FORMAT_R32G32B32_SINT]          = ISL_FORMAT_R32G32B32_SINT,
       [PIPE_FORMAT_R32G32B32A32_SINT]       = ISL_FORMAT_R32G32B32A32_SINT,
 
+      [PIPE_FORMAT_R64_UINT]                = ISL_FORMAT_R64_PASSTHRU,
+      [PIPE_FORMAT_R64_SINT]                = ISL_FORMAT_R64_PASSTHRU,
+
       [PIPE_FORMAT_B10G10R10A2_UINT]        = ISL_FORMAT_B10G10R10A2_UINT,
 
       [PIPE_FORMAT_ETC1_RGB8]               = ISL_FORMAT_ETC1_RGB8,
@@ -685,6 +688,7 @@ isl_format_for_pipe_format(enum pipe_format pf)
       [PIPE_FORMAT_R16G16B16X16_SINT]       = ISL_FORMAT_R16G16B16A16_SINT,
       [PIPE_FORMAT_R32G32B32X32_UINT]       = ISL_FORMAT_R32G32B32A32_UINT,
       [PIPE_FORMAT_R32G32B32X32_SINT]       = ISL_FORMAT_R32G32B32A32_SINT,
+      [PIPE_FORMAT_R10G10B10X2_UNORM]       = ISL_FORMAT_R10G10B10A2_UNORM,
       [PIPE_FORMAT_R10G10B10X2_SNORM]       = ISL_FORMAT_R10G10B10A2_SNORM,
    };
    assert(pf < PIPE_FORMAT_COUNT);
@@ -885,6 +889,16 @@ isl_format_supports_ccs_e(const struct intel_device_info *devinfo,
    if (!format_info_exists(format))
       return false;
 
+   /* On Xe2+ platforms, it doesn't matter that if a format can be
+    * compressed or not. Formats are given CMF encodings as a hint
+    * to hardware to reach the best compression ratio. When the CMF
+    * value is not the one for a format in the spec or a format's CMF
+    * encoding is unknown, the compressed ratio can be less optimistic,
+    * but no corruption should happen per hardware design.
+    */
+   if (devinfo->ver >= 20)
+      return true;
+
    /* For simplicity, only report that a format supports CCS_E if blorp can
     * perform bit-for-bit copies with an image of that format while compressed.
     * Unfortunately, R11G11B10_FLOAT is in a compression class of its own, and
@@ -1074,8 +1088,7 @@ isl_format_has_color_component(enum isl_format fmt, int component)
    case 3:
       return (fmtl->channels.a.bits + intensity) > 0;
    default:
-      assert(!"Invalid color component: must be 0..3");
-      return false;
+      UNREACHABLE("Invalid color component: must be 0..3");
    }
 }
 
@@ -1099,7 +1112,7 @@ isl_format_get_depth_format(enum isl_format fmt, bool has_stencil)
 {
    switch (fmt) {
    default:
-      unreachable("bad isl depth format");
+      UNREACHABLE("bad isl depth format");
    case ISL_FORMAT_R32_FLOAT_X8X24_TYPELESS:
       assert(has_stencil);
       return 0; /* D32_FLOAT_S8X24_UINT */
@@ -1199,8 +1212,7 @@ isl_format_rgbx_to_rgba(enum isl_format rgbx)
    case ISL_FORMAT_B5G5R5X1_UNORM_SRGB:
       return ISL_FORMAT_B5G5R5A1_UNORM_SRGB;
    default:
-      assert(!"Invalid RGBX format");
-      return rgbx;
+      UNREACHABLE("Invalid RGBX format");
    }
 }
 
@@ -1284,12 +1296,12 @@ pack_channel(const union isl_color_value *value, unsigned i,
       packed = MIN(value->u32[i], u_uintN_max(layout->bits));
       break;
    case ISL_SINT:
-      packed = CLAMP(value->u32[i], u_intN_min(layout->bits),
+      packed = CLAMP(value->i32[i], u_intN_min(layout->bits),
                      u_intN_max(layout->bits));
       break;
 
    default:
-      unreachable("Invalid channel type");
+      UNREACHABLE("Invalid channel type");
    }
 
    unsigned dword = layout->start_bit / 32;
@@ -1388,7 +1400,7 @@ unpack_channel(union isl_color_value *value,
       break;
 
    default:
-      unreachable("Invalid channel type");
+      UNREACHABLE("Invalid channel type");
    }
 
    for (unsigned i = 0; i < count; i++)

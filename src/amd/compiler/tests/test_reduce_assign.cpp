@@ -19,7 +19,7 @@ BEGIN_TEST(setup_reduce_temp.divergent_if_phi)
     * ... = phi ...
     */
    // TODO: fix the RA validator to spot this
-   //>> s2: %_, v1: %a = p_startpgm
+   //>> s2: %_:s[0-1], v1: %a:v[0] = p_startpgm
    if (!setup_cs("s2 v1", GFX9))
       return;
 
@@ -33,10 +33,10 @@ BEGIN_TEST(setup_reduce_temp.divergent_if_phi)
       program.get(), bld, Operand(inputs[0]),
       [&]() -> void
       {
-         //>> s1: %_, s2: %_, s1: %_:scc = p_reduce %a, (latekill)%lv, lv1: undef op:umin32 cluster_size:64
+         //>> s1: %_, s2: %_, s1: %_:scc = p_reduce %a, %lv, lv1: undef op:umin32 cluster_size:64
          Instruction* reduce =
             bld.reduction(aco_opcode::p_reduce, bld.def(s1), bld.def(bld.lm), bld.def(s1, scc),
-                          inputs[1], Operand(v1.as_linear()), Operand(v1.as_linear()), umin32);
+                          inputs[1], Operand(lv1), Operand(lv1), umin32);
          reduce->reduction().cluster_size = bld.lm.bytes() * 8;
       },
       [&]() -> void
@@ -45,7 +45,7 @@ BEGIN_TEST(setup_reduce_temp.divergent_if_phi)
       });
    bld.pseudo(aco_opcode::p_phi, bld.def(v1), Operand::c32(1), Operand::zero());
    //>> /* logical preds: BB1, BB4, / linear preds: BB4, BB5, / kind: uniform, top-level, merge, */
-   //! p_end_linear_vgpr (latekill)%lv
+   //! p_end_linear_vgpr %lv
 
    finish_setup_reduce_temp_test();
 END_TEST

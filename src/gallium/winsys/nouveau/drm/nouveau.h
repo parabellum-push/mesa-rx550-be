@@ -7,6 +7,7 @@
 #include "util/list.h"
 
 #include "drm-uapi/nouveau_drm.h"
+#include "nv_device_info.h"
 
 #define NOUVEAU_FIFO_CHANNEL_CLASS 0x80000001
 #define NOUVEAU_NOTIFIER_CLASS     0x80000002
@@ -50,6 +51,9 @@ struct nouveau_device {
    uint64_t gart_size;
    uint64_t vram_limit;
    uint64_t gart_limit;
+
+   /* only pci info, class ids and and device type are set */
+   struct nv_device_info info;
 };
 
 struct nouveau_client {
@@ -101,7 +105,10 @@ struct nouveau_pushbuf {
    struct nouveau_client *client;
    struct nouveau_object *channel;
    struct nouveau_bufctx *bufctx;
-   void (*kick_notify)(struct nouveau_pushbuf *);
+
+   /** Returns false on error */
+   MUST_CHECK bool (*kick_notify)(struct nouveau_pushbuf *);
+
    void *user_priv;
    uint32_t rsvd_kick;
    uint32_t flags;
@@ -155,6 +162,11 @@ struct nv_device_info_v0;
 int nouveau_device_new(struct nouveau_object *parent, struct nouveau_device **);
 void nouveau_device_del(struct nouveau_device **);
 int nouveau_device_info(struct nouveau_device *, struct nv_device_info_v0 *);
+void nouveau_device_set_classes_for_debug(struct nouveau_device *dev,
+                                          uint32_t cls_eng3d,
+                                          uint32_t cls_compute,
+                                          uint32_t cls_m2mf,
+                                          uint32_t cls_copy);
 int nouveau_getparam(struct nouveau_device *, uint64_t param, uint64_t *value);
 
 int nouveau_client_new(struct nouveau_device *, struct nouveau_client **);

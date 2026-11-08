@@ -164,8 +164,7 @@ struct InstrPred {
       case Format::SMEM: {
          SMEM_instruction& aS = a->smem();
          SMEM_instruction& bS = b->smem();
-         return aS.sync == bS.sync && aS.glc == bS.glc && aS.dlc == bS.dlc && aS.nv == bS.nv &&
-                aS.disable_wqm == bS.disable_wqm;
+         return aS.sync == bS.sync && aS.cache.value == bS.cache.value;
       }
       case Format::VINTRP: {
          VINTRP_instruction& aI = a->vintrp();
@@ -203,21 +202,21 @@ struct InstrPred {
          MTBUF_instruction& bM = b->mtbuf();
          return aM.sync == bM.sync && aM.dfmt == bM.dfmt && aM.nfmt == bM.nfmt &&
                 aM.offset == bM.offset && aM.offen == bM.offen && aM.idxen == bM.idxen &&
-                aM.glc == bM.glc && aM.dlc == bM.dlc && aM.slc == bM.slc && aM.tfe == bM.tfe &&
+                aM.cache.value == bM.cache.value && aM.tfe == bM.tfe &&
                 aM.disable_wqm == bM.disable_wqm;
       }
       case Format::MUBUF: {
          MUBUF_instruction& aM = a->mubuf();
          MUBUF_instruction& bM = b->mubuf();
          return aM.sync == bM.sync && aM.offset == bM.offset && aM.offen == bM.offen &&
-                aM.idxen == bM.idxen && aM.glc == bM.glc && aM.dlc == bM.dlc && aM.slc == bM.slc &&
-                aM.tfe == bM.tfe && aM.lds == bM.lds && aM.disable_wqm == bM.disable_wqm;
+                aM.idxen == bM.idxen && aM.cache.value == bM.cache.value && aM.tfe == bM.tfe &&
+                aM.lds == bM.lds && aM.disable_wqm == bM.disable_wqm;
       }
       case Format::MIMG: {
          MIMG_instruction& aM = a->mimg();
          MIMG_instruction& bM = b->mimg();
          return aM.sync == bM.sync && aM.dmask == bM.dmask && aM.unrm == bM.unrm &&
-                aM.glc == bM.glc && aM.slc == bM.slc && aM.tfe == bM.tfe && aM.da == bM.da &&
+                aM.cache.value == bM.cache.value && aM.tfe == bM.tfe && aM.da == bM.da &&
                 aM.lwe == bM.lwe && aM.r128 == bM.r128 && aM.a16 == bM.a16 && aM.d16 == bM.d16 &&
                 aM.disable_wqm == bM.disable_wqm;
       }
@@ -227,7 +226,8 @@ struct InstrPred {
       case Format::EXP:
       case Format::SOPP:
       case Format::PSEUDO_BRANCH:
-      case Format::PSEUDO_BARRIER: unreachable("unsupported instruction format");
+      case Format::PSEUDO_BARRIER:
+      case Format::PSEUDO_CALL: UNREACHABLE("unsupported instruction format");
       default: return true;
       }
    }
@@ -240,6 +240,7 @@ struct vn_ctx {
    monotonic_buffer_resource m;
    expr_set expr_values;
    aco::unordered_map<uint32_t, Temp> renames;
+   std::vector<uint16_t> uses;
 
    /* The exec id should be the same on the same level of control flow depth.
     * Together with the check for dominator relations, it is safe to assume
@@ -255,6 +256,7 @@ struct vn_ctx {
       for (Block& block : program->blocks)
          size += block.instructions.size();
       expr_values.reserve(size);
+      uses = dead_code_analysis(program);
    }
 };
 
@@ -264,6 +266,13 @@ struct vn_ctx {
 bool
 dominates(vn_ctx& ctx, uint32_t parent, uint32_t child)
 {
+   Block& parent_b = ctx.program->blocks[parent];
+   Block& child_b = ctx.program->blocks[child];
+   if (!dominates_logical(parent_b, child_b) || parent_b.loop_nest_depth > child_b.loop_nest_depth)
+      return false;
+   if (parent_b.loop_nest_depth == child_b.loop_nest_depth && parent_b.loop_nest_depth == 0)
+      return true;
+
    unsigned parent_loop_nest_depth = ctx.program->blocks[parent].loop_nest_depth;
    while (parent < child && parent_loop_nest_depth <= ctx.program->blocks[child].loop_nest_depth)
       child = ctx.program->blocks[child].logical_idom;
@@ -307,10 +316,26 @@ can_eliminate(aco_ptr<Instruction>& instr)
    if (instr->definitions.empty() || instr->opcode == aco_opcode::p_phi ||
        instr->opcode == aco_opcode::p_linear_phi ||
        instr->opcode == aco_opcode::p_pops_gfx9_add_exiting_wave_id ||
-       instr->definitions[0].isNoCSE())
+       instr->opcode == aco_opcode::p_shader_cycles_hi_lo_hi || instr->definitions[0].isNoCSE() ||
+       instr->opcode == aco_opcode::p_reload_preserved)
       return false;
 
    return true;
+}
+
+bool
+is_trivial_phi(Block& block, Instruction* instr)
+{
+   if (!is_phi(instr))
+      return false;
+
+   /* Logical LCSSA phis must be kept in order to prevent the optimizer
+    * from doing invalid transformations. */
+   if (instr->opcode == aco_opcode::p_phi && (block.kind & block_kind_loop_exit))
+      return false;
+
+   return std::all_of(instr->operands.begin(), instr->operands.end(),
+                      [&](Operand& op) { return op == instr->operands[0]; });
 }
 
 void
@@ -320,6 +345,10 @@ process_block(vn_ctx& ctx, Block& block)
    new_instructions.reserve(block.instructions.size());
 
    for (aco_ptr<Instruction>& instr : block.instructions) {
+      /* Clean up dead create_vector/split_vector left behind by instruction selection. */
+      if (is_dead(ctx.uses, instr.get()))
+         continue;
+
       /* first, rename operands */
       for (Operand& op : instr->operands) {
          if (!op.isTemp())
@@ -332,19 +361,27 @@ process_block(vn_ctx& ctx, Block& block)
       if (instr->opcode == aco_opcode::p_discard_if ||
           instr->opcode == aco_opcode::p_demote_to_helper || instr->opcode == aco_opcode::p_end_wqm)
          ctx.exec_id++;
-
-      if (!can_eliminate(instr)) {
-         new_instructions.emplace_back(std::move(instr));
-         continue;
-      }
+      /* Clear all recorded values when encountering a call instruction to prevent replacing
+       * values across call instructions. The live state that can be kept in registers during
+       * function calls is typically very limited, so it's better to compute the same thing twice
+       * instead of increasing live ranges. This also disables value numbering of call instructions
+       * themselves, which is obviously invalid because callees can have side effects.
+       */
+      if (instr->isCall())
+         ctx.expr_values.clear();
 
       /* simple copy-propagation through renaming */
       bool copy_instr =
-         instr->opcode == aco_opcode::p_parallelcopy ||
+         is_trivial_phi(block, instr.get()) || instr->opcode == aco_opcode::p_parallelcopy ||
          (instr->opcode == aco_opcode::p_create_vector && instr->operands.size() == 1);
       if (copy_instr && !instr->definitions[0].isFixed() && instr->operands[0].isTemp() &&
           instr->operands[0].regClass() == instr->definitions[0].regClass()) {
          ctx.renames[instr->definitions[0].tempId()] = instr->operands[0].getTemp();
+         continue;
+      }
+
+      if (!can_eliminate(instr)) {
+         new_instructions.emplace_back(std::move(instr));
          continue;
       }
 
@@ -362,8 +399,16 @@ process_block(vn_ctx& ctx, Block& block)
                assert(instr->definitions[i].regClass() == orig_instr->definitions[i].regClass());
                assert(instr->definitions[i].isTemp());
                ctx.renames[instr->definitions[i].tempId()] = orig_instr->definitions[i].getTemp();
-               if (instr->definitions[i].isPrecise())
-                  orig_instr->definitions[i].setPrecise(true);
+               if (instr->definitions[i].isNoContract())
+                  orig_instr->definitions[i].setNoContract(true);
+               if (instr->definitions[i].isNoReassoc())
+                  orig_instr->definitions[i].setNoReassoc(true);
+               if (instr->definitions[i].isSZPreserve())
+                  orig_instr->definitions[i].setSZPreserve(true);
+               if (instr->definitions[i].isInfPreserve())
+                  orig_instr->definitions[i].setInfPreserve(true);
+               if (instr->definitions[i].isNaNPreserve())
+                  orig_instr->definitions[i].setNaNPreserve(true);
                /* SPIR_V spec says that an instruction marked with NUW wrapping
                 * around is undefined behaviour, so we can break additions in
                 * other contexts.
@@ -385,10 +430,25 @@ process_block(vn_ctx& ctx, Block& block)
 }
 
 void
+dce_instructions(vn_ctx& ctx, Block& block)
+{
+   std::vector<aco_ptr<Instruction>> new_instructions;
+   new_instructions.reserve(block.instructions.size());
+
+   for (aco_ptr<Instruction>& instr : block.instructions) {
+      if (is_dead(ctx.uses, instr.get()))
+         continue;
+      new_instructions.emplace_back(std::move(instr));
+   }
+
+   block.instructions = std::move(new_instructions);
+}
+
+void
 rename_phi_operands(Block& block, aco::unordered_map<uint32_t, Temp>& renames)
 {
    for (aco_ptr<Instruction>& phi : block.instructions) {
-      if (phi->opcode != aco_opcode::p_phi && phi->opcode != aco_opcode::p_linear_phi)
+      if (!is_phi(phi))
          break;
 
       for (Operand& op : phi->operands) {
@@ -416,25 +476,24 @@ value_numbering(Program* program)
       if (block.kind & block_kind_merge) {
          ctx.exec_id--;
       } else if (block.kind & block_kind_loop_exit) {
-         ctx.exec_id -= program->blocks[loop_headers.back()].linear_preds.size();
-         ctx.exec_id -= block.linear_preds.size();
+         ctx.exec_id -= (block.linear_preds.size() + 1);
          loop_headers.pop_back();
       }
 
       if (block.logical_idom == (int)block.index)
          ctx.expr_values.clear();
 
-      if (block.logical_idom != -1)
+      if (block.logical_idom != -1) {
          process_block(ctx, block);
-      else
+      } else {
+         dce_instructions(ctx, block);
          rename_phi_operands(block, ctx.renames);
+      }
 
       /* increment exec_id when entering nested control flow */
       if (block.kind & block_kind_branch || block.kind & block_kind_loop_preheader ||
-          block.kind & block_kind_break || block.kind & block_kind_continue)
+          block.kind & block_kind_break)
          ctx.exec_id++;
-      else if (block.kind & block_kind_continue_or_break)
-         ctx.exec_id += 2;
    }
 
    /* rename loop header phi operands */

@@ -164,7 +164,7 @@ VkResult genX(CreateQueryPool)(
       uint64s_per_slot = 1 + 2;
       break;
    default:
-      assert(!"Invalid query type");
+      UNREACHABLE("Invalid query type");
    }
 
    if (!vk_object_multialloc(&device->vk, &ma, pAllocator,
@@ -592,7 +592,7 @@ VkResult genX(GetQueryPoolResults)(
       }
 
       default:
-         unreachable("invalid pool type");
+         UNREACHABLE("invalid pool type");
       }
 
       if (!write_results)
@@ -714,7 +714,7 @@ emit_zero_queries(struct anv_cmd_buffer *cmd_buffer,
       break;
 
    default:
-      unreachable("Unsupported query type");
+      UNREACHABLE("Unsupported query type");
    }
 }
 
@@ -791,7 +791,7 @@ void genX(CmdResetQueryPool)(
    }
 
    default:
-      unreachable("Unsupported query type");
+      UNREACHABLE("Unsupported query type");
    }
 }
 
@@ -895,7 +895,7 @@ emit_perf_intel_query(struct anv_cmd_buffer *cmd_buffer,
       }
 
       default:
-         unreachable("Invalid query field");
+         UNREACHABLE("Invalid query field");
          break;
       }
    }
@@ -983,7 +983,8 @@ void genX(CmdBeginQueryIndexedEXT)(
                                                  khr_perf_query_data_offset(pool, query, 0, end) +
                                                  field->location)),
                   mi_reg64(ANV_PERF_QUERY_OFFSET_REG));
-            cmd_buffer->self_mod_locations[reloc_idx++] = mi_store_address(&b, reg_addr);
+            cmd_buffer->self_mod_locations[reloc_idx++] =
+               mi_store_relocated_address_reg64(&b, reg_addr);
 
             if (field->type != INTEL_PERF_QUERY_FIELD_TYPE_MI_RPC &&
                 field->size == 8) {
@@ -994,7 +995,8 @@ void genX(CmdBeginQueryIndexedEXT)(
                                                     khr_perf_query_data_offset(pool, query, 0, end) +
                                                     field->location + 4)),
                      mi_reg64(ANV_PERF_QUERY_OFFSET_REG));
-               cmd_buffer->self_mod_locations[reloc_idx++] = mi_store_address(&b, reg_addr);
+               cmd_buffer->self_mod_locations[reloc_idx++] =
+                  mi_store_relocated_address_reg64(&b, reg_addr);
             }
          }
       }
@@ -1008,7 +1010,7 @@ void genX(CmdBeginQueryIndexedEXT)(
                   khr_perf_query_availability_offset(pool, query, 0 /* pass */))),
             mi_reg64(ANV_PERF_QUERY_OFFSET_REG));
       cmd_buffer->self_mod_locations[reloc_idx++] =
-         mi_store_address(&b, availability_write_offset);
+         mi_store_relocated_address_reg64(&b, availability_write_offset);
 
       assert(reloc_idx == pdevice->n_perf_query_commands);
 
@@ -1034,10 +1036,10 @@ void genX(CmdBeginQueryIndexedEXT)(
                                   GENX(MI_REPORT_PERF_COUNT_length),
                                   GENX(MI_REPORT_PERF_COUNT),
                                   .MemoryAddress = query_addr /* Will be overwritten */);
-            _mi_resolve_address_token(&b,
-                                      cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                      dws +
-                                      GENX(MI_REPORT_PERF_COUNT_MemoryAddress_start) / 8);
+            mi_resolve_relocated_address_token(
+               &b,
+               cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+               dws + GENX(MI_REPORT_PERF_COUNT_MemoryAddress_start) / 8);
             break;
 
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
@@ -1051,10 +1053,10 @@ void genX(CmdBeginQueryIndexedEXT)(
                                GENX(MI_STORE_REGISTER_MEM),
                                .RegisterAddress = field->mmio_offset,
                                .MemoryAddress = query_addr /* Will be overwritten */ );
-            _mi_resolve_address_token(&b,
-                                      cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                      dws +
-                                      GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
+            mi_resolve_relocated_address_token(
+               &b,
+               cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+               dws + GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
             if (field->size == 8) {
                dws =
                   anv_batch_emitn(&cmd_buffer->batch,
@@ -1062,15 +1064,15 @@ void genX(CmdBeginQueryIndexedEXT)(
                                   GENX(MI_STORE_REGISTER_MEM),
                                   .RegisterAddress = field->mmio_offset + 4,
                                   .MemoryAddress = query_addr /* Will be overwritten */ );
-               _mi_resolve_address_token(&b,
-                                         cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                         dws +
-                                         GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
+               mi_resolve_relocated_address_token(
+                  &b,
+                  cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+                  dws + GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
             }
             break;
 
          default:
-            unreachable("Invalid query field");
+            UNREACHABLE("Invalid query field");
             break;
          }
       }
@@ -1088,7 +1090,7 @@ void genX(CmdBeginQueryIndexedEXT)(
    }
 
    default:
-      unreachable("");
+      UNREACHABLE("");
    }
 }
 
@@ -1186,10 +1188,10 @@ void genX(CmdEndQueryIndexedEXT)(
                                   GENX(MI_REPORT_PERF_COUNT_length),
                                   GENX(MI_REPORT_PERF_COUNT),
                                   .MemoryAddress = query_addr /* Will be overwritten */);
-            _mi_resolve_address_token(&b,
-                                      cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                      dws +
-                                      GENX(MI_REPORT_PERF_COUNT_MemoryAddress_start) / 8);
+            mi_resolve_relocated_address_token(
+               &b,
+               cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+               dws + GENX(MI_REPORT_PERF_COUNT_MemoryAddress_start) / 8);
             break;
 
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
@@ -1203,10 +1205,10 @@ void genX(CmdEndQueryIndexedEXT)(
                                GENX(MI_STORE_REGISTER_MEM),
                                .RegisterAddress = field->mmio_offset,
                                .MemoryAddress = query_addr /* Will be overwritten */ );
-            _mi_resolve_address_token(&b,
-                                      cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                      dws +
-                                      GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
+            mi_resolve_relocated_address_token(
+               &b,
+               cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+               dws + GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
             if (field->size == 8) {
                dws =
                   anv_batch_emitn(&cmd_buffer->batch,
@@ -1214,15 +1216,15 @@ void genX(CmdEndQueryIndexedEXT)(
                                   GENX(MI_STORE_REGISTER_MEM),
                                   .RegisterAddress = field->mmio_offset + 4,
                                   .MemoryAddress = query_addr /* Will be overwritten */ );
-               _mi_resolve_address_token(&b,
-                                         cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                         dws +
-                                         GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
+               mi_resolve_relocated_address_token(
+                  &b,
+                  cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+                  dws + GENX(MI_STORE_REGISTER_MEM_MemoryAddress_start) / 8);
             }
             break;
 
          default:
-            unreachable("Invalid query field");
+            UNREACHABLE("Invalid query field");
             break;
          }
       }
@@ -1232,10 +1234,10 @@ void genX(CmdEndQueryIndexedEXT)(
                          GENX(MI_STORE_DATA_IMM_length),
                          GENX(MI_STORE_DATA_IMM),
                          .ImmediateData = true);
-      _mi_resolve_address_token(&b,
-                                cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
-                                dws +
-                                GENX(MI_STORE_DATA_IMM_Address_start) / 8);
+      mi_resolve_relocated_address_token(
+         &b,
+         cmd_buffer->self_mod_locations[cmd_buffer->perf_reloc_idx++],
+         dws + GENX(MI_STORE_DATA_IMM_Address_start) / 8);
 
       assert(cmd_buffer->perf_reloc_idx == pdevice->n_perf_query_commands);
       break;
@@ -1256,7 +1258,7 @@ void genX(CmdEndQueryIndexedEXT)(
    }
 
    default:
-      unreachable("");
+      UNREACHABLE("");
    }
 
    /* When multiview is active the spec requires that N consecutive query
@@ -1496,12 +1498,12 @@ void genX(CmdCopyQueryPoolResults)(
 
 #if GFX_VER >= 8
       case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
-         unreachable("Copy KHR performance query results not implemented");
+         UNREACHABLE("Copy KHR performance query results not implemented");
          break;
 #endif
 
       default:
-         unreachable("unhandled query type");
+         UNREACHABLE("unhandled query type");
       }
 
       if (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) {

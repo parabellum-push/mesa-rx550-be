@@ -20,6 +20,8 @@
 #include <stack>
 #include <vector>
 
+#define R600_GS_VERTEX_INDIRECT_TOTAL 6
+
 struct nir_shader;
 struct nir_cf_node;
 struct nir_if;
@@ -217,7 +219,7 @@ public:
       sh_uses_images,
       sh_uses_tex_buffer,
       sh_writes_memory,
-      sh_txs_cube_array_comp,
+      sh_resinfo_via_uniform,
       sh_indirect_atomic,
       sh_mem_barrier,
       sh_legacy_math_rules,
@@ -263,12 +265,15 @@ protected:
       es_tess_coord,
       es_primitive_id,
       es_helper_invocation,
+      es_base_instance,
+      es_base_vertex,
+      es_draw_id,
       es_last
    };
 
    std::bitset<es_last> m_sv_values;
 
-   Shader(const char *type_id, unsigned atomic_base);
+   Shader(const char *type_id);
 
    const ShaderInput& input(int base) const;
 
@@ -311,10 +316,13 @@ private:
    bool emit_local_store(nir_intrinsic_instr *intr);
    bool emit_local_load(nir_intrinsic_instr *instr);
    bool emit_load_tcs_param_base(nir_intrinsic_instr *instr, int offset);
+   bool emit_get_lds_info_uint(nir_intrinsic_instr *instr, int offset);
+   bool emit_get_lds_info_uint2(nir_intrinsic_instr *instr, int offset);
    bool emit_group_barrier(nir_intrinsic_instr *intr);
    bool emit_shader_clock(nir_intrinsic_instr *instr);
    bool emit_wait_ack();
    bool emit_barrier(nir_intrinsic_instr *instr);
+   bool emit_tex_fdd(const nir_intrinsic_instr* intr, int opcode, bool fine);
    bool emit_load_reg(nir_intrinsic_instr *intr);
    bool emit_load_reg_indirect(nir_intrinsic_instr *intr);
    bool emit_store_reg(nir_intrinsic_instr *intr);
@@ -349,7 +357,6 @@ private:
    std::vector<r600_shader_atomic, Allocator<r600_shader_atomic>> m_atomics;
 
    uint32_t m_nhwatomic{0};
-   uint32_t m_atomic_base{0};
    uint32_t m_next_hwatomic_loc{0};
    std::unordered_map<int, int,
                       std::hash<int>,  std::equal_to<int>,
@@ -373,7 +380,6 @@ private:
       void visit(FetchInstr *instr) override { (void)instr; }
       void visit(Block *instr) override { (void)instr; }
       void visit(ControlFlowInstr *instr) override { (void)instr; }
-      void visit(IfInstr *instr) override { (void)instr; }
       void visit(StreamOutInstr *instr) override { (void)instr; }
       void visit(MemRingOutInstr *instr) override { (void)instr; }
       void visit(EmitVertexInstr *instr) override { (void)instr; }
@@ -381,6 +387,7 @@ private:
       void visit(LDSAtomicInstr *instr) override { (void)instr; }
       void visit(LDSReadInstr *instr) override { (void)instr; }
 
+      void visit(IfInstr *instr) override;
       void visit(AluInstr *instr) override;
       void visit(ScratchIOInstr *instr) override;
       void visit(GDSInstr *instr) override;
@@ -395,14 +402,19 @@ private:
       Instr *last_kill_instr{nullptr};
       Instr *last_lds_access{nullptr};
       Instr *last_group_barrier{nullptr};
-      std::unordered_map<int, Instr * > last_alu_with_indirect_reg;
+      std::unordered_map<int,
+                         Instr *,
+                         std::hash<int>,
+                         std::equal_to<int>,
+                         Allocator<std::pair<const int, Instr *>>>
+         last_alu_with_indirect_reg;
       bool prepare_mem_barrier{false};
    };
 
    InstructionChain m_chain_instr;
    std::list<Instr *, Allocator<Instr *>> m_loops;
    int m_control_flow_depth{0};
-   std::list<nir_intrinsic_instr*> m_register_allocations;
+   ValueFactory::nir_intrinsic_instr_alloc m_register_allocations;
 };
 
 } // namespace r600

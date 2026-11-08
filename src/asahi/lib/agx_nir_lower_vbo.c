@@ -4,12 +4,19 @@
  */
 
 #include "agx_nir_lower_vbo.h"
-#include "asahi/compiler/agx_internal_formats.h"
+#include "asahi/layout/layout.h"
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_format_convert.h"
 #include "util/bitset.h"
 #include "util/u_math.h"
+#include "agx_linker.h"
 #include "shader_enums.h"
+
+struct ctx {
+   const struct agx_velem_key *attribs;
+   struct agx_robustness rs;
+   bool dynamic_strides;
+};
 
 static bool
 is_rgb10_a2(const struct util_format_description *desc)
@@ -20,7 +27,7 @@ is_rgb10_a2(const struct util_format_description *desc)
           desc->channel[3].shift == 30 && desc->channel[3].size == 2;
 }
 
-static enum pipe_format
+enum pipe_format
 agx_vbo_internal_format(enum pipe_format format)
 {
    const struct util_format_description *desc = util_format_description(format);
@@ -99,7 +106,7 @@ apply_swizzle_channel(nir_builder *b, nir_def *vec, unsigned swizzle,
       return is_int ? nir_imm_intN_t(b, 1, vec->bit_size)
                     : nir_imm_floatN_t(b, 1.0, vec->bit_size);
    default:
-      unreachable("Invalid swizzle channel");
+      UNREACHABLE("Invalid swizzle channel");
    }
 }
 
@@ -109,16 +116,16 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (intr->intrinsic != nir_intrinsic_load_input)
       return false;
 
-   struct agx_attribute *attribs = data;
+   struct ctx *ctx = data;
+   const struct agx_velem_key *attribs = ctx->attribs;
    b->cursor = nir_instr_remove(&intr->instr);
 
    nir_src *offset_src = nir_get_io_offset_src(intr);
    assert(nir_src_is_const(*offset_src) && "no attribute indirects");
    unsigned index = nir_intrinsic_base(intr) + nir_src_as_uint(*offset_src);
 
-   struct agx_attribute attrib = attribs[index];
+   struct agx_velem_key attrib = attribs[index];
    uint32_t stride = attrib.stride;
-   uint16_t offset = attrib.src_offset;
 
    const struct util_format_description *desc =
       util_format_description(attrib.format);
@@ -157,8 +164,12 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
     * the divisor for per-instance data. Divisor=0 specifies per-vertex data.
     */
    nir_def *el;
-   if (attrib.divisor) {
-      el = nir_udiv_imm(b, nir_load_instance_id(b), attrib.divisor);
+   if (attrib.instanced) {
+      if (attrib.divisor > 0)
+         el = nir_udiv_imm(b, nir_load_instance_id(b), attrib.divisor);
+      else
+         el = nir_imm_int(b, 0);
+
       el = nir_iadd(b, el, nir_load_base_instance(b));
 
       BITSET_SET(b->shader->info.system_values_read,
@@ -177,52 +188,64 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
    /* Robustness is handled at the ID level */
    nir_def *bounds = nir_load_attrib_clamp_agx(b, buf_handle);
+   nir_def *oob = nir_ult(b, bounds, el);
 
-   /* For now, robustness is always applied. This gives GL robustness semantics.
-    * For robustBufferAccess2, we'll want to check for out-of-bounds access
-    * (where el > bounds), and replace base with the address of a zero sink.
-    * With soft fault and a large enough sink, we don't need to clamp the index,
-    * allowing that robustness behaviour to be implemented in 2 cmpsel
-    * before the load. That is faster than the 4 cmpsel required after the load,
-    * and it avoids waiting on the load which should help prolog performance.
-    *
-    * TODO: Plumb through soft fault information to skip this.
-    *
-    * TODO: Add a knob for robustBufferAccess2 semantics.
+   /* We clamp to handle GL robustness. This should be optimized further.
+    * However, with the fix up after the load for D3D robustness, we don't need
+    * this clamp if we can ignore the fault.
     */
-   bool robust = true;
-   if (robust) {
-      el = nir_umin(b, el, bounds);
+   if (ctx->rs.level >= AGX_ROBUSTNESS_GL &&
+       !(ctx->rs.level >= AGX_ROBUSTNESS_D3D && ctx->rs.soft_fault)) {
+
+      el = nir_bcsel(b, oob, nir_imm_int(b, 0), el);
    }
 
    nir_def *base = nir_load_vbo_base_agx(b, buf_handle);
 
    assert((stride % interchange_align) == 0 && "must be aligned");
-   assert((offset % interchange_align) == 0 && "must be aligned");
 
    unsigned stride_el = stride / interchange_align;
-   unsigned offset_el = offset / interchange_align;
    unsigned shift = 0;
 
    /* Try to use the small shift on the load itself when possible. This can save
     * an instruction. Shifts are only available for regular interchange formats,
     * i.e. the set of formats that support masking.
     */
-   if (offset_el == 0 && (stride_el == 2 || stride_el == 4) &&
-       agx_internal_format_supports_mask(
-          (enum agx_internal_formats)interchange_format)) {
+   if ((stride_el == 2 || stride_el == 4) &&
+       ail_isa_format_supports_mask((enum ail_isa_format)interchange_format)) {
 
       shift = util_logbase2(stride_el);
       stride_el = 1;
    }
 
-   nir_def *stride_offset_el =
-      nir_iadd_imm(b, nir_imul_imm(b, el, stride_el), offset_el);
+   nir_def *stride_el_def = nir_imm_int(b, stride_el);
+   if (ctx->dynamic_strides) {
+      assert(stride_el == 0);
+      stride_el_def = nir_load_vbo_stride_agx(b, buf_handle);
+   }
+
+   nir_def *stride_offset_el = nir_imul(b, el, stride_el_def);
+
+   /* Fixing up the address is expected to be profitable for vec3 and above, as
+    * it requires 2 instructions. It is implemented with a 64GiB carveout at the
+    * bottom of memory, using soft fault to return zeroes.
+    */
+   bool rs_address_fixup = interchange_comps > 2 && ctx->rs.soft_fault;
+
+   if (ctx->rs.level >= AGX_ROBUSTNESS_D3D && rs_address_fixup) {
+      base = nir_bcsel(b, oob, nir_imm_int64(b, 0), base);
+   }
 
    /* Load the raw vector */
    nir_def *memory = nir_load_constant_agx(
       b, interchange_comps, interchange_register_size, base, stride_offset_el,
       .format = interchange_format, .base = shift);
+
+   /* For scalar loads, it's faster to fix up the output than the address. */
+   if (ctx->rs.level >= AGX_ROBUSTNESS_D3D && !rs_address_fixup) {
+      nir_def *zero = nir_imm_zero(b, memory->num_components, memory->bit_size);
+      memory = nir_bcsel(b, oob, zero, memory);
+   }
 
    unsigned dest_size = intr->def.bit_size;
 
@@ -286,9 +309,24 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 bool
-agx_nir_lower_vbo(nir_shader *shader, struct agx_attribute *attribs)
+agx_nir_lower_vbo(nir_shader *shader, const struct agx_velem_key *attribs,
+                  struct agx_robustness robustness, bool dynamic_strides)
 {
    assert(shader->info.stage == MESA_SHADER_VERTEX);
-   return nir_shader_intrinsics_pass(
-      shader, pass, nir_metadata_block_index | nir_metadata_dominance, attribs);
+
+   /* To implement null vertex buffer descriptors, we need either soft fault or
+    * GL robustness with a vertex buffer at 0x0.
+    */
+   if (!robustness.soft_fault) {
+      robustness.level = MAX2(robustness.level, AGX_ROBUSTNESS_GL);
+   }
+
+   struct ctx ctx = {
+      .attribs = attribs,
+      .rs = robustness,
+      .dynamic_strides = dynamic_strides,
+   };
+
+   return nir_shader_intrinsics_pass(shader, pass, nir_metadata_control_flow,
+                                     &ctx);
 }

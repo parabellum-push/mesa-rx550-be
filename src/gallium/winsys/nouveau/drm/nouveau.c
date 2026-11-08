@@ -12,6 +12,8 @@
 #include "nvif/cl0080.h"
 #include "nvif/ioctl.h"
 
+#include "nv_push.h"
+
 #include "util/bitscan.h"
 #include "util/list.h"
 #include "util/os_mman.h"
@@ -33,13 +35,13 @@ static void
 debug_init(void)
 {
    static bool once = false;
-   char *debug, *out;
+   const char *debug, *out;
 
    if (once)
       return;
    once = true;
 
-   debug = getenv("NOUVEAU_LIBDRM_DEBUG");
+   debug = os_get_option("NOUVEAU_LIBDRM_DEBUG");
    if (debug) {
       int n = strtol(debug, NULL, 0);
       if (n >= 0)
@@ -47,7 +49,7 @@ debug_init(void)
    }
 
    nouveau_out = stderr;
-   out = getenv("NOUVEAU_LIBDRM_OUT");
+   out = os_get_option("NOUVEAU_LIBDRM_OUT");
    if (out) {
       FILE *fout = fopen(out, "w");
       if (fout)
@@ -73,10 +75,12 @@ nouveau_drm_new(int fd, struct nouveau_drm **pdrm)
    drm->version = (ver->version_major << 24) |
                   (ver->version_minor << 8) |
                    ver->version_patchlevel;
+
+   drmFreeVersion(ver);
+
    if (drm->version < 0x01000301)
       goto out_err;
 
-   drmFreeVersion(ver);
    return 0;
 
 out_err:
@@ -366,7 +370,7 @@ nouveau_device_new(struct nouveau_object *parent, struct nouveau_device **pdev)
    struct nouveau_drm *drm = nouveau_drm(parent);
    struct nouveau_device *dev;
    uint64_t v;
-   char *tmp;
+   const char *tmp;
 
    struct nouveau_device_priv *nvdev = calloc(1, sizeof(*nvdev));
    if (!nvdev)
@@ -409,6 +413,39 @@ nouveau_device_new(struct nouveau_object *parent, struct nouveau_device **pdev)
       goto done;
 
    nvdev->base.chipset = info.chipset;
+   nvdev->base.info.chipset = info.chipset;
+   switch (info.platform) {
+   case NV_DEVICE_INFO_V0_PCI:
+   case NV_DEVICE_INFO_V0_AGP:
+   case NV_DEVICE_INFO_V0_PCIE:
+      nvdev->base.info.type = NV_DEVICE_TYPE_DIS;
+      break;
+   case NV_DEVICE_INFO_V0_IGP:
+      nvdev->base.info.type = NV_DEVICE_TYPE_IGP;
+      break;
+   case NV_DEVICE_INFO_V0_SOC:
+      nvdev->base.info.type = NV_DEVICE_TYPE_SOC;
+      break;
+   default:
+      UNREACHABLE("unhandled nvidia device type");
+      break;
+   }
+
+   drmDevicePtr drm_device;
+   ret = drmGetDevice2(drm->fd, 0, &drm_device);
+   if (ret)
+      goto done;
+
+   if (drm_device->bustype == DRM_BUS_PCI) {
+      nvdev->base.info.pci.domain       = drm_device->businfo.pci->domain;
+      nvdev->base.info.pci.bus          = drm_device->businfo.pci->bus;
+      nvdev->base.info.pci.dev          = drm_device->businfo.pci->dev;
+      nvdev->base.info.pci.func         = drm_device->businfo.pci->func;
+      nvdev->base.info.pci.revision_id  = drm_device->deviceinfo.pci->revision_id;
+      nvdev->base.info.device_id        = drm_device->deviceinfo.pci->device_id;
+   }
+
+   drmFreeDevice(&drm_device);
 
    ret = nouveau_getparam(dev, NOUVEAU_GETPARAM_FB_SIZE, &v);
    if (ret)
@@ -420,14 +457,14 @@ nouveau_device_new(struct nouveau_object *parent, struct nouveau_device **pdev)
       goto done;
    nvdev->base.gart_size = v;
 
-   tmp = getenv("NOUVEAU_LIBDRM_VRAM_LIMIT_PERCENT");
+   tmp = os_get_option("NOUVEAU_LIBDRM_VRAM_LIMIT_PERCENT");
    if (tmp)
       nvdev->vram_limit_percent = atoi(tmp);
    else
       nvdev->vram_limit_percent = 80;
    nvdev->base.vram_limit = (nvdev->base.vram_size * nvdev->vram_limit_percent) / 100;
 
-   tmp = getenv("NOUVEAU_LIBDRM_GART_LIMIT_PERCENT");
+   tmp = os_get_option("NOUVEAU_LIBDRM_GART_LIMIT_PERCENT");
    if (tmp)
       nvdev->gart_limit_percent = atoi(tmp);
    else
@@ -440,6 +477,19 @@ done:
    if (ret)
       nouveau_device_del(pdev);
    return ret;
+}
+
+void
+nouveau_device_set_classes_for_debug(struct nouveau_device *dev,
+                                     uint32_t cls_eng3d,
+                                     uint32_t cls_compute,
+                                     uint32_t cls_m2mf,
+                                     uint32_t cls_copy)
+{
+   dev->info.cls_eng3d = cls_eng3d;
+   dev->info.cls_compute = cls_compute;
+   dev->info.cls_m2mf = cls_m2mf;
+   dev->info.cls_copy = cls_copy;
 }
 
 void
@@ -804,7 +854,7 @@ nouveau_bo_set_prime(struct nouveau_bo *bo, int *prime_fd)
    struct nouveau_bo_priv *nvbo = nouveau_bo(bo);
    int ret;
 
-   ret = drmPrimeHandleToFD(drm->fd, nvbo->base.handle, O_CLOEXEC, prime_fd);
+   ret = drmPrimeHandleToFD(drm->fd, nvbo->base.handle, DRM_CLOEXEC | DRM_RDWR, prime_fd);
    if (ret)
       return ret;
 
@@ -1039,7 +1089,8 @@ nouveau_pushbuf(struct nouveau_pushbuf *push)
 }
 
 static void
-pushbuf_dump(struct nouveau_pushbuf_krec *krec, int krec_id, int chid)
+pushbuf_dump(struct nouveau_device *dev,
+             struct nouveau_pushbuf_krec *krec, int krec_id, int chid)
 {
    struct drm_nouveau_gem_pushbuf_reloc *krel;
    struct drm_nouveau_gem_pushbuf_push *kpsh;
@@ -1080,8 +1131,17 @@ pushbuf_dump(struct nouveau_pushbuf_krec *krec, int krec_id, int chid)
           (unsigned long long)(kpsh->offset + kpsh->length));
       if (!bo->map)
          continue;
-      while (bgn < end)
-         err("\t0x%08x\n", *bgn++);
+
+      if (dev->info.cls_eng3d) {
+         struct nv_push push = {
+            .start = bgn,
+            .end = end
+         };
+         vk_push_print(nouveau_out, &push, &dev->info);
+      } else {
+         while (bgn < end)
+            err("\t0x%08x\n", *bgn++);
+      }
    }
 }
 
@@ -1103,8 +1163,8 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
    if (chan->oclass != NOUVEAU_FIFO_CHANNEL_CLASS)
       return -EINVAL;
 
-   if (push->kick_notify)
-      push->kick_notify(push);
+   if (push->kick_notify && !push->kick_notify(push))
+      return -EINVAL;
 
    nouveau_pushbuf_data(push, NULL, 0, 0);
 
@@ -1124,7 +1184,7 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
       req.gart_available = 0;
 
       if (dbg_on(0))
-         pushbuf_dump(krec, krec_id++, channel);
+         pushbuf_dump(dev, krec, krec_id++, channel);
 
       ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_GEM_PUSHBUF, &req, sizeof(req));
       nvpb->suffix0 = req.suffix0;
@@ -1134,7 +1194,7 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
 
       if (ret) {
          err("kernel rejected pushbuf: %s\n", strerror(-ret));
-         pushbuf_dump(krec, krec_id++, channel);
+         pushbuf_dump(dev, krec, krec_id++, channel);
          break;
       }
 

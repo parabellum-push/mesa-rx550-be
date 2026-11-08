@@ -1,6 +1,10 @@
 %option yylineno
 %option nounput
 %{
+/*
+ * Copyright © 2018 Intel Corporation
+ * SPDX-License-Identifier: MIT
+ */
 #include <string.h>
 #include "elk_asm.h"
 #undef ALIGN16
@@ -276,6 +280,9 @@ nomask      	{ return MASK_DISABLE; }
  /* Thread control */
 atomic       	{ return ATOMIC; }
 switch       	{ return SWITCH; }
+
+ /* Branch control */
+BranchCtrl	{ return BRANCH_CTRL; }
 
  /* compression control */
 compr 		{ return COMPR; }

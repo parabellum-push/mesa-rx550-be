@@ -3,11 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 #include <stdio.h>
-#include "asahi/genxml/agx_pack.h"
 #include "pipe/p_state.h"
-#include "util/format/u_format.h"
 #include "util/half_float.h"
 #include "util/macros.h"
+#include "agx_device.h"
 #include "agx_state.h"
 #include "pool.h"
 
@@ -17,8 +16,7 @@ agx_const_buffer_ptr(struct agx_batch *batch, struct pipe_constant_buffer *cb)
    if (cb->buffer) {
       struct agx_resource *rsrc = agx_resource(cb->buffer);
       agx_batch_reads(batch, rsrc);
-
-      return rsrc->bo->ptr.gpu + cb->buffer_offset;
+      return agx_map_gpu(rsrc) + cb->buffer_offset;
    } else {
       return 0;
    }
@@ -32,9 +30,6 @@ agx_upload_vbos(struct agx_batch *batch)
    uint64_t buffers[PIPE_MAX_ATTRIBS] = {0};
    size_t buf_sizes[PIPE_MAX_ATTRIBS] = {0};
 
-   /* TODO: To handle null vertex buffers, we use robustness always. Once we
-    * support soft fault in the kernel, we can optimize this.
-    */
    u_foreach_bit(vbo, ctx->vb_mask) {
       struct pipe_vertex_buffer vb = ctx->vertex_buffers[vbo];
       assert(!vb.is_user_buffer);
@@ -43,52 +38,21 @@ agx_upload_vbos(struct agx_batch *batch)
          struct agx_resource *rsrc = agx_resource(vb.buffer.resource);
          agx_batch_reads(batch, rsrc);
 
-         buffers[vbo] = rsrc->bo->ptr.gpu + vb.buffer_offset;
-         buf_sizes[vbo] = rsrc->layout.size_B - vb.buffer_offset;
+         buffers[vbo] = agx_map_gpu(rsrc) + vb.buffer_offset;
+         buf_sizes[vbo] = rsrc->layout.size_B - vb.buffer_offset -
+                          rsrc->layout.level_offsets_B[0];
       }
    }
 
    for (unsigned i = 0; i < PIPE_MAX_ATTRIBS; ++i) {
-      unsigned buffer_size = buf_sizes[attribs->buffers[i]];
+      unsigned buf = attribs->buffers[i];
+      uint64_t addr;
 
-      /* Determine the maximum vertex/divided instance index.  For robustness,
-       * the index will be clamped to this before reading (if soft fault is
-       * disabled).
-       *
-       * Index i accesses up to (exclusive) offset:
-       *
-       *    src_offset + (i * stride) + elsize_B
-       *
-       * so we require
-       *
-       *    src_offset + (i * stride) + elsize_B <= size
-       *
-       * <==>
-       *
-       *    i <= floor((size - src_offset - elsize_B) / stride)
-       */
-      unsigned elsize_B = util_format_get_blocksize(attribs->key[i].format);
-      unsigned subtracted = attribs->src_offsets[i] + elsize_B;
+      batch->uniforms.attrib_clamp[i] = agx_calculate_vbo_clamp(
+         buffers[buf], attribs->key[i].format, buf_sizes[buf],
+         attribs->key[i].stride, attribs->src_offsets[i], &addr);
 
-      if (buffer_size >= subtracted) {
-         /* At least one index is valid, determine the max. If this is zero,
-          * only 1 index is valid.
-          */
-         unsigned max_index =
-            (buffer_size - subtracted) / attribs->key[i].stride;
-
-         batch->uniforms.attrib_base[i] =
-            buffers[attribs->buffers[i]] + attribs->src_offsets[i];
-
-         batch->uniforms.attrib_clamp[i] = max_index;
-      } else {
-         /* No indices are valid. Direct reads to a single zero. */
-         uint32_t zeroes[4] = {0};
-         uint64_t sink = agx_pool_upload_aligned(&batch->pool, &zeroes, 16, 16);
-
-         batch->uniforms.attrib_base[i] = sink;
-         batch->uniforms.attrib_clamp[i] = 0;
-      }
+      batch->uniforms.attrib_base[i] = addr;
    }
 }
 
@@ -116,7 +80,7 @@ agx_upload_uniforms(struct agx_batch *batch)
 }
 
 void
-agx_set_sampler_uniforms(struct agx_batch *batch, enum pipe_shader_type stage)
+agx_set_sampler_uniforms(struct agx_batch *batch, mesa_shader_stage stage)
 {
    struct agx_context *ctx = batch->ctx;
    struct agx_stage *st = &ctx->stage[stage];
@@ -139,7 +103,7 @@ agx_set_sampler_uniforms(struct agx_batch *batch, enum pipe_shader_type stage)
 }
 
 void
-agx_set_cbuf_uniforms(struct agx_batch *batch, enum pipe_shader_type stage)
+agx_set_cbuf_uniforms(struct agx_batch *batch, mesa_shader_stage stage)
 {
    struct agx_stage *st = &batch->ctx->stage[stage];
    struct agx_stage_uniforms *unif = &batch->stage_uniforms[stage];
@@ -151,7 +115,7 @@ agx_set_cbuf_uniforms(struct agx_batch *batch, enum pipe_shader_type stage)
 }
 
 void
-agx_set_ssbo_uniforms(struct agx_batch *batch, enum pipe_shader_type stage)
+agx_set_ssbo_uniforms(struct agx_batch *batch, mesa_shader_stage stage)
 {
    struct agx_stage *st = &batch->ctx->stage[stage];
    struct agx_stage_uniforms *unif = &batch->stage_uniforms[stage];
@@ -177,7 +141,7 @@ agx_set_ssbo_uniforms(struct agx_batch *batch, enum pipe_shader_type stage)
             agx_batch_reads(batch, rsrc);
          }
 
-         unif->ssbo_base[cb] = rsrc->bo->ptr.gpu + sb->buffer_offset;
+         unif->ssbo_base[cb] = agx_map_gpu(rsrc) + sb->buffer_offset;
          unif->ssbo_size[cb] = st->ssbo[cb].buffer_size;
       } else {
          /* Invalid, so use the sink */

@@ -1,25 +1,7 @@
 /*
  * Copyright © 2022 Google, Inc.
  * Copyright © 2022 Valve Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "util/macros.h"
@@ -149,7 +131,8 @@ reverse_prefetch(struct prefetch_state *s, int lvl)
  * matches CP_IBn_BASE.
  */
 static struct ib *
-scan_cmdstream(struct prefetch_state *s, int lvl, uint32_t *dwords, uint32_t sizedwords)
+scan_cmdstream(struct prefetch_state *s, int lvl, const uint32_t *dwords,
+               uint32_t sizedwords)
 {
    int dwords_left = sizedwords;
    uint32_t count = 0; /* dword count including packet header */
@@ -191,9 +174,14 @@ next_pkt:
 }
 
 void
-handle_prefetch(uint32_t *dwords, uint32_t sizedwords)
+handle_prefetch(const uint32_t *dwords, uint32_t sizedwords)
 {
    struct prefetch_state rb_state = {};
+
+   /* If the GPU crashed in RB, skip processing IB1 */
+   if (!options.ibs[1].rem)
+      return;
+
    struct ib *ib1 = scan_cmdstream(&rb_state, 1, dwords, sizedwords);
 
    if (!ib1)

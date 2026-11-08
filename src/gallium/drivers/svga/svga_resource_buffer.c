@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2008-2009 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "svga_cmd.h"
 
@@ -32,6 +14,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_resource.h"
+#include "util/u_atomic.h"
 
 #include "svga_context.h"
 #include "svga_screen.h"
@@ -418,8 +401,8 @@ void
 svga_resource_destroy(struct pipe_screen *screen,
                       struct pipe_resource *buf)
 {
+   struct svga_screen *ss = svga_screen(screen);
    if (buf->target == PIPE_BUFFER) {
-      struct svga_screen *ss = svga_screen(screen);
       struct svga_buffer *sbuf = svga_buffer(buf);
 
       assert(!p_atomic_read(&buf->reference.count));
@@ -440,14 +423,10 @@ svga_resource_destroy(struct pipe_screen *screen,
 
       pipe_resource_reference(&sbuf->translated_indices.buffer, NULL);
 
-      ss->hud.total_resource_bytes -= sbuf->size;
-      assert(ss->hud.num_resources > 0);
-      if (ss->hud.num_resources > 0)
-         ss->hud.num_resources--;
+      p_atomic_add(&ss->hud.total_resource_bytes, -sbuf->size);
 
       FREE(sbuf);
    } else {
-      struct svga_screen *ss = svga_screen(screen);
       struct svga_texture *tex = svga_texture(buf);
 
       ss->texture_timestamp++;
@@ -466,17 +445,16 @@ svga_resource_destroy(struct pipe_screen *screen,
       if (tex->backed_handle)
          svga_screen_surface_destroy(ss, &tex->backed_key, to_invalidate, &tex->backed_handle);
 
-      ss->hud.total_resource_bytes -= tex->size;
+      p_atomic_add(&ss->hud.total_resource_bytes, -tex->size);
 
       FREE(tex->defined);
       FREE(tex->rendered_to);
       FREE(tex->dirty);
       FREE(tex);
-
-      assert(ss->hud.num_resources > 0);
-      if (ss->hud.num_resources > 0)
-         ss->hud.num_resources--;
    }
+   uint64_t check_underflow = p_atomic_fetch_add(&ss->hud.num_resources, -1);
+   assert(check_underflow != 0);
+   (void) check_underflow;
 }
 
 struct pipe_resource *
@@ -560,9 +538,8 @@ svga_buffer_create(struct pipe_screen *screen,
 
    sbuf->bind_flags = bind_flags;
    sbuf->size = util_resource_size(&sbuf->b);
-   ss->hud.total_resource_bytes += sbuf->size;
-
-   ss->hud.num_resources++;
+   p_atomic_add(&ss->hud.total_resource_bytes, sbuf->size);
+   p_atomic_inc(&ss->hud.num_resources);
    SVGA_STATS_TIME_POP(ss->sws);
 
    return &sbuf->b;
@@ -605,7 +582,7 @@ svga_user_buffer_create(struct pipe_screen *screen,
    debug_reference(&sbuf->b.reference,
                    (debug_reference_descriptor)debug_describe_resource, 0);
 
-   ss->hud.num_resources++;
+   p_atomic_inc(&ss->hud.num_resources);
 
    return &sbuf->b;
 

@@ -12,10 +12,13 @@
 #include <stdbool.h>
 
 #include <assert.h>
+#include "ac_pm4.h"
 #include "ac_rgp.h"
 #include "amd_family.h"
+#include "util/simple_mtx.h"
 
-struct radeon_cmdbuf;
+#define SQTT_BUFFER_ALIGN_SHIFT 12
+
 struct radeon_info;
 
 /**
@@ -31,14 +34,23 @@ struct radeon_info;
  * around each command needed. The primary user of this is RGP.
  */
 struct ac_sqtt {
-   struct radeon_cmdbuf *start_cs[2];
-   struct radeon_cmdbuf *stop_cs[2];
-   /* struct radeon_winsys_bo or struct pb_buffer */
+   /* Only used by RadeonSI */
+   void *start_cs[2];
+   void *stop_cs[2];
+   /* VkBuffer or struct si_resource */
    void *bo;
+   uint64_t buffer_va;
    void *ptr;
+   /* Per-SE, aligned size */
    uint32_t buffer_size;
    int start_frame;
    char *trigger_file;
+   bool instruction_timing_enabled;
+   uint32_t instruction_timing_se_mask;
+
+   /* Shader/memory clock frequencies in Mhz sampled at trace time. */
+   uint32_t trace_shader_core_clock;
+   uint32_t trace_memory_clock;
 
    uint32_t cmdbuf_ids_per_queue[AMD_NUM_IP_TYPES];
 
@@ -52,9 +64,9 @@ struct ac_sqtt {
    struct rgp_clock_calibration rgp_clock_calibration;
 
    struct hash_table_u64 *pipeline_bos;
-};
 
-#define SQTT_BUFFER_ALIGN_SHIFT 12
+   simple_mtx_t lock;
+};
 
 struct ac_sqtt_data_info {
    uint32_t cur_offset;
@@ -82,6 +94,10 @@ struct ac_sqtt_trace {
    const struct rgp_queue_event *rgp_queue_event;
    const struct rgp_clock_calibration *rgp_clock_calibration;
 
+   uint32_t trace_shader_core_clock;
+   uint32_t trace_memory_clock;
+   uint32_t instruction_timing_se_mask;
+
    uint32_t num_traces;
    struct ac_sqtt_data_se traces[SQTT_MAX_TRACES];
 };
@@ -90,10 +106,6 @@ uint64_t ac_sqtt_get_info_offset(unsigned se);
 
 uint64_t ac_sqtt_get_data_offset(const struct radeon_info *rad_info, const struct ac_sqtt *sqtt,
                                  unsigned se);
-uint64_t ac_sqtt_get_info_va(uint64_t va, unsigned se);
-
-uint64_t ac_sqtt_get_data_va(const struct radeon_info *rad_info, const struct ac_sqtt *sqtt,
-                             uint64_t va, unsigned se);
 
 void ac_sqtt_init(struct ac_sqtt *data);
 
@@ -101,9 +113,6 @@ void ac_sqtt_finish(struct ac_sqtt *data);
 
 bool ac_is_sqtt_complete(const struct radeon_info *rad_info, const struct ac_sqtt *sqtt,
                          const struct ac_sqtt_data_info *info);
-
-uint32_t ac_get_expected_buffer_size(struct radeon_info *rad_info,
-                                     const struct ac_sqtt_data_info *info);
 
 /**
  * Identifiers for RGP SQ thread-tracing markers (Table 1)
@@ -262,7 +271,6 @@ enum rgp_sqtt_marker_general_api_type
    ApiCmdDrawMeshTasksIndirectCountEXT = 48,
    ApiCmdDrawMeshTasksIndirectEXT = 49,
 
-   ApiRayTracingSeparateCompiled = 0x800000,
    ApiInvalid = 0xffffffff
 };
 
@@ -332,6 +340,9 @@ enum rgp_sqtt_marker_event_type
    EventCmdDrawMeshTasksIndirectCountEXT = 42,
    EventCmdDrawMeshTasksIndirectEXT = 43,
    EventUnknown = 0x7fff,
+
+   EventRayTracingSeparateCompiled = 0x800000,
+
    EventInvalid = 0xffffffff
 };
 
@@ -544,18 +555,31 @@ bool ac_sqtt_add_code_object_loader_event(struct ac_sqtt *sqtt, uint64_t pipelin
 bool ac_sqtt_add_clock_calibration(struct ac_sqtt *sqtt, uint64_t cpu_timestamp,
                                    uint64_t gpu_timestamp);
 
+void ac_sqtt_set_gpu_trace_clocks(struct ac_sqtt *sqtt,
+                                  uint32_t trace_shader_core_clock,
+                                  uint32_t trace_memory_clock);
+
 bool ac_check_profile_state(const struct radeon_info *info);
 
 union rgp_sqtt_marker_cb_id ac_sqtt_get_next_cmdbuf_id(struct ac_sqtt *sqtt,
                                                        enum amd_ip_type ip_type);
 
-bool ac_sqtt_se_is_disabled(const struct radeon_info *info, unsigned se);
-
 bool ac_sqtt_get_trace(struct ac_sqtt *sqtt, const struct radeon_info *info,
                        struct ac_sqtt_trace *sqtt_trace);
 
+uint32_t ac_sqtt_get_ctrl(const struct radeon_info *info, bool enable);
+
 uint32_t ac_sqtt_get_shader_mask(const struct radeon_info *info);
 
-uint32_t ac_sqtt_get_active_cu(const struct radeon_info *info, unsigned se);
+void ac_sqtt_emit_start(const struct radeon_info *info, struct ac_pm4_state *pm4,
+                        const struct ac_sqtt *sqtt, bool is_compute_queue);
+
+void ac_sqtt_emit_stop(const struct radeon_info *info, struct ac_pm4_state *pm4,
+                       bool is_compute_queue);
+
+void ac_sqtt_emit_wait(const struct radeon_info *info, struct ac_pm4_state *pm4,
+                       const struct ac_sqtt *sqtt, bool is_compute_queue);
+
+bool ac_sqtt_update_bo_size(struct ac_sqtt *sqtt, const char *env_var_prefix);
 
 #endif

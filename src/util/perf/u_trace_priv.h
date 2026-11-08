@@ -39,18 +39,29 @@
 extern "C" {
 #endif
 
+enum u_tracepoint_type {
+   u_tracepoint_type_begin_range,
+   u_tracepoint_type_end_range,
+   u_tracepoint_type_marker,
+};
+
 /**
  * Tracepoint descriptor.
  */
 struct u_tracepoint {
-   unsigned payload_sz;
    const char *name;
    /**
-    * Whether this tracepoint's timestamp must be recorded with as an
-    * end-of-pipe timestamp (for some GPUs the recording timestamp instruction
-    * might be different for top/end of pipe).
+    * Size of the CPU data associated with this tracepoint.
     */
-   bool end_of_pipe:1;
+   uint16_t payload_sz;
+   /**
+    * Size of the GPU data associated with this tracepoint.
+    */
+   uint16_t indirect_sz;
+   /**
+    * A bitfield of driver agnostic flags
+    */
+   uint16_t flags;
    /**
     * Index of this tracepoint in <basename>_tracepoint_names in the generated
     * u_trace perfetto header. By associating these names with iids in setup,
@@ -58,8 +69,16 @@ struct u_tracepoint {
     * to event->set_stage_iid().
     */
    uint16_t tp_idx;
-   void (*print)(FILE *out, const void *payload);
-   void (*print_json)(FILE *out, const void *payload);
+
+   enum u_tracepoint_type type;
+
+   void (*print)(FILE *out, const void *payload, const void *indirect);
+   void (*print_json)(FILE *out, const void *payload, const void *indirect);
+
+   uint32_t (*fuzzy_hash)(const void *key);
+   bool (*fuzzy_equals)(const void *a, const void *b);
+   void (*print_fuzzy_hash_args)(FILE *out, const void *payload);
+
 #ifdef HAVE_PERFETTO
    /**
     * Callback to emit a perfetto event, such as render-stage trace
@@ -68,7 +87,8 @@ struct u_tracepoint {
                     uint64_t ts_ns,
                     uint16_t tp_idx,
                     const void *flush_data,
-                    const void *payload);
+                    const void *payload,
+                    const void *indirect);
 #endif
 };
 
@@ -79,7 +99,10 @@ struct u_tracepoint {
 void *u_trace_appendv(struct u_trace *ut,
                       void *cs,
                       const struct u_tracepoint *tp,
-                      unsigned variable_sz);
+                      unsigned variable_sz,
+                      unsigned n_indirects,
+                      const struct u_trace_address *addresses,
+                      const uint8_t *indirect_sizes_B);
 
 /**
  * Append a trace event, returning pointer to buffer of tp->payload_sz
@@ -89,7 +112,7 @@ void *u_trace_appendv(struct u_trace *ut,
 static inline void *
 u_trace_append(struct u_trace *ut, void *cs, const struct u_tracepoint *tp)
 {
-   return u_trace_appendv(ut, cs, tp, 0);
+   return u_trace_appendv(ut, cs, tp, 0, 0, NULL, NULL);
 }
 
 #ifdef __cplusplus

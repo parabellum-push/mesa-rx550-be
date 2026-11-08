@@ -129,8 +129,7 @@ nir_deref_instr_has_indirect(nir_deref_instr *instr)
       if (instr->deref_type == nir_deref_type_cast)
          return true;
 
-      if ((instr->deref_type == nir_deref_type_array ||
-           instr->deref_type == nir_deref_type_ptr_as_array) &&
+      if (nir_deref_instr_is_arr(instr) &&
           !nir_src_is_const(instr->arr.index))
          return true;
 
@@ -162,7 +161,7 @@ nir_deref_instr_has_complex_use(nir_deref_instr *deref,
       if (nir_src_is_if(use_src))
          return true;
 
-      nir_instr *use_instr = nir_src_parent_instr(use_src);
+      nir_instr *use_instr = nir_src_use_instr(use_src);
 
       switch (use_instr->type) {
       case nir_instr_type_deref: {
@@ -199,6 +198,7 @@ nir_deref_instr_has_complex_use(nir_deref_instr *deref,
          nir_intrinsic_instr *use_intrin = nir_instr_as_intrinsic(use_instr);
          switch (use_intrin->intrinsic) {
          case nir_intrinsic_load_deref:
+         case nir_intrinsic_load_deref_transpose_amd:
             assert(use_src == &use_intrin->src[0]);
             continue;
 
@@ -230,14 +230,15 @@ nir_deref_instr_has_complex_use(nir_deref_instr *deref,
 
          case nir_intrinsic_deref_atomic:
          case nir_intrinsic_deref_atomic_swap:
-            if (opts & nir_deref_instr_has_complex_use_allow_atomics)
+            if (use_src == &use_intrin->src[0] &&
+                (opts & nir_deref_instr_has_complex_use_allow_atomics))
                continue;
             return true;
 
          default:
             return true;
          }
-         unreachable("Switch default failed");
+         UNREACHABLE("Switch default failed");
       }
 
       default:
@@ -332,7 +333,7 @@ nir_deref_instr_get_const_offset(nir_deref_instr *deref,
          /* A cast doesn't contribute to the offset */
          break;
       default:
-         unreachable("Unsupported deref type");
+         UNREACHABLE("Unsupported deref type");
       }
    }
 
@@ -371,7 +372,7 @@ nir_build_deref_offset(nir_builder *b, nir_deref_instr *deref,
          /* A cast doesn't contribute to the offset */
          break;
       default:
-         unreachable("Unsupported deref type");
+         UNREACHABLE("Unsupported deref type");
       }
    }
 
@@ -393,14 +394,7 @@ nir_remove_dead_derefs_impl(nir_function_impl *impl)
       }
    }
 
-   if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                     nir_metadata_dominance);
-   } else {
-      nir_metadata_preserve(impl, nir_metadata_all);
-   }
-
-   return progress;
+   return nir_progress(progress, impl, nir_metadata_control_flow);
 }
 
 bool
@@ -449,15 +443,14 @@ nir_fixup_deref_modes_instr(UNUSED struct nir_builder *b, nir_instr *instr, UNUS
    return true;
 }
 
-void
+bool
 nir_fixup_deref_modes(nir_shader *shader)
 {
-   nir_shader_instructions_pass(shader, nir_fixup_deref_modes_instr,
-                                nir_metadata_block_index |
-                                   nir_metadata_dominance |
-                                   nir_metadata_live_defs |
-                                   nir_metadata_instr_index,
-                                NULL);
+   return nir_shader_instructions_pass(shader, nir_fixup_deref_modes_instr,
+                                       nir_metadata_control_flow |
+                                          nir_metadata_live_defs |
+                                          nir_metadata_instr_index,
+                                       NULL);
 }
 
 static bool
@@ -471,18 +464,19 @@ nir_fixup_deref_types_instr(UNUSED struct nir_builder *b, nir_instr *instr, UNUS
    if (deref->deref_type == nir_deref_type_var) {
       parent_derived_type = deref->var->type;
    } else if (deref->deref_type == nir_deref_type_array ||
-              deref->deref_type == nir_deref_type_struct) {
+              deref->deref_type == nir_deref_type_array_wildcard) {
       nir_deref_instr *parent = nir_src_as_deref(deref->parent);
-      if (deref->deref_type == nir_deref_type_array) {
-         parent_derived_type = glsl_get_array_element(parent->type);
-      } else if (deref->deref_type == nir_deref_type_struct) {
-         parent_derived_type =
-            glsl_get_struct_field(parent->type, deref->strct.index);
-      } else {
-         unreachable("Unsupported deref type");
-      }
+      parent_derived_type = glsl_get_array_element(parent->type);
+   } else if (deref->deref_type == nir_deref_type_struct) {
+      nir_deref_instr *parent = nir_src_as_deref(deref->parent);
+      parent_derived_type = glsl_get_struct_field(parent->type, deref->strct.index);
+   } else if (deref->deref_type == nir_deref_type_ptr_as_array) {
+      nir_deref_instr *parent = nir_src_as_deref(deref->parent);
+      parent_derived_type = parent->type;
+   } else if (deref->deref_type == nir_deref_type_cast) {
+      return false;
    } else {
-      unreachable("Unsupported deref type");
+      UNREACHABLE("Unsupported deref type");
    }
 
    if (deref->type == parent_derived_type)
@@ -493,15 +487,14 @@ nir_fixup_deref_types_instr(UNUSED struct nir_builder *b, nir_instr *instr, UNUS
 }
 
 /* Update deref types when array sizes have changed. */
-void
+bool
 nir_fixup_deref_types(nir_shader *shader)
 {
-   nir_shader_instructions_pass(shader, nir_fixup_deref_types_instr,
-                                nir_metadata_block_index |
-                                   nir_metadata_dominance |
-                                   nir_metadata_live_defs |
-                                   nir_metadata_instr_index,
-                                NULL);
+   return nir_shader_instructions_pass(shader, nir_fixup_deref_types_instr,
+                                       nir_metadata_control_flow |
+                                          nir_metadata_live_defs |
+                                          nir_metadata_instr_index,
+                                       NULL);
 }
 
 static bool
@@ -614,7 +607,7 @@ compare_deref_paths(nir_deref_path *a_path, nir_deref_path *b_path,
       }
 
       default:
-         unreachable("Invalid deref type");
+         UNREACHABLE("Invalid deref type");
       }
    }
 
@@ -800,52 +793,18 @@ rematerialize_deref_in_block(nir_deref_instr *deref,
       return deref;
 
    nir_builder *b = &state->builder;
-   nir_deref_instr *new_deref =
-      nir_deref_instr_create(b->shader, deref->deref_type);
-   new_deref->modes = deref->modes;
-   new_deref->type = deref->type;
+   nir_instr *new_instr = nir_instr_clone(b->shader, &deref->instr);
+   nir_deref_instr *new_deref = nir_instr_as_deref(new_instr);
 
-   if (deref->deref_type == nir_deref_type_var) {
-      new_deref->var = deref->var;
-   } else {
+   if (deref->deref_type != nir_deref_type_var) {
       nir_deref_instr *parent = nir_src_as_deref(deref->parent);
       if (parent) {
          parent = rematerialize_deref_in_block(parent, state);
          new_deref->parent = nir_src_for_ssa(&parent->def);
-      } else {
-         new_deref->parent = nir_src_for_ssa(deref->parent.ssa);
       }
    }
 
-   switch (deref->deref_type) {
-   case nir_deref_type_var:
-   case nir_deref_type_array_wildcard:
-      /* Nothing more to do */
-      break;
-
-   case nir_deref_type_cast:
-      new_deref->cast.ptr_stride = deref->cast.ptr_stride;
-      new_deref->cast.align_mul = deref->cast.align_mul;
-      new_deref->cast.align_offset = deref->cast.align_offset;
-      break;
-
-   case nir_deref_type_array:
-   case nir_deref_type_ptr_as_array:
-      assert(!nir_src_as_deref(deref->arr.index));
-      new_deref->arr.index = nir_src_for_ssa(deref->arr.index.ssa);
-      break;
-
-   case nir_deref_type_struct:
-      new_deref->strct.index = deref->strct.index;
-      break;
-
-   default:
-      unreachable("Invalid deref instruction type");
-   }
-
-   nir_def_init(&new_deref->instr, &new_deref->def,
-                deref->def.num_components, deref->def.bit_size);
-   nir_builder_instr_insert(b, &new_deref->instr);
+   nir_builder_instr_insert(b, new_instr);
 
    return new_deref;
 }
@@ -876,22 +835,12 @@ nir_rematerialize_deref_in_use_blocks(nir_deref_instr *instr)
       return true;
 
    struct rematerialize_deref_state state = {
-      .builder = nir_builder_create(nir_cf_node_get_function(&instr->instr.block->cf_node)),
+      .builder = nir_builder_create(instr->instr.block->impl)
    };
 
-   nir_foreach_use_safe(use, &instr->def) {
-      nir_instr *parent = nir_src_parent_instr(use);
-      if (parent->block == instr->instr.block)
-         continue;
-
-      /* If a deref is used in a phi, we can't rematerialize it, as the new
-       * derefs would appear before the phi, which is not valid.
-       */
-      if (parent->type == nir_instr_type_phi)
-         continue;
-
-      state.block = parent->block;
-      state.builder.cursor = nir_before_instr(parent);
+   nir_foreach_use_including_if_safe(use, &instr->def) {
+      state.block = nir_src_get_block(use);
+      state.builder.cursor = nir_before_src(use);
       rematerialize_deref_src(use, &state);
    }
 
@@ -933,13 +882,13 @@ static void
 nir_deref_instr_fixup_child_types(nir_deref_instr *parent)
 {
    nir_foreach_use(use, &parent->def) {
-      if (nir_src_parent_instr(use)->type != nir_instr_type_deref)
+      if (nir_src_use_instr(use)->type != nir_instr_type_deref)
          continue;
 
-      nir_deref_instr *child = nir_instr_as_deref(nir_src_parent_instr(use));
+      nir_deref_instr *child = nir_instr_as_deref(nir_src_use_instr(use));
       switch (child->deref_type) {
       case nir_deref_type_var:
-         unreachable("nir_deref_type_var cannot be a child");
+         UNREACHABLE("nir_deref_type_var cannot be a child");
 
       case nir_deref_type_array:
       case nir_deref_type_array_wildcard:
@@ -966,16 +915,39 @@ nir_deref_instr_fixup_child_types(nir_deref_instr *parent)
 }
 
 static bool
+opt_propagate_undef_cast(nir_builder *b, nir_deref_instr *deref)
+{
+   if (deref->deref_type != nir_deref_type_struct &&
+       deref->deref_type != nir_deref_type_array &&
+       deref->deref_type != nir_deref_type_cast &&
+       deref->deref_type != nir_deref_type_ptr_as_array)
+      return false;
+
+   /* If we chase an deref originating from an undef pointer, propagate the undef through
+    * the chain.
+    */
+   nir_deref_instr *parent = nir_def_as_deref_or_null(deref->parent.ssa);
+   if (!parent || parent->deref_type != nir_deref_type_cast ||
+       !nir_src_is_undef(parent->parent))
+      return false;
+
+   b->cursor = nir_before_instr(&deref->instr);
+   nir_deref_instr *new_deref = nir_build_deref_cast(b, parent->parent.ssa, deref->modes,
+                                                     deref->type, 0);
+   nir_def_replace(&deref->def, &new_deref->def);
+   return true;
+}
+
+static bool
 opt_alu_of_cast(nir_alu_instr *alu)
 {
    bool progress = false;
 
    for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
-      nir_instr *src_instr = alu->src[i].src.ssa->parent_instr;
-      if (src_instr->type != nir_instr_type_deref)
+      if (!nir_src_is_deref(alu->src[i].src))
          continue;
 
-      nir_deref_instr *src_deref = nir_instr_as_deref(src_instr);
+      nir_deref_instr *src_deref = nir_src_as_deref(alu->src[i].src);
       if (src_deref->deref_type != nir_deref_type_cast)
          continue;
 
@@ -1130,6 +1102,13 @@ opt_restrict_deref_modes(nir_deref_instr *deref)
    if (parent == NULL || parent->modes == deref->modes)
       return false;
 
+   /* Casts from the heap pointers shouldn't be restricted because it's allowed
+    * to cast to some variable modes.
+    */
+   if (parent->modes & (nir_var_resource_heap |
+                        nir_var_sampler_heap))
+      return false;
+
    assert(parent->modes & deref->modes);
    deref->modes &= parent->modes;
    return true;
@@ -1166,9 +1145,7 @@ opt_remove_sampler_cast(nir_deref_instr *cast)
    /* We're a cast from a more detailed sampler type to a bare sampler or a
     * texture type with the same dimensionality.
     */
-   nir_def_rewrite_uses(&cast->def,
-                        &parent->def);
-   nir_instr_remove(&cast->instr);
+   nir_def_replace(&cast->def, &parent->def);
 
    /* Recursively crawl the deref tree and clean up types */
    nir_deref_instr_fixup_child_types(parent);
@@ -1250,7 +1227,7 @@ opt_deref_cast(nir_builder *b, nir_deref_instr *cast)
       /* If this isn't a trivial array cast, we can't propagate into
        * ptr_as_array derefs.
        */
-      if (is_deref_ptr_as_array(nir_src_parent_instr(use_src)) &&
+      if (is_deref_ptr_as_array(nir_src_use_instr(use_src)) &&
           !trivial_array_cast)
          continue;
 
@@ -1287,9 +1264,7 @@ opt_deref_ptr_as_array(nir_builder *b, nir_deref_instr *deref)
           parent->cast.align_mul == 0 &&
           nir_deref_cast_is_trivial(parent))
          parent = nir_deref_instr_parent(parent);
-      nir_def_rewrite_uses(&deref->def,
-                           &parent->def);
-      nir_instr_remove(&deref->instr);
+      nir_def_replace(&deref->def, &parent->def);
       return true;
    }
 
@@ -1401,8 +1376,7 @@ opt_load_vec_deref(nir_builder *b, nir_intrinsic_instr *load)
          data = nir_bitcast_vector(b, &load->def, old_bit_size);
       data = resize_vector(b, data, old_num_comps);
 
-      nir_def_rewrite_uses_after(&load->def, data,
-                                 data->parent_instr);
+      nir_def_rewrite_uses_after(&load->def, data);
       return true;
    }
 
@@ -1449,6 +1423,34 @@ opt_store_vec_deref(nir_builder *b, nir_intrinsic_instr *store)
 }
 
 static bool
+opt_load_undef_deref(nir_builder *b, nir_intrinsic_instr *load)
+{
+   nir_deref_instr *parent = nir_def_as_deref_or_null(load->src[0].ssa);
+
+   if (!parent || parent->deref_type != nir_deref_type_cast ||
+       !nir_src_is_undef(parent->parent))
+      return false;
+
+   b->cursor = nir_before_instr(&load->instr);
+   nir_def *undef = nir_undef(b, load->def.num_components, load->def.bit_size);
+   nir_def_replace(&load->def, undef);
+   return true;
+}
+
+static bool
+opt_store_undef_deref(nir_builder *b, nir_intrinsic_instr *store)
+{
+   nir_deref_instr *parent = nir_def_as_deref_or_null(store->src[0].ssa);
+
+   if (!parent || parent->deref_type != nir_deref_type_cast ||
+       !nir_src_is_undef(parent->parent))
+      return false;
+
+   nir_instr_remove(&store->instr);
+   return true;
+}
+
+static bool
 opt_known_deref_mode_is(nir_builder *b, nir_intrinsic_instr *intrin)
 {
    nir_variable_mode modes = nir_intrinsic_memory_modes(intrin);
@@ -1467,8 +1469,7 @@ opt_known_deref_mode_is(nir_builder *b, nir_intrinsic_instr *intrin)
    if (deref_is == NULL)
       return false;
 
-   nir_def_rewrite_uses(&intrin->def, deref_is);
-   nir_instr_remove(&intrin->instr);
+   nir_def_replace(&intrin->def, deref_is);
    return true;
 }
 
@@ -1497,6 +1498,11 @@ nir_opt_deref_impl(nir_function_impl *impl)
             if (opt_restrict_deref_modes(deref))
                progress = true;
 
+            if (opt_propagate_undef_cast(&b, deref)) {
+               progress = true;
+               break;
+            }
+
             switch (deref->deref_type) {
             case nir_deref_type_ptr_as_array:
                if (opt_deref_ptr_as_array(&b, deref))
@@ -1521,10 +1527,16 @@ nir_opt_deref_impl(nir_function_impl *impl)
             case nir_intrinsic_load_deref:
                if (opt_load_vec_deref(&b, intrin))
                   progress = true;
+               FALLTHROUGH;
+            case nir_intrinsic_load_deref_transpose_amd:
+               if (opt_load_undef_deref(&b, intrin))
+                  progress = true;
                break;
 
             case nir_intrinsic_store_deref:
                if (opt_store_vec_deref(&b, intrin))
+                  progress = true;
+               if (opt_store_undef_deref(&b, intrin))
                   progress = true;
                break;
 
@@ -1547,14 +1559,7 @@ nir_opt_deref_impl(nir_function_impl *impl)
       }
    }
 
-   if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                     nir_metadata_dominance);
-   } else {
-      nir_metadata_preserve(impl, nir_metadata_all);
-   }
-
-   return progress;
+   return nir_progress(progress, impl, nir_metadata_control_flow);
 }
 
 bool
@@ -1568,4 +1573,68 @@ nir_opt_deref(nir_shader *shader)
    }
 
    return progress;
+}
+
+/*
+ * With library-based approaches to driver shaders, it may not be possible to
+ * implement constant_data directly, but LLVM loves to produce constants e.g.
+ * for designated initializers. This helper lowers away constant data. This may
+ * allow additional optimizations. If desired, the backend driver can regather
+ * constant data later with nir_opt_large_constants.
+ */
+void
+nir_lower_constant_to_temp(nir_shader *nir)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_constant) {
+      var->data.mode = nir_var_shader_temp;
+   }
+
+   nir_fixup_deref_modes(nir);
+   nir_lower_global_vars_to_local(nir);
+}
+
+
+static bool
+update_image_format_intrin(nir_builder *b,
+                           nir_intrinsic_instr *intrin,
+                           void *state)
+{
+   switch (intrin->intrinsic) {
+#define CASE(op) case nir_intrinsic_image_deref_##op
+   CASE(load):
+   CASE(sparse_load):
+   CASE(store):
+   CASE(atomic):
+   CASE(atomic_swap):
+   CASE(format):
+   CASE(levels):
+   CASE(order):
+   CASE(size):
+   CASE(samples):
+   CASE(samples_identical):
+   CASE(texel_address):
+   CASE(load_raw_intel):
+   CASE(store_raw_intel):
+   CASE(descriptor_amd):
+   CASE(fragment_mask_load_amd):
+   CASE(store_block_agx): {
+      nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
+      nir_variable *var = nir_deref_instr_get_variable(deref);
+      if (var == NULL)
+         return false;
+      nir_intrinsic_set_format(intrin, var->data.image.format);
+      return true;
+   }
+#undef CASE
+
+   default:
+      return false;
+   }
+}
+
+bool
+nir_update_image_intrinsic_from_var(nir_shader *nir)
+{
+   return nir_shader_intrinsics_pass(nir, update_image_format_intrin,
+                                     nir_metadata_all, NULL);
 }

@@ -1,39 +1,21 @@
-/**********************************************************
- * Copyright 2009-2023 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2009-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 /**
  * @file
  * SVGA buffer manager for DMA buffers.
- * 
+ *
  * DMA buffers are used for pixel and vertex data upload/download to/from
  * the virtual SVGA hardware.
  *
  * This file implements a pipebuffer library's buffer manager, so that we can
  * use pipepbuffer's suballocation, fencing, and debugging facilities with
  * DMA buffers.
- * 
+ *
  * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
@@ -53,19 +35,6 @@
 struct vmw_dma_bufmgr;
 
 
-struct vmw_dma_buffer
-{
-   struct pb_buffer base;
-   
-   struct vmw_dma_bufmgr *mgr;
-   
-   struct vmw_region *region;
-   void *map;
-   unsigned map_flags;
-   unsigned map_count;
-};
-
-
 extern const struct pb_vtbl vmw_dma_buffer_vtbl;
 
 
@@ -77,11 +46,17 @@ vmw_pb_to_dma_buffer(struct pb_buffer *buf)
    return container_of(buf, struct vmw_dma_buffer, base);
 }
 
+struct vmw_dma_buffer *
+vmw_winsys_to_dma_buffer(struct svga_winsys_buffer *buffer)
+{
+   struct pb_buffer *p_buf = vmw_pb_buffer(buffer);
+   return vmw_pb_to_dma_buffer(p_buf);
+}
 
 struct vmw_dma_bufmgr
 {
    struct pb_manager base;
-   
+
    struct vmw_winsys_screen *vws;
 };
 
@@ -191,7 +166,8 @@ vmw_dma_buffer_fence( struct pb_buffer *_buf,
                       struct pipe_fence_handle *fence )
 {
    /* We don't need to do anything, as the pipebuffer library
-    * will take care of delaying the destruction of fenced buffers */  
+    * will take care of delaying the destruction of fenced buffers
+    */
 }
 
 
@@ -215,9 +191,9 @@ vmw_dma_bufmgr_create_buffer(struct pb_manager *_mgr,
    struct vmw_dma_buffer *buf;
    const struct vmw_buffer_desc *desc =
       (const struct vmw_buffer_desc *) pb_desc;
-   
+
    buf = CALLOC_STRUCT(vmw_dma_buffer);
-   if(!buf)
+   if (!buf)
       goto error1;
 
    pipe_reference_init(&buf->base.base.reference, 1);
@@ -230,10 +206,10 @@ vmw_dma_bufmgr_create_buffer(struct pb_manager *_mgr,
       buf->region = desc->region;
    } else {
       buf->region = vmw_ioctl_region_create(vws, size);
-      if(!buf->region)
-	 goto error2;
+      if (!buf->region)
+         goto error2;
    }
-	 
+
    return &buf->base;
 error2:
    FREE(buf);
@@ -261,17 +237,17 @@ struct pb_manager *
 vmw_dma_bufmgr_create(struct vmw_winsys_screen *vws)
 {
    struct vmw_dma_bufmgr *mgr;
-   
+
    mgr = CALLOC_STRUCT(vmw_dma_bufmgr);
-   if(!mgr)
+   if (!mgr)
       return NULL;
 
    mgr->base.destroy = vmw_dma_bufmgr_destroy;
    mgr->base.create_buffer = vmw_dma_bufmgr_create_buffer;
    mgr->base.flush = vmw_dma_bufmgr_flush;
-   
+
    mgr->vws = vws;
-   
+
    return &mgr->base;
 }
 
@@ -283,17 +259,17 @@ vmw_dma_bufmgr_region_ptr(struct pb_buffer *buf,
    struct pb_buffer *base_buf;
    pb_size offset = 0;
    struct vmw_dma_buffer *dma_buf;
-   
+
    pb_get_base_buffer( buf, &base_buf, &offset );
-   
+
    dma_buf = vmw_pb_to_dma_buffer(base_buf);
-   if(!dma_buf)
+   if (!dma_buf)
       return false;
-   
+
    *ptr = vmw_ioctl_region_ptr(dma_buf->region);
-   
+
    ptr->offset += offset;
-   
+
    return true;
 }
 

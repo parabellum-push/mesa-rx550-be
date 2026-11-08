@@ -1,17 +1,5 @@
 # Copyright © 2022 Collabora Ltd
 # SPDX-License-Identifier: MIT
-if meson.version().version_compare('< 1.3.0')
-  error('NVK requires meson 1.3.0 or newer')
-endif
-
-add_languages('rust', required: true)
-rust = import('rust')
-
-rc = meson.get_compiler('rust')
-if rc.version().version_compare('< 1.73.0')
-  error('nil_rs requires Rust 1.73.0')
-endif
-
 prog_cbindgen = find_program(
   'cbindgen',
   required : true,
@@ -21,7 +9,7 @@ prog_cbindgen = find_program(
 
 dep_paste = dependency('paste',
   version : '>= 1.0.14',
-  fallback : ['paste', 'dep_paste'],
+  fallback : ['paste-1-rs', 'dep_paste'],
   required : true,
 )
 
@@ -29,6 +17,7 @@ _nil_format_table = custom_target(
   'nil_format_table',
   input : files('nil_format_table_gen.py', 'nil_formats.csv'),
   output : ['nil_format_table.h', 'nil_format_table.c'],
+  depends: u_format_gen_h,
   command : [
     prog_python, '@INPUT0@', '--csv', '@INPUT1@',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@',
@@ -39,7 +28,7 @@ _libnil_format_table = static_library(
   'libnil_format_table',
   _nil_format_table,
   include_directories : [inc_include, inc_src],
-  dependencies : idep_nvidia_headers,
+  dependencies : [idep_nvidia_headers, idep_mesautil],
   gnu_symbol_visibility: 'hidden',
 )
 
@@ -47,19 +36,6 @@ _libnil_deps = [
   dep_paste,
   idep_bitview_rs,
   idep_nvidia_headers_rs,
-]
-
-_libnil_rust_args = [
-  '-Aclippy::identity_op',
-  '-Aclippy::len_zero',
-  '-Aclippy::manual_range_contains',
-  # normally this is a good one, but we use it where the "better" code is worse
-  '-Aclippy::needless_range_loop',
-  '-Aclippy::redundant_field_names',
-  '-Aclippy::upper_case_acronyms',
-  '-Aclippy::vec_box',
-  '-Aclippy::write_with_newline',
-  '-Anon_snake_case',
 ]
 
 _nil_bindings_rs = rust.bindgen(
@@ -70,9 +46,7 @@ _nil_bindings_rs = rust.bindgen(
   ],
   include_directories : [inc_include, inc_src, include_directories('.')],
   args: [
-    '--raw-line', '#![allow(non_camel_case_types)]',
-    '--raw-line', '#![allow(non_snake_case)]',
-    '--raw-line', '#![allow(non_upper_case_globals)]',
+    bindgen_output_args,
     '--allowlist-function', 'util_format_description',
     '--allowlist-function', 'util_format_get_blocksize',
     '--allowlist-function', 'util_format_is_compressed',
@@ -83,6 +57,7 @@ _nil_bindings_rs = rust.bindgen(
     '--allowlist-type', 'nil_format_support_flags',
     '--allowlist-type', 'nv_device_info',
     '--allowlist-type', 'nv_device_type',
+    '--allowlist-type', 'nv_zcull_device_info',
     '--allowlist-type', 'pipe_format',
     '--allowlist-type', 'pipe_swizzle',
     '--allowlist-var', 'nil_format_table',
@@ -101,14 +76,39 @@ _libnil_rs_bindings = static_library(
 )
 
 _libnil = static_library(
-  'libnil',
+  'nil',
   files('lib.rs'),
   gnu_symbol_visibility: 'hidden',
   rust_abi: 'c',
-  rust_args: _libnil_rust_args,
+  rust_args: nouveau_rust_args,
   link_with: [_libnil_format_table, _libnil_rs_bindings],
   dependencies: _libnil_deps,
 )
+
+# TODO: Linking Rust executables (such as unit tests) doesn't play nicely
+# with the sanitizers because meson doesn't know to pass -fsanitize to the
+# Rust linker.  See also https://github.com/mesonbuild/meson/issues/11741
+if with_tests and get_option('b_sanitize') == 'none'
+  rust.test(
+    'nil',
+    _libnil,
+    suite : ['nouveau'],
+    # This is needed to ensure we link against glibc.
+    # The --no-as-needed/-lm/--as-needed workaround forces the linker to
+    # keep libm for sqrtf in libmesa_util.a. This is needed because rustc
+    # places default libraries (-lm) before static archives in the link
+    # command, and Coverity's cov-build strips rustc's -fuse-ld=lld,
+    # falling back to ld.bfd which has strict left-to-right link order.
+    # Remove this workaround once rustc resolves link ordering of
+    # native libraries (https://github.com/rust-lang/rust/issues/154975).
+    rust_args: [
+      '-C', 'default-linker-libraries',
+      '-C', 'link-arg=-Wl,--no-as-needed',
+      '-C', 'link-arg=-lm',
+      '-C', 'link-arg=-Wl,--as-needed',
+    ],
+  )
+endif
 
 _nil_h = custom_target(
   'nil_h',
@@ -120,6 +120,11 @@ _nil_h = custom_target(
     '--', '@INPUT1@',
   ],
   depfile : 'nil.h.d',
+)
+
+idep_nil_h = declare_dependency(
+  include_directories : include_directories('.'),
+  sources : [_nil_h],
 )
 
 idep_nil = declare_dependency(

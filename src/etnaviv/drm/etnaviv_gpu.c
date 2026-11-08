@@ -77,13 +77,13 @@ query_features_from_kernel(struct etna_gpu *gpu)
 	STATIC_ASSERT(ETNA_GPU_FEATURES_12 == 0xf);
 
 	for (unsigned i = ETNA_GPU_FEATURES_0; i <= ETNA_GPU_FEATURES_12; i++) {
-		uint64_t val;
+		uint64_t val = 0;
 
 		etna_gpu_get_param(gpu, i, &val);
 		features[i - ETNA_GPU_FEATURES_0] = val;
 	}
 
-	gpu->info.type = ETNA_CORE_GPU;
+	etna_core_enable_feature(&gpu->info, ETNA_FEATURE_CORE_GPU);
 
 	ETNA_FEATURE(chipFeatures, FAST_CLEAR);
 	ETNA_FEATURE(chipFeatures, PIPE_3D);
@@ -92,6 +92,7 @@ query_features_from_kernel(struct etna_gpu *gpu)
 	ETNA_FEATURE(chipFeatures, DXT_TEXTURE_COMPRESSION);
 	ETNA_FEATURE(chipFeatures, ETC1_TEXTURE_COMPRESSION);
 	ETNA_FEATURE(chipFeatures, NO_EARLY_Z);
+	ETNA_FEATURE(chipFeatures, YUV420_TILER);
 
 	ETNA_FEATURE(chipMinorFeatures0, MC20);
 	ETNA_FEATURE(chipMinorFeatures0, RENDERTARGET_8K);
@@ -121,6 +122,7 @@ query_features_from_kernel(struct etna_gpu *gpu)
 
 	ETNA_FEATURE(chipMinorFeatures3, PE_DITHER_FIX);
 	ETNA_FEATURE(chipMinorFeatures3, INSTRUCTION_CACHE);
+	ETNA_FEATURE(chipMinorFeatures3, UNIFIED_SAMPLERS);
 	ETNA_FEATURE(chipMinorFeatures3, HAS_FAST_TRANSCENDENTALS);
 
 	ETNA_FEATURE(chipMinorFeatures4, SMALL_MSAA);
@@ -140,12 +142,14 @@ query_features_from_kernel(struct etna_gpu *gpu)
 	ETNA_FEATURE(chipMinorFeatures6, NO_ASTC);
 	ETNA_FEATURE(chipMinorFeatures6, V4_COMPRESSION);
 
+	ETNA_FEATURE(chipMinorFeatures7, BLT_64BPP_MASKED_CLEAR_FIX);
 	ETNA_FEATURE(chipMinorFeatures7, RS_NEW_BASEADDR);
 	ETNA_FEATURE(chipMinorFeatures7, PE_NO_ALPHA_TEST);
 
 	ETNA_FEATURE(chipMinorFeatures8, SH_NO_ONECONST_LIMIT);
 
 	ETNA_FEATURE(chipMinorFeatures10, DEC400);
+	ETNA_FEATURE(chipMinorFeatures10, WIDELINE_TRIANGLE_EMU);
 }
 
 static void
@@ -154,7 +158,7 @@ query_limits_from_kernel(struct etna_gpu *gpu)
 	struct etna_core_info *info = &gpu->info;
 	uint64_t val;
 
-	assert(info->type == ETNA_CORE_GPU);
+	assert(etna_core_has_feature(info, ETNA_FEATURE_CORE_GPU));
 
 	etna_gpu_get_param(gpu, ETNA_GPU_INSTRUCTION_COUNT, &val);
 	info->gpu.max_instructions = val;
@@ -194,11 +198,35 @@ static uint64_t get_param(struct etna_device *dev, uint32_t core, uint32_t param
 
 	ret = drmCommandWriteRead(dev->fd, DRM_ETNAVIV_GET_PARAM, &req, sizeof(req));
 	if (ret) {
-		ERROR_MSG("get-param (%x) failed! %d (%s)", param, ret, strerror(errno));
+		if (ret != -ENXIO)
+			ERROR_MSG("get-param (%x) failed! %d (%s)", param, ret,
+				  strerror(errno));
 		return 0;
 	}
 
 	return req.value;
+}
+
+static void determine_halti(struct etna_gpu *gpu)
+{
+	struct etna_core_info *info = &gpu->info;
+
+	/* Figure out gross GPU architecture. See rnndb/common.xml for a specific
+	 * description of the differences. */
+	if (etna_core_has_feature(info, ETNA_FEATURE_HALTI5))
+		info->halti = 5; /* New GC7000/GC8x00  */
+	else if (etna_core_has_feature(info, ETNA_FEATURE_HALTI4))
+		info->halti = 4; /* Old GC7000/GC7400 */
+	else if (etna_core_has_feature(info, ETNA_FEATURE_HALTI3))
+		info->halti = 3; /* None? */
+	else if (etna_core_has_feature(info, ETNA_FEATURE_HALTI2))
+		info->halti = 2; /* GC2500/GC3000/GC5000/GC6400 */
+	else if (etna_core_has_feature(info, ETNA_FEATURE_HALTI1))
+		info->halti = 1; /* GC900/GC4000/GC7000UL */
+	else if (etna_core_has_feature(info, ETNA_FEATURE_HALTI0))
+		info->halti = 0; /* GC880/GC2000/GC7000TM */
+	else
+		info->halti = -1; /* GC7000nanolite / pre-GC2000 except GC880 */
 }
 
 struct etna_gpu *etna_gpu_new(struct etna_device *dev, unsigned int core)
@@ -215,11 +243,11 @@ struct etna_gpu *etna_gpu_new(struct etna_device *dev, unsigned int core)
 	gpu->dev = dev;
 	gpu->core = core;
 
-	gpu->info.model    	= get_param(dev, core, ETNAVIV_PARAM_GPU_MODEL);
-	gpu->info.revision 	= get_param(dev, core, ETNAVIV_PARAM_GPU_REVISION);
-
+	gpu->info.model = get_param(dev, core, ETNAVIV_PARAM_GPU_MODEL);
 	if (!gpu->info.model)
 		goto fail;
+
+	gpu->info.revision = get_param(dev, core, ETNAVIV_PARAM_GPU_REVISION);
 
 	DEBUG_MSG(" GPU model:          0x%x (rev %x)", gpu->info.model, gpu->info.revision);
 
@@ -235,7 +263,17 @@ struct etna_gpu *etna_gpu_new(struct etna_device *dev, unsigned int core)
 	if (!core_info_okay) {
 		query_features_from_kernel(gpu);
 		query_limits_from_kernel(gpu);
+
+		/* GC3000 with the instruction cache feature has a incorrect instruction
+		 * limit encoded in HW (HWDB has the correct number). Fix this up so
+		 * other parts of the stack don't have to worry about this.
+		 */
+		if (etna_core_has_feature(&gpu->info, ETNA_FEATURE_INSTRUCTION_CACHE) &&
+		    gpu->info.gpu.max_instructions < 512)
+			gpu->info.gpu.max_instructions = 512;
 	}
+
+	determine_halti(gpu);
 
 	return gpu;
 fail:

@@ -203,8 +203,12 @@ get_l3_list(const struct intel_device_info *devinfo)
    case 20:
       return &empty_l3_list;
 
+   case 30:
+   case 35:
+      return &empty_l3_list;
+
    default:
-      unreachable("Not implemented");
+      UNREACHABLE("Not implemented");
    }
 }
 

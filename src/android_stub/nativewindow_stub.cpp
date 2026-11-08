@@ -1,4 +1,5 @@
 #include <vndk/window.h>
+#include <vndk/hardware_buffer.h>
 
 extern "C" {
 
@@ -27,6 +28,12 @@ AHardwareBuffer_describe(const AHardwareBuffer *buffer,
 int
 AHardwareBuffer_allocate(const AHardwareBuffer_Desc *desc,
                          AHardwareBuffer **outBuffer)
+{
+   return 0;
+}
+
+int
+AHardwareBuffer_isSupported(const AHardwareBuffer_Desc* desc)
 {
    return 0;
 }

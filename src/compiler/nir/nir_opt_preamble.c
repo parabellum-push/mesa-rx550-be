@@ -57,6 +57,7 @@ typedef struct {
    unsigned can_move_users;
 
    unsigned size, align;
+   nir_preamble_class class;
 
    unsigned offset;
 
@@ -101,18 +102,10 @@ typedef struct {
 static bool
 instr_can_speculate(nir_instr *instr)
 {
-   /* Intrinsics with an ACCESS index can only be speculated if they are
-    * explicitly CAN_SPECULATE.
-    */
-   if (instr->type == nir_instr_type_intrinsic) {
-      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   if (instr->type == nir_instr_type_phi)
+      return true;
 
-      if (nir_intrinsic_has_access(intr))
-         return nir_intrinsic_access(intr) & ACCESS_CAN_SPECULATE;
-   }
-
-   /* For now, everything else can be speculated. TODO: Bindless textures. */
-   return true;
+   return nir_instr_can_speculate(instr);
 }
 
 static float
@@ -151,7 +144,6 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_work_dim:
    case nir_intrinsic_load_num_workgroups:
    case nir_intrinsic_load_ray_launch_size:
-   case nir_intrinsic_load_sbt_base_amd:
    case nir_intrinsic_load_is_indexed_draw:
    case nir_intrinsic_load_viewport_scale:
    case nir_intrinsic_load_user_clip_plane:
@@ -182,10 +174,12 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_cull_front_face_enabled_amd:
    case nir_intrinsic_load_cull_back_face_enabled_amd:
    case nir_intrinsic_load_cull_ccw_amd:
-   case nir_intrinsic_load_cull_small_primitives_enabled_amd:
+   case nir_intrinsic_load_cull_small_triangles_enabled_amd:
+   case nir_intrinsic_load_cull_small_lines_enabled_amd:
    case nir_intrinsic_load_cull_any_enabled_amd:
-   case nir_intrinsic_load_cull_small_prim_precision_amd:
+   case nir_intrinsic_load_cull_small_triangle_precision_amd:
    case nir_intrinsic_load_vbo_base_agx:
+   case nir_intrinsic_load_push_data_intel:
       return true;
 
    /* Intrinsics which can be moved depending on hardware */
@@ -219,12 +213,18 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_sample_pos_from_id:
    case nir_intrinsic_load_kernel_input:
    case nir_intrinsic_load_buffer_amd:
+   case nir_intrinsic_image_levels:
+   case nir_intrinsic_image_deref_levels:
+   case nir_intrinsic_bindless_image_levels:
+   case nir_intrinsic_image_heap_levels:
    case nir_intrinsic_image_samples:
    case nir_intrinsic_image_deref_samples:
    case nir_intrinsic_bindless_image_samples:
+   case nir_intrinsic_image_heap_samples:
    case nir_intrinsic_image_size:
    case nir_intrinsic_image_deref_size:
    case nir_intrinsic_bindless_image_size:
+   case nir_intrinsic_image_heap_size:
    case nir_intrinsic_vulkan_resource_index:
    case nir_intrinsic_vulkan_resource_reindex:
    case nir_intrinsic_load_vulkan_descriptor:
@@ -232,7 +232,10 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_masked_swizzle_amd:
    case nir_intrinsic_load_ssbo_address:
    case nir_intrinsic_bindless_resource_ir3:
+   case nir_intrinsic_load_const_ir3:
    case nir_intrinsic_load_constant_agx:
+   case nir_intrinsic_bindless_image_agx:
+   case nir_intrinsic_bindless_sampler_agx:
       return can_move_srcs(&instr->instr, ctx);
 
    /* Image/SSBO loads can be moved if they are CAN_REORDER and their
@@ -241,8 +244,13 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_image_load:
    case nir_intrinsic_image_samples_identical:
    case nir_intrinsic_bindless_image_load:
+   case nir_intrinsic_image_heap_load:
+   case nir_intrinsic_load_global_bounded:
    case nir_intrinsic_load_ssbo:
+   case nir_intrinsic_load_ssbo_intel:
    case nir_intrinsic_load_ssbo_ir3:
+   case nir_intrinsic_load_global_offset:
+   case nir_intrinsic_load_agx:
       return (nir_intrinsic_access(instr) & ACCESS_CAN_REORDER) &&
              can_move_srcs(&instr->instr, ctx);
 
@@ -273,17 +281,9 @@ can_move_instr(nir_instr *instr, opt_preamble_ctx *ctx)
       }
       return can_move_srcs(instr, ctx);
    }
-   case nir_instr_type_alu: {
-      /* The preamble is presumably run with only one thread, so we can't run
-       * derivatives in it.
-       * TODO: Replace derivatives with 0 instead, if real apps hit this.
-       */
-      nir_alu_instr *alu = nir_instr_as_alu(instr);
-      if (nir_op_is_derivative(alu->op))
-         return false;
-      else
-         return can_move_srcs(instr, ctx);
-   }
+   case nir_instr_type_alu:
+      return can_move_srcs(instr, ctx);
+
    case nir_instr_type_intrinsic:
       return can_move_intrinsic(nir_instr_as_intrinsic(instr), ctx);
 
@@ -454,7 +454,7 @@ calculate_can_move_for_cf_list(opt_preamble_ctx *ctx, struct exec_list *list)
       }
 
       default:
-         unreachable("Unexpected CF node type");
+         UNREACHABLE("Unexpected CF node type");
       }
    }
 
@@ -504,7 +504,7 @@ replace_for_block(nir_builder *b, opt_preamble_ctx *ctx,
                assert(else_def == NULL);
                else_def = phi_src->src.ssa;
             } else {
-               unreachable("Invalid predecessor for phi of if");
+               UNREACHABLE("Invalid predecessor for phi of if");
             }
          }
 
@@ -519,7 +519,7 @@ replace_for_block(nir_builder *b, opt_preamble_ctx *ctx,
             nir_before_block_after_phis(nir_cursor_current_block(b->cursor));
 
          nir_def *repl = nir_if_phi(b, then_def, else_def);
-         clone = repl->parent_instr;
+         clone = nir_def_instr(repl);
 
          _mesa_hash_table_insert(remap_table, &phi->def, repl);
       } else {
@@ -548,7 +548,8 @@ replace_for_block(nir_builder *b, opt_preamble_ctx *ctx,
 
       if (state->replace) {
          nir_def *clone_def = nir_instr_def(clone);
-         nir_store_preamble(b, clone_def, .base = state->offset);
+         nir_store_preamble(b, clone_def, .base = state->offset,
+                            .preamble_class = state->class);
       }
    }
 }
@@ -603,7 +604,7 @@ replace_for_cf_list(nir_builder *b, opt_preamble_ctx *ctx,
       }
 
       default:
-         unreachable("Unexpected CF node type");
+         UNREACHABLE("Unexpected CF node type");
       }
    }
 }
@@ -793,7 +794,7 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
             if (nir_src_is_if(use)) {
                is_can_move_user = false;
             } else {
-               nir_def *use_def = nir_instr_def(nir_src_parent_instr(use));
+               nir_def *use_def = nir_instr_def(nir_src_use_instr(use));
                is_can_move_user = use_def != NULL &&
                                   ctx.states[use_def->index].can_move &&
                                   !ctx.states[use_def->index].must_stay;
@@ -822,6 +823,7 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
    def_state **candidates = malloc(sizeof(*candidates) * num_candidates);
    unsigned candidate_idx = 0;
    unsigned total_size = 0;
+   bool multiple_classes = false;
 
    /* Step 3: Calculate value of candidates by propagating downwards. We try
     * to share the value amongst can_move uses, in case there are multiple.
@@ -865,10 +867,12 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
                              options->rewrite_cost_cb(def, options->cb_data);
 
             if (state->benefit > 0) {
-               options->def_size(def, &state->size, &state->align);
+               options->def_size(def, &state->size, &state->align,
+                                 &state->class);
                total_size = ALIGN_POT(total_size, state->align);
                total_size += state->size;
                candidates[candidate_idx++] = state;
+               multiple_classes |= (state->class != nir_preamble_class_general);
             }
          }
       }
@@ -889,26 +893,41 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
     * alignment. We use a well-known greedy approximation, sorting by value
     * divided by size.
     */
+   if (multiple_classes ||
+       (((*size) + total_size) > options->preamble_storage_size[0])) {
 
-   if (((*size) + total_size) > options->preamble_storage_size) {
       qsort(candidates, num_candidates, sizeof(*candidates), candidate_sort);
    }
 
-   unsigned offset = *size;
    for (unsigned i = 0; i < num_candidates; i++) {
       def_state *state = candidates[i];
-      offset = ALIGN_POT(offset, state->align);
+      nir_preamble_class c = state->class;
+      size[c] = ALIGN_POT(size[c], state->align);
 
-      if (offset + state->size > options->preamble_storage_size)
-         break;
+      assert(c < ARRAY_SIZE(options->preamble_storage_size));
+
+      if (size[c] + state->size > options->preamble_storage_size[c]) {
+         /* If there's only a single class and it's full, early-exit. If we have
+          * multiple classes, we do not early-exit as one class filling up does
+          * not necessarily mean the others are. This could be optimized but
+          * it doesn't really matter.
+          */
+         if (!multiple_classes)
+            break;
+
+         /* Try falling back on on the default class */
+         state->class = nir_preamble_class_general;
+         c = state->class;
+         size[c] = ALIGN_POT(size[c], state->align);
+         if (size[c] + state->size > options->preamble_storage_size[c])
+            continue;
+      }
 
       state->replace = true;
-      state->offset = offset;
+      state->offset = size[c];
 
-      offset += state->size;
+      size[c] += state->size;
    }
-
-   *size = offset;
 
    free(candidates);
 
@@ -916,8 +935,7 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
     * we did.
     */
    ctx.reconstructed_ifs = _mesa_pointer_set_create(NULL);
-   ctx.reconstructed_defs = calloc(BITSET_WORDS(impl->ssa_alloc),
-                                   sizeof(BITSET_WORD));
+   ctx.reconstructed_defs = BITSET_CALLOC(impl->ssa_alloc);
    analyze_reconstructed(&ctx, impl);
 
    /* If we make progress analyzing speculation, we need to re-analyze
@@ -958,16 +976,15 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
 
          nir_def *new_def =
             nir_load_preamble(b, def->num_components, def->bit_size,
-                              .base = state->offset);
+                              .base = state->offset,
+                              .preamble_class = state->class);
 
          nir_def_rewrite_uses(def, new_def);
          nir_instr_free_and_dce(instr);
       }
    }
 
-   nir_metadata_preserve(impl,
-                         nir_metadata_block_index |
-                            nir_metadata_dominance);
+   nir_progress(true, impl, nir_metadata_control_flow);
 
    ralloc_free(remap_table);
    free(ctx.states);

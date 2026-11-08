@@ -32,13 +32,27 @@
 
 static bool debug;
 
+static inline bool
+skip_inst(struct qinst *inst)
+{
+        return inst->qpu.type != V3D_QPU_INSTR_TYPE_ALU;
+}
+
 bool
 vir_opt_small_immediates(struct v3d_compile *c)
 {
         bool progress = false;
 
+        /* Shader-db shows that small immediates generally lead to higher
+         * instruction counts for geometry stages.
+         */
+        if (c->s->info.stage != MESA_SHADER_FRAGMENT &&
+            c->s->info.stage != MESA_SHADER_COMPUTE) {
+                return progress;
+        }
+
         vir_for_each_inst_inorder(inst, c) {
-                if (inst->qpu.type != V3D_QPU_INSTR_TYPE_ALU)
+                if (skip_inst(inst))
                         continue;
 
                 /* The small immediate value sits in the raddr B field, so we
@@ -101,23 +115,15 @@ vir_opt_small_immediates(struct v3d_compile *c)
                         if (!v3d_qpu_sig_pack(c->devinfo, &new_sig, &sig_packed))
                                 continue;
 
-                        if (debug) {
-                                fprintf(stderr, "opt_small_immediate() from: ");
-                                vir_dump_inst(c, inst);
-                                fprintf(stderr, "\n");
-                        }
-                        inst->qpu.sig.small_imm_a = new_sig.small_imm_a;
-                        inst->qpu.sig.small_imm_b = new_sig.small_imm_b;
-                        inst->qpu.sig.small_imm_c = new_sig.small_imm_c;
-                        inst->qpu.sig.small_imm_d = new_sig.small_imm_d;
-                        inst->qpu.raddr_b = packed;
+                        LOG_INST_OPT("opt_small_immediate()", c, inst) {
+                                inst->qpu.sig.small_imm_a = new_sig.small_imm_a;
+                                inst->qpu.sig.small_imm_b = new_sig.small_imm_b;
+                                inst->qpu.sig.small_imm_c = new_sig.small_imm_c;
+                                inst->qpu.sig.small_imm_d = new_sig.small_imm_d;
+                                inst->qpu.raddr_b = packed;
 
-                        inst->src[i].file = QFILE_SMALL_IMM;
-                        inst->src[i].index = imm;
-                        if (debug) {
-                                fprintf(stderr, "to: ");
-                                vir_dump_inst(c, inst);
-                                fprintf(stderr, "\n");
+                                inst->src[i].file = QFILE_SMALL_IMM;
+                                inst->src[i].index = imm;
                         }
                         progress = true;
                         break;

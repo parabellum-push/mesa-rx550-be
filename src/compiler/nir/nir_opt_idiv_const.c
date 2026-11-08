@@ -29,8 +29,14 @@
 static nir_def *
 build_udiv(nir_builder *b, nir_def *n, uint64_t d)
 {
+   uint64_t uint_max = u_uintN_max(n->bit_size);
+
    if (d == 0) {
       return nir_imm_intN_t(b, 0, n->bit_size);
+   } else if (d == uint_max) {
+      return nir_b2iN(b, nir_ieq_imm(b, n, uint_max), n->bit_size);
+   } else if (d > uint_max / 2) {
+      return nir_b2iN(b, nir_uge_imm(b, n, d), n->bit_size);
    } else if (util_is_power_of_two_or_zero64(d)) {
       return nir_ushr_imm(b, n, util_logbase2_64(d));
    } else {
@@ -146,14 +152,10 @@ build_imod(nir_builder *b, nir_def *n, int64_t d)
 }
 
 static bool
-nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
+nir_opt_idiv_const_instr(nir_builder *b, nir_alu_instr *alu, void *user_data)
 {
    unsigned *min_bit_size = user_data;
 
-   if (instr->type != nir_instr_type_alu)
-      return false;
-
-   nir_alu_instr *alu = nir_instr_as_alu(instr);
    if (alu->op != nir_op_udiv &&
        alu->op != nir_op_idiv &&
        alu->op != nir_op_umod &&
@@ -208,13 +210,12 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
          q[comp] = build_irem(b, n, d);
          break;
       default:
-         unreachable("Unknown integer division op");
+         UNREACHABLE("Unknown integer division op");
       }
    }
 
    nir_def *qvec = nir_vec(b, q, alu->def.num_components);
-   nir_def_rewrite_uses(&alu->def, qvec);
-   nir_instr_remove(&alu->instr);
+   nir_def_replace(&alu->def, qvec);
 
    return true;
 }
@@ -222,8 +223,7 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
 bool
 nir_opt_idiv_const(nir_shader *shader, unsigned min_bit_size)
 {
-   return nir_shader_instructions_pass(shader, nir_opt_idiv_const_instr,
-                                       nir_metadata_block_index |
-                                          nir_metadata_dominance,
-                                       &min_bit_size);
+   return nir_shader_alu_pass(shader, nir_opt_idiv_const_instr,
+                              nir_metadata_control_flow,
+                              &min_bit_size);
 }

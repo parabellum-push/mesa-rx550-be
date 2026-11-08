@@ -69,7 +69,9 @@ bool ac_register_exists(enum amd_gfx_level gfx_level, enum radeon_family family,
                         unsigned offset);
 bool ac_vm_fault_occurred(enum amd_gfx_level gfx_level, uint64_t *old_dmesg_timestamp,
                          uint64_t *out_addr);
+char *ac_get_umr_waves(const struct radeon_info *info, enum amd_ip_type ring);
 unsigned ac_get_wave_info(enum amd_gfx_level gfx_level, const struct radeon_info *info,
+                          const char *wave_dump,
                           struct ac_wave_info waves[AC_MAX_WAVES_PER_CHIP]);
 void ac_print_gpuvm_fault_status(FILE *output, enum amd_gfx_level gfx_level,
                                  uint32_t status);
@@ -89,6 +91,7 @@ struct ac_ib_parser {
    const int *trace_ids;
    unsigned trace_id_count;
    enum amd_gfx_level gfx_level;
+   enum vcn_version vcn_version;
    enum radeon_family family;
    enum amd_ip_type ip_type;
    ac_debug_addr_callback addr_callback;
@@ -99,10 +102,18 @@ struct ac_ib_parser {
    unsigned cur_dw;
 };
 
+void ac_print_data_dword(FILE *file, uint32_t value, const char *comment);
+void ac_print_named_value(FILE *file, const char *name, uint32_t value, int bits);
+void ac_print_string_value(FILE *file, const char *name, const char *value);
 void ac_dump_reg(FILE *file, enum amd_gfx_level gfx_level, enum radeon_family family,
                  unsigned offset, uint32_t value, uint32_t field_mask);
+uint32_t ac_ib_get(struct ac_ib_parser *ib);
+void ac_ib_handle_address(struct ac_ib_parser *ib, uint32_t addr_lo, uint32_t addr_hi, uint32_t size);
 void ac_parse_ib_chunk(struct ac_ib_parser *ib);
 void ac_parse_ib(struct ac_ib_parser *ib, const char *name);
+
+void ac_dump_texture_descriptor(FILE *output, enum amd_gfx_level gfx_level,
+                                enum radeon_family family, uint32_t desc[8]);
 
 #ifdef __cplusplus
 }

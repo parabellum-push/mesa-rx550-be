@@ -32,9 +32,12 @@
 #include "builtin_functions.h"
 #include "nir.h"
 #include "gl_nir.h"
+#include "gl_nir_linker.h"
+#include "glsl_parser_extras.h"
 #include "glsl_to_nir.h"
+#include "linker_util.h"
 #include "nir_builder.h"
-#include "program.h"
+#include "pipe/p_screen.h"
 
 /* The printed-GLSL-IR tests use fmemopen so we can do stdio to memory (or you'd
  * need equivalent tempfiles that you manage).  Just disable this test on those
@@ -86,14 +89,6 @@ namespace
          return alu->def.bit_size;
       }
 
-      char *get_fs_ir(void) {
-         char temp[4096];
-         FILE *ftemp = fmemopen(temp, sizeof(temp), "w");
-         _mesa_print_ir(ftemp, whole_program->_LinkedShaders[MESA_SHADER_FRAGMENT]->ir, NULL);
-         fclose(ftemp);
-         return strdup(temp);
-      }
-
       /* Returns the common bit size of all src operands (failing if not matching). */
       uint32_t op_src_bits(nir_op op)
       {
@@ -135,7 +130,7 @@ namespace
          }
       }
 
-      ralloc_free(nir);
+      standalone_destroy_shader_program(whole_program);
 
       free(fs_ir);
 
@@ -147,7 +142,18 @@ namespace
    {
       struct gl_shader *shader = standalone_add_shader_source(ctx, whole_program, type, source);
 
-      _mesa_glsl_compile_shader(ctx, shader, false, false, true);
+      /* Save off the GLSL IR, since the compile frees it. */
+      char temp[4096];
+      FILE *ftemp = NULL;
+      if (type == GL_FRAGMENT_SHADER)
+         ftemp = fmemopen(temp, sizeof(temp), "w");
+
+      _mesa_glsl_compile_shader(ctx, shader, ftemp, false, false, true);
+
+      if (type == GL_FRAGMENT_SHADER) {
+         fclose(ftemp);
+         fs_ir = strdup(temp);
+      }
 
       return shader;
    }
@@ -157,15 +163,27 @@ namespace
    {
       ctx = &local_ctx;
 
+      static const struct nir_shader_compiler_options compiler_options = {
+          .support_16bit_alu = true,
+      };
+
       /* Get better variable names from GLSL IR for debugging. */
       ir_variable::temporaries_allocate_names = true;
 
       initialize_context_to_defaults(ctx, API_OPENGLES2);
       ctx->Version = 31;
-      for (int i = 0; i < MESA_SHADER_STAGES; i++) {
-         ctx->Const.ShaderCompilerOptions[i].LowerPrecisionFloat16 = true;
-         ctx->Const.ShaderCompilerOptions[i].LowerPrecisionInt16 = true;
+      for (int i = 0; i < MESA_SHADER_MESH_STAGES; i++) {
+         ((struct pipe_shader_caps*)&ctx->screen->shader_caps[i])->fp16 = true;
+         ((struct pipe_shader_caps*)&ctx->screen->shader_caps[i])->int16 = true;
+         ctx->screen->nir_options[i] = &compiler_options;
       }
+
+      /* GL_ARB_explicit_uniform_location, GL_MAX_UNIFORM_LOCATIONS */
+      ctx->Const.MaxUserAssignableUniformLocations =
+         4 * MESA_SHADER_MESH_STAGES * MAX_UNIFORMS;
+
+      ctx->Const.Program[MESA_SHADER_VERTEX].MaxCombinedUniformComponents = 128 * 4;
+      ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxCombinedUniformComponents = 16 * 4;
 
       _mesa_glsl_builtin_functions_init_or_ref();
 
@@ -188,40 +206,17 @@ namespace
          ASSERT_EQ(shader->CompileStatus, COMPILE_SUCCESS);
       }
 
-      link_shaders(ctx, whole_program);
+      link_shaders_init(ctx, whole_program);
+      gl_nir_link_glsl(ctx, whole_program);
       if (whole_program->data->LinkStatus != LINKING_SUCCESS)
          fprintf(stderr, "Linker error: %s", whole_program->data->InfoLog);
       EXPECT_EQ(whole_program->data->LinkStatus, LINKING_SUCCESS);
 
-      /* Save off the GLSL IR now, since glsl_to_nir() frees it. */
-      fs_ir = get_fs_ir();
-
-      static const struct nir_shader_compiler_options compiler_options = {
-          .support_16bit_alu = true,
-      };
-
-      nir = glsl_to_nir(&ctx->Const, whole_program, MESA_SHADER_FRAGMENT, &compiler_options);
-
-      gl_nir_inline_functions(nir);
-
-      standalone_destroy_shader_program(whole_program);
-
-      /* nir_lower_mediump_vars happens after copy deref lowering. */
-      NIR_PASS(_, nir, nir_split_var_copies);
-      NIR_PASS(_, nir, nir_lower_var_copies);
-
-      /* Make the vars and i/o mediump like we'd expect, so people debugging aren't confused. */
-      NIR_PASS(_, nir, nir_lower_mediump_vars, nir_var_uniform | nir_var_function_temp | nir_var_shader_temp);
-      NIR_PASS(_, nir, nir_lower_mediump_io, nir_var_shader_out, ~0, false);
-
-      /* Clean up f2fmp(f2f32(x)) noise. */
-      NIR_PASS(_, nir, nir_opt_algebraic);
-      NIR_PASS(_, nir, nir_opt_algebraic_late);
-      NIR_PASS(_, nir, nir_copy_prop);
-      NIR_PASS(_, nir, nir_opt_dce);
+      nir = whole_program->_LinkedShaders[MESA_SHADER_FRAGMENT]->Program->nir;
 
       /* Store the source for printing from later assertions. */
       this->source = source;
+      free(local_ctx.screen);
    }
 
    // A predicate-formatter for asserting that two integers are mutually prime.

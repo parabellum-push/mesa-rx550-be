@@ -6,6 +6,7 @@
 
 #include "nvk_device.h"
 #include "nvk_entrypoints.h"
+#include "nvk_format.h"
 #include "nvk_image.h"
 #include "nvk_image_view.h"
 #include "nvk_mme.h"
@@ -13,7 +14,7 @@
 
 #include "vk_format.h"
 
-#include "nvk_cl9097.h"
+#include "nv_push_cl9097.h"
 #include "drf.h"
 
 void
@@ -23,6 +24,18 @@ nvk_mme_clear(struct mme_builder *b)
    struct mme_value view_mask = nvk_mme_load_scratch(b, VIEW_MASK);
 
    const uint32_t arr_idx = 1 << DRF_LO(NV9097_CLEAR_SURFACE_RT_ARRAY_INDEX);
+
+   mme_if(b, ieq, view_mask, mme_zero()) {
+      struct mme_value layer_count = mme_load(b);
+
+      mme_loop(b, layer_count) {
+         mme_mthd(b, NV9097_CLEAR_SURFACE);
+         mme_emit(b, payload);
+
+         mme_add_to(b, payload, payload, mme_imm(arr_idx));
+      }
+      mme_free_reg(b, layer_count);
+   }
 
    mme_if(b, ine, view_mask, mme_zero()) {
       struct mme_value bit = mme_mov(b, mme_imm(1));
@@ -39,20 +52,51 @@ nvk_mme_clear(struct mme_builder *b)
       mme_free_reg(b, bit);
    }
 
-   mme_if(b, ieq, view_mask, mme_zero()) {
-      struct mme_value layer_count = mme_load(b);
-
-      mme_loop(b, layer_count) {
-         mme_mthd(b, NV9097_CLEAR_SURFACE);
-         mme_emit(b, payload);
-
-         mme_add_to(b, payload, payload, mme_imm(arr_idx));
-      }
-      mme_free_reg(b, layer_count);
-   }
-
    mme_free_reg(b, payload);
    mme_free_reg(b, view_mask);
+}
+
+const struct nvk_mme_test_case nvk_mme_clear_tests[] = {{
+   .init = (struct nvk_mme_mthd_data[]) {
+      { NVK_SET_MME_SCRATCH(VIEW_MASK), 0 },
+      { }
+   },
+   .params = (uint32_t[]) { 0x3c, 5 },
+   .expected = (struct nvk_mme_mthd_data[]) {
+      { NV9097_CLEAR_SURFACE, 0x003c },
+      { NV9097_CLEAR_SURFACE, 0x043c },
+      { NV9097_CLEAR_SURFACE, 0x083c },
+      { NV9097_CLEAR_SURFACE, 0x0c3c },
+      { NV9097_CLEAR_SURFACE, 0x103c },
+      { }
+   },
+}, {
+   .init = (struct nvk_mme_mthd_data[]) {
+      { NVK_SET_MME_SCRATCH(VIEW_MASK), 0xb },
+      { }
+   },
+   .params = (uint32_t[]) { 0x3c },
+   .expected = (struct nvk_mme_mthd_data[]) {
+      { NV9097_CLEAR_SURFACE, 0x03c },
+      { NV9097_CLEAR_SURFACE, 0x43c },
+      { NV9097_CLEAR_SURFACE, 0xc3c },
+      { }
+   },
+}, {}};
+
+void
+nvk_mme_update_window_clip(struct mme_builder *b)
+{
+   struct mme_value is_drawing = mme_load(b);
+   struct mme_value window_clip_enabled = nvk_mme_load_scratch(b, WINDOW_CLIP_ENABLED);
+
+   struct mme_value new_value = mme_and(b, window_clip_enabled, is_drawing);
+   mme_mthd(b, NV9097_SET_WINDOW_CLIP_ENABLE);
+   mme_emit(b, new_value);
+
+   mme_free_reg(b, new_value);
+   mme_free_reg(b, window_clip_enabled);
+   mme_free_reg(b, is_drawing);
 }
 
 static void
@@ -106,7 +150,9 @@ nvk_CmdClearAttachments(VkCommandBuffer commandBuffer,
                         const VkClearRect *pRects)
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
-   struct nv_push *p = nvk_cmd_buffer_push(cmd, 2 + attachmentCount * 4);
+   const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+
+   struct nv_push *p = nvk_cmd_buffer_push(cmd, 4 + attachmentCount * 4);
 
    P_IMMD(p, NV9097, SET_CLEAR_SURFACE_CONTROL, {
       .respect_stencil_mask   = RESPECT_STENCIL_MASK_FALSE,
@@ -114,6 +160,15 @@ nvk_CmdClearAttachments(VkCommandBuffer commandBuffer,
       .use_scissor0           = USE_SCISSOR0_FALSE,
       .use_viewport_clip0     = USE_VIEWPORT_CLIP0_FALSE,
    });
+
+   /* VK_EXT_discard_rects doesn't influence clears */
+   const bool stash_window_clip =
+      BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_DR_ENABLE) || dyn->dr.enable;
+   if (stash_window_clip) {
+      /* Disable WINDOW_CLIP while we clear */
+      P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_UPDATE_WINDOW_CLIP));
+      P_INLINE_DATA(p, 0);
+   }
 
    bool clear_depth = false, clear_stencil = false;
    for (uint32_t i = 0; i < attachmentCount; i++) {
@@ -156,6 +211,13 @@ nvk_CmdClearAttachments(VkCommandBuffer commandBuffer,
    /* No color clears */
    if (clear_depth || clear_stencil)
       emit_clear_rects(cmd, -1, clear_depth, clear_stencil, rectCount, pRects);
+
+   if (stash_window_clip) {
+      p = nvk_cmd_buffer_push(cmd, 2);
+      /* Restore stashed WINDOW_CLIP value */
+      P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_UPDATE_WINDOW_CLIP));
+      P_INLINE_DATA(p, 1);
+   }
 }
 
 static VkImageViewType
@@ -171,7 +233,7 @@ render_view_type(VkImageType image_type, unsigned layer_count)
    case VK_IMAGE_TYPE_3D:
       return VK_IMAGE_VIEW_TYPE_3D;
    default:
-      unreachable("Invalid image type");
+      UNREACHABLE("Invalid image type");
    }
 }
 
@@ -216,6 +278,7 @@ clear_image(struct nvk_cmd_buffer *cmd,
          const VkImageViewCreateInfo view_info = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .pNext = &view_usage_info,
+            .flags = VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA,
             .image = nvk_image_to_handle(image),
             .viewType = render_view_type(image->vk.image_type, layer_count),
             .format = format,
@@ -229,7 +292,7 @@ clear_image(struct nvk_cmd_buffer *cmd,
          };
 
          struct nvk_image_view view;
-         result = nvk_image_view_init(dev, &view, true, &view_info);
+         result = nvk_image_view_init(dev, &view, &view_info);
          assert(result == VK_SUCCESS);
 
          VkRenderingInfo render = {
@@ -260,7 +323,11 @@ clear_image(struct nvk_cmd_buffer *cmd,
             render.pStencilAttachment = &vk_att;
 
          nvk_CmdBeginRendering(nvk_cmd_buffer_to_handle(cmd), &render);
-         nvk_CmdEndRendering(nvk_cmd_buffer_to_handle(cmd));
+
+         const VkRenderingEndInfoKHR end = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_END_INFO_KHR,
+         };
+         nvk_CmdEndRendering2KHR(nvk_cmd_buffer_to_handle(cmd), &end);
 
          nvk_image_view_finish(dev, &view);
       }
@@ -276,7 +343,7 @@ vk_packed_int_format_for_size(unsigned size_B)
    case 4:  return VK_FORMAT_R32_UINT;
    case 8:  return VK_FORMAT_R32G32_UINT;
    case 16: return VK_FORMAT_R32G32B32A32_UINT;
-   default: unreachable("Invalid image format size");
+   default: UNREACHABLE("Invalid image format size");
    }
 }
 
@@ -290,7 +357,7 @@ nvk_CmdClearColorImage(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
    VK_FROM_HANDLE(nvk_image, image, _image);
 
    VkClearValue clear_value = {
@@ -301,7 +368,7 @@ nvk_CmdClearColorImage(VkCommandBuffer commandBuffer,
    if (vk_format == VK_FORMAT_R64_UINT || vk_format == VK_FORMAT_R64_SINT)
       vk_format = VK_FORMAT_R32G32_UINT;
 
-   enum pipe_format p_format = vk_format_to_pipe_format(vk_format);
+   enum pipe_format p_format = nvk_format_to_pipe_format(vk_format);
    assert(p_format != PIPE_FORMAT_NONE);
 
    if (!nil_format_supports_color_targets(&pdev->info, p_format)) {

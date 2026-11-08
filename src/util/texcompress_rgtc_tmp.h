@@ -79,8 +79,9 @@ void TAG(encode_rgtc_ubyte)(TYPE *blkaddr, TYPE srccolors[4][4],
    TYPE alphabase[2], alphause[2];
    short alphatest[2] = { 0 };
    unsigned int alphablockerror1, alphablockerror2, alphablockerror3;
-   TYPE i, j, aindex, acutValues[7];
-   TYPE alphaenc1[16], alphaenc2[16], alphaenc3[16];
+   int i, j;
+   TYPE aindex, acutValues[7];
+   TYPE alphaenc1[16] = {0}, alphaenc2[16] = {0}, alphaenc3[16] = {0};
    int alphaabsmin = 0, alphaabsmax = 0;
    short alphadist;
 

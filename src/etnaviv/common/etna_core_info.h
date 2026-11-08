@@ -11,6 +11,8 @@
 #include "util/bitset.h"
 
 enum etna_feature {
+   ETNA_FEATURE_CORE_GPU,
+   ETNA_FEATURE_CORE_NPU,
    ETNA_FEATURE_FAST_CLEAR,
    ETNA_FEATURE_PIPE_3D,
    ETNA_FEATURE_32_BIT_INDICES,
@@ -56,21 +58,24 @@ enum etna_feature {
    ETNA_FEATURE_RA_WRITE_DEPTH,
    ETNA_FEATURE_CACHE128B256BPERLINE,
    ETNA_FEATURE_NEW_GPIPE,
+   ETNA_FEATURE_NO_ANISO,
    ETNA_FEATURE_NO_ASTC,
    ETNA_FEATURE_V4_COMPRESSION,
    ETNA_FEATURE_RS_NEW_BASEADDR,
    ETNA_FEATURE_PE_NO_ALPHA_TEST,
    ETNA_FEATURE_SH_NO_ONECONST_LIMIT,
+   ETNA_FEATURE_COMPUTE_ONLY,
    ETNA_FEATURE_DEC400,
    ETNA_FEATURE_VIP_V7,
    ETNA_FEATURE_NN_XYDP0,
+   ETNA_FEATURE_YUV420_TILER,
+   ETNA_FEATURE_MSAA_FRAGMENT_OPERATION,
+   ETNA_FEATURE_S8,
+   ETNA_FEATURE_HWTFB,
+   ETNA_FEATURE_BLT_64BPP_MASKED_CLEAR_FIX,
+   ETNA_FEATURE_WIDELINE_TRIANGLE_EMU,
+   ETNA_FEATURE_UNIFIED_SAMPLERS,
    ETNA_FEATURE_NUM,
-};
-
-enum etna_core_type {
-   ETNA_CORE_NOT_SUPPORTED = 0,
-   ETNA_CORE_GPU,
-   ETNA_CORE_NPU,
 };
 
 struct etna_core_gpu_info {
@@ -92,6 +97,8 @@ struct etna_core_npu_info {
    unsigned on_chip_sram_size;         /* Size of on-chip SRAM */
    unsigned axi_sram_size;             /* Size of SRAM behind AXI */
    unsigned nn_zrl_bits;               /* Number of bits for zero run-length compression */
+   unsigned nn_input_buffer_depth;     /* Input buffer size, determines tile size */
+   unsigned nn_accum_buffer_depth;     /* Accumulation buffer size, determines tile size */
 };
 
 struct etna_core_info {
@@ -101,12 +108,10 @@ struct etna_core_info {
    uint32_t eco_id;
    uint32_t customer_id;
 
-   enum etna_core_type type;
+   int8_t halti; /* HALTI (gross architecture) level. -1 for pre-HALTI. */
 
-   union {
-      struct etna_core_gpu_info gpu;
-      struct etna_core_npu_info npu;
-   };
+   struct etna_core_gpu_info gpu;
+   struct etna_core_npu_info npu;
 
    BITSET_DECLARE(feature, ETNA_FEATURE_NUM);
 };

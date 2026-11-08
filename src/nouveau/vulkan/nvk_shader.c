@@ -7,6 +7,8 @@
 #include "nvk_cmd_buffer.h"
 #include "nvk_descriptor_set_layout.h"
 #include "nvk_device.h"
+#include "nvk_instance.h"
+#include "nvk_mme.h"
 #include "nvk_physical_device.h"
 #include "nvk_sampler.h"
 #include "nvk_shader.h"
@@ -22,15 +24,38 @@
 #include "nir_builder.h"
 #include "compiler/spirv/nir_spirv.h"
 
-#include "nv50_ir_driver.h"
-
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/u_debug.h"
 
 #include "cla097.h"
 #include "clb097.h"
-#include "clc397.h"
 #include "clc597.h"
+#include "nv_push_cl9097.h"
+#include "nv_push_clb197.h"
+#include "nv_push_clc397.h"
+#include "nv_push_clc597.h"
+#include "nv_push_clc797.h"
+
+const struct nak_constant_offset_info nak_const_offsets_base = {
+   .sample_info_cb = 0,
+   .sample_locations_offset = nvk_root_descriptor_offset(draw.sample_locations),
+   .sample_masks_offset = nvk_root_descriptor_offset(draw.sample_masks),
+   .printf_cb = 0,
+   .printf_buffer_offset = nvk_root_descriptor_offset(printf_buffer_addr),
+};
+
+const struct nak_constant_offset_info nak_const_offsets_turing_graphics = {
+   .sample_info_cb = NVK_HW_ROOT_TABLE_FIRST_CB +
+                     nvk_hw_root_table_index(draw.sample_locations),
+   .sample_locations_offset = nvk_hw_root_table_offset(draw.sample_locations),
+   .sample_masks_offset = nvk_hw_root_table_offset(draw.sample_masks),
+   .printf_cb = NVK_HW_ROOT_TABLE_FIRST_CB +
+                nvk_hw_root_table_index(printf_buffer_addr),
+   .printf_buffer_offset = nvk_hw_root_table_offset(printf_buffer_addr),
+};
+static_assert(nvk_hw_root_table_index(draw.sample_locations) ==
+              nvk_hw_root_table_index(draw.sample_masks),
+              "Sample info is in same root table");
 
 static void
 shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
@@ -42,153 +67,109 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
    *size = comp_size * length, *align = comp_size;
 }
 
-VkShaderStageFlags
-nvk_nak_stages(const struct nv_device_info *info)
-{
-   const VkShaderStageFlags all =
-      VK_SHADER_STAGE_VERTEX_BIT |
-      VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
-      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
-      VK_SHADER_STAGE_GEOMETRY_BIT |
-      VK_SHADER_STAGE_FRAGMENT_BIT |
-      VK_SHADER_STAGE_COMPUTE_BIT;
-
-   const struct debug_control flags[] = {
-      { "vs", BITFIELD64_BIT(MESA_SHADER_VERTEX) },
-      { "tcs", BITFIELD64_BIT(MESA_SHADER_TESS_CTRL) },
-      { "tes", BITFIELD64_BIT(MESA_SHADER_TESS_EVAL) },
-      { "gs", BITFIELD64_BIT(MESA_SHADER_GEOMETRY) },
-      { "fs", BITFIELD64_BIT(MESA_SHADER_FRAGMENT) },
-      { "cs", BITFIELD64_BIT(MESA_SHADER_COMPUTE) },
-      { "all", all },
-      { NULL, 0 },
-   };
-
-   const char *env_str = getenv("NVK_USE_NAK");
-   if (env_str == NULL)
-      return info->cls_eng3d >= VOLTA_A ? all : 0;
-   else
-      return parse_debug_string(env_str, flags);
-}
-
-static bool
-use_nak(const struct nvk_physical_device *pdev, gl_shader_stage stage)
-{
-   return nvk_nak_stages(&pdev->info) & mesa_to_vk_shader_stage(stage);
-}
-
 uint64_t
 nvk_physical_device_compiler_flags(const struct nvk_physical_device *pdev)
 {
+   const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
    bool no_cbufs = pdev->debug_flags & NVK_DEBUG_NO_CBUF;
-   uint64_t prog_debug = nvk_cg_get_prog_debug();
-   uint64_t prog_optimize = nvk_cg_get_prog_optimize();
-   uint64_t nak_stages = nvk_nak_stages(&pdev->info);
+   bool use_edb_buffer_views = nvk_use_edb_buffer_views(pdev);
    uint64_t nak_flags = nak_debug_flags(pdev->nak);
 
-   assert(prog_debug <= UINT8_MAX);
-   assert(prog_optimize < 16);
-   assert(nak_stages <= UINT32_MAX);
    assert(nak_flags <= UINT16_MAX);
 
-   return prog_debug
-      | (prog_optimize << 8)
-      | ((uint64_t)no_cbufs << 12)
-      | (nak_stages << 16)
+   return (no_cbufs ? 1 << 12 : 0)
+      | (use_edb_buffer_views ? 1 << 13 : 0)
+      | (instance->drirc.misc.ssbo_align_4b ? 1 << 14 : 0)
       | (nak_flags << 48);
 }
 
 static const nir_shader_compiler_options *
 nvk_get_nir_options(struct vk_physical_device *vk_pdev,
-                    gl_shader_stage stage,
+                    mesa_shader_stage stage,
                     UNUSED const struct vk_pipeline_robustness_state *rs)
 {
    const struct nvk_physical_device *pdev =
       container_of(vk_pdev, struct nvk_physical_device, vk);
+   return nak_nir_options(pdev->nak);
+}
 
-   if (use_nak(pdev, stage))
-      return nak_nir_options(pdev->nak);
-   else
-      return nvk_cg_nir_options(pdev, stage);
+nir_address_format
+nvk_ubo_addr_format(const struct nvk_physical_device *pdev,
+                    const struct vk_pipeline_robustness_state *rs)
+{
+   if (nvk_use_bindless_cbuf(&pdev->info)) {
+      return nir_address_format_vec2_index_32bit_offset;
+   } else if (rs->null_uniform_buffer_descriptor) {
+      /* We need bounds checking for null descriptors */
+      return nir_address_format_64bit_bounded_global;
+   } else {
+      switch (rs->uniform_buffers) {
+      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT:
+         return nir_address_format_64bit_global_32bit_offset;
+      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT:
+      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT:
+         return nir_address_format_64bit_bounded_global;
+      default:
+         UNREACHABLE("Invalid robust buffer access behavior");
+      }
+   }
+}
+
+nir_address_format
+nvk_ssbo_addr_format(const struct nvk_physical_device *pdev,
+                    const struct vk_pipeline_robustness_state *rs)
+{
+   if (rs->null_storage_buffer_descriptor) {
+      /* We need bounds checking for null descriptors */
+      return nir_address_format_64bit_bounded_global;
+   } else {
+      switch (rs->storage_buffers) {
+      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT:
+         return nir_address_format_64bit_global_32bit_offset;
+      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT:
+      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT:
+         return nir_address_format_64bit_bounded_global;
+      default:
+         UNREACHABLE("Invalid robust buffer access behavior");
+      }
+   }
 }
 
 static struct spirv_to_nir_options
 nvk_get_spirv_options(struct vk_physical_device *vk_pdev,
-                      UNUSED gl_shader_stage stage,
+                      UNUSED mesa_shader_stage stage,
                       const struct vk_pipeline_robustness_state *rs)
 {
    const struct nvk_physical_device *pdev =
       container_of(vk_pdev, struct nvk_physical_device, vk);
+   const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
 
    return (struct spirv_to_nir_options) {
-      .caps = {
-         .demote_to_helper_invocation = true,
-         .descriptor_array_dynamic_indexing = true,
-         .descriptor_array_non_uniform_indexing = true,
-         .descriptor_indexing = true,
-         .device_group = true,
-         .draw_parameters = true,
-         .float_controls = true,
-         .float16 = true,
-         .float64 = true,
-         .fragment_barycentric = true,
-         .geometry_streams = true,
-         .image_atomic_int64 = true,
-         .image_ms_array = true,
-         .image_read_without_format = true,
-         .image_write_without_format = true,
-         .int8 = true,
-         .int16 = true,
-         .int64 = true,
-         .int64_atomics = true,
-         .min_lod = true,
-         .multiview = true,
-         .physical_storage_buffer_address = true,
-         .runtime_descriptor_array = true,
-         .shader_clock = true,
-         .shader_sm_builtins_nv = true,
-         .shader_viewport_index_layer = true,
-         .sparse_residency = true,
-         .storage_8bit = true,
-         .storage_16bit = true,
-         .storage_image_ms = true,
-         .subgroup_arithmetic = true,
-         .subgroup_ballot = true,
-         .subgroup_basic = true,
-         .subgroup_quad = true,
-         .subgroup_rotate = true,
-         .subgroup_shuffle = true,
-         .subgroup_uniform_control_flow = true,
-         .subgroup_vote = true,
-         .tessellation = true,
-         .transform_feedback = true,
-         .variable_pointers = true,
-         .vk_memory_model_device_scope = true,
-         .vk_memory_model = true,
-         .workgroup_memory_explicit_layout = true,
-      },
-      .ssbo_addr_format = nvk_buffer_addr_format(rs->storage_buffers),
+      .ssbo_addr_format = nvk_ssbo_addr_format(pdev, rs),
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
-      .ubo_addr_format = nvk_buffer_addr_format(rs->uniform_buffers),
+      .ubo_addr_format = nvk_ubo_addr_format(pdev, rs),
       .shared_addr_format = nir_address_format_32bit_offset,
-      .min_ssbo_alignment = NVK_MIN_SSBO_ALIGNMENT,
+      .min_ssbo_alignment = nvk_min_ssbo_alignment(instance),
       .min_ubo_alignment = nvk_min_cbuf_alignment(&pdev->info),
    };
 }
 
 static void
-nvk_preprocess_nir(struct vk_physical_device *vk_pdev, nir_shader *nir)
+nvk_preprocess_nir(struct vk_physical_device *vk_pdev,
+                   nir_shader *nir,
+                   UNUSED const struct vk_pipeline_robustness_state *rs)
 {
    const struct nvk_physical_device *pdev =
       container_of(vk_pdev, struct nvk_physical_device, vk);
 
-   NIR_PASS_V(nir, nir_lower_io_to_temporaries,
-              nir_shader_get_entrypoint(nir), true, false);
+   nak_preprocess_nir(nir, pdev->nak);
 
-   if (use_nak(pdev, nir->info.stage))
-      nak_preprocess_nir(nir, pdev->nak);
-   else
-      nvk_cg_preprocess_nir(nir);
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      nir_input_attachment_options ia_opts = {
+         .use_ia_coord_intrin = true,
+      };
+      NIR_PASS(_, nir, nir_lower_input_attachments, &ia_opts);
+   }
 }
 
 static void
@@ -197,8 +178,10 @@ nvk_populate_fs_key(struct nak_fs_key *key,
 {
    memset(key, 0, sizeof(*key));
 
-   key->sample_locations_cb = 0;
-   key->sample_locations_offset = nvk_root_descriptor_offset(draw.sample_locations);
+   /* Turn underestimate on when no state is availaible or if explicitly set */
+   if (state == NULL || state->rs == NULL ||
+       state->rs->conservative_mode == VK_CONSERVATIVE_RASTERIZATION_MODE_UNDERESTIMATE_EXT)
+      key->uses_underestimate = true;
 
    if (state == NULL)
       return;
@@ -237,73 +220,116 @@ nvk_populate_fs_key(struct nak_fs_key *key,
 }
 
 static void
-nvk_hash_graphics_state(struct vk_physical_device *device,
-                        const struct vk_graphics_pipeline_state *state,
-                        VkShaderStageFlags stages,
-                        blake3_hash blake3_out)
+nvk_hash_state(struct vk_physical_device *device,
+               const struct vk_graphics_pipeline_state *state,
+               const struct vk_features *enabled_features,
+               VkShaderStageFlags stages,
+               blake3_hash blake3_out)
 {
    struct mesa_blake3 blake3_ctx;
    _mesa_blake3_init(&blake3_ctx);
-   if (stages & VK_SHADER_STAGE_FRAGMENT_BIT) {
+   if (state && (stages & VK_SHADER_STAGE_FRAGMENT_BIT)) {
       struct nak_fs_key key;
       nvk_populate_fs_key(&key, state);
       _mesa_blake3_update(&blake3_ctx, &key, sizeof(key));
 
-      const bool is_multiview = state->rp->view_mask != 0;
-      _mesa_blake3_update(&blake3_ctx, &is_multiview, sizeof(is_multiview));
+      /* This doesn't impact the shader compile but it does go in the
+       * nvk_shader and gets [de]serialized along with the binary so we
+       * need to hash it.
+       */
+      if (state->ms && state->ms->sample_shading_enable) {
+         _mesa_blake3_update(&blake3_ctx, &state->ms->min_sample_shading,
+                             sizeof(state->ms->min_sample_shading));
+      }
    }
    _mesa_blake3_final(&blake3_ctx, blake3_out);
 }
 
 static bool
-lower_load_global_constant_offset_instr(nir_builder *b,
-                                        nir_intrinsic_instr *intrin,
-                                        UNUSED void *_data)
+lower_load_intrinsic(nir_builder *b, nir_intrinsic_instr *load,
+                     UNUSED void *data)
 {
-   if (intrin->intrinsic != nir_intrinsic_load_global_constant_offset &&
-       intrin->intrinsic != nir_intrinsic_load_global_constant_bounded)
+   struct nvk_physical_device *pdev = data;
+
+   switch (load->intrinsic) {
+   case nir_intrinsic_load_ubo: {
+      b->cursor = nir_before_instr(&load->instr);
+
+      nir_def *index = load->src[0].ssa;
+      nir_def *offset = load->src[1].ssa;
+      const enum gl_access_qualifier access = nir_intrinsic_access(load);
+      const uint32_t align_mul = nir_intrinsic_align_mul(load);
+      const uint32_t align_offset = nir_intrinsic_align_offset(load);
+
+      nir_def *val;
+      if (load->src[0].ssa->num_components == 1) {
+         val = nir_ldc_nv(b, load->num_components, load->def.bit_size,
+                           index, offset, .access = access,
+                           .align_mul = align_mul,
+                           .align_offset = align_offset);
+      } else if (load->src[0].ssa->num_components == 2) {
+         nir_def *handle = nir_pack_64_2x32(b, load->src[0].ssa);
+         val = nir_ldcx_nv(b, load->num_components, load->def.bit_size,
+                           handle, offset, .access = access,
+                           .align_mul = align_mul,
+                           .align_offset = align_offset);
+      } else {
+         UNREACHABLE("Invalid UBO index");
+      }
+      nir_def_rewrite_uses(&load->def, val);
+      return true;
+   }
+
+   case nir_intrinsic_load_global_constant_bounded:
+      /* Handled inside nak_nir_lower_load_store */
+      if (pdev->info.sm >= 73)
+         return false;
+      FALLTHROUGH;
+   case nir_intrinsic_load_global_constant_offset: {
+      b->cursor = nir_before_instr(&load->instr);
+
+      nir_def *base_addr = load->src[0].ssa;
+      nir_def *offset = load->src[1].ssa;
+
+      nir_def *zero = NULL;
+      if (load->intrinsic == nir_intrinsic_load_global_constant_bounded) {
+         nir_def *bound = load->src[2].ssa;
+
+         unsigned bit_size = load->def.bit_size;
+         assert(bit_size >= 8 && bit_size % 8 == 0);
+         unsigned byte_size = bit_size / 8;
+
+         zero = nir_imm_zero(b, load->num_components, bit_size);
+
+         unsigned load_size = byte_size * load->num_components;
+
+         nir_def *sat_offset =
+            nir_umin(b, offset, nir_imm_int(b, UINT32_MAX - (load_size - 1)));
+         nir_def *in_bounds =
+            nir_ult(b, nir_iadd_imm(b, sat_offset, load_size - 1), bound);
+
+         nir_push_if(b, in_bounds);
+      }
+
+      nir_def *val =
+         nir_load_global_constant(b, load->def.num_components,
+                                        load->def.bit_size,
+                                        nir_iadd(b, base_addr, nir_u2u64(b, offset)),
+                                        .align_mul = nir_intrinsic_align_mul(load),
+                                        .align_offset = nir_intrinsic_align_offset(load));
+
+      if (load->intrinsic == nir_intrinsic_load_global_constant_bounded) {
+         nir_pop_if(b, NULL);
+         val = nir_if_phi(b, val, zero);
+      }
+
+      nir_def_rewrite_uses(&load->def, val);
+      return true;
+   }
+
+   default:
       return false;
-
-   b->cursor = nir_before_instr(&intrin->instr);
-
-   nir_def *base_addr = intrin->src[0].ssa;
-   nir_def *offset = intrin->src[1].ssa;
-
-   nir_def *zero = NULL;
-   if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded) {
-      nir_def *bound = intrin->src[2].ssa;
-
-      unsigned bit_size = intrin->def.bit_size;
-      assert(bit_size >= 8 && bit_size % 8 == 0);
-      unsigned byte_size = bit_size / 8;
-
-      zero = nir_imm_zero(b, intrin->num_components, bit_size);
-
-      unsigned load_size = byte_size * intrin->num_components;
-
-      nir_def *sat_offset =
-         nir_umin(b, offset, nir_imm_int(b, UINT32_MAX - (load_size - 1)));
-      nir_def *in_bounds =
-         nir_ilt(b, nir_iadd_imm(b, sat_offset, load_size - 1), bound);
-
-      nir_push_if(b, in_bounds);
    }
-
-   nir_def *val =
-      nir_build_load_global_constant(b, intrin->def.num_components,
-                                     intrin->def.bit_size,
-                                     nir_iadd(b, base_addr, nir_u2u64(b, offset)),
-                                     .align_mul = nir_intrinsic_align_mul(intrin),
-                                     .align_offset = nir_intrinsic_align_offset(intrin));
-
-   if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded) {
-      nir_pop_if(b, NULL);
-      val = nir_if_phi(b, val, zero);
-   }
-
-   nir_def_rewrite_uses(&intrin->def, val);
-
-   return true;
 }
 
 struct lower_ycbcr_state {
@@ -337,34 +363,15 @@ lookup_ycbcr_conversion(const void *_state, uint32_t set,
           &sampler->vk.ycbcr_conversion->state : NULL;
 }
 
-static inline bool
-nir_has_image_var(nir_shader *nir)
-{
-   nir_foreach_image_variable(_, nir)
-      return true;
-
-   return false;
-}
-
-void
+static void
 nvk_lower_nir(struct nvk_device *dev, nir_shader *nir,
+              VkShaderCreateFlagsEXT shader_flags,
               const struct vk_pipeline_robustness_state *rs,
-              bool is_multiview,
               uint32_t set_layout_count,
               struct vk_descriptor_set_layout * const *set_layouts,
               struct nvk_cbuf_map *cbuf_map_out)
 {
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
-
-   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
-      NIR_PASS(_, nir, nir_lower_input_attachments,
-               &(nir_input_attachment_options) {
-                  .use_fragcoord_sysval = use_nak(pdev, nir->info.stage),
-                  .use_layer_id_sysval = use_nak(pdev, nir->info.stage) ||
-                                         is_multiview,
-                  .use_view_id_for_layer = is_multiview,
-               });
-   }
+   struct nvk_physical_device *pdev = nvk_device_physical_mut(dev);
 
    if (nir->info.stage == MESA_SHADER_TESS_EVAL) {
       NIR_PASS(_, nir, nir_lower_patch_vertices,
@@ -379,7 +386,10 @@ nvk_lower_nir(struct nvk_device *dev, nir_shader *nir,
             lookup_ycbcr_conversion, &ycbcr_state);
 
    nir_lower_compute_system_values_options csv_options = {
-      .has_base_workgroup_id = true,
+      .has_base_workgroup_id = mesa_shader_stage_is_compute(nir->info.stage),
+      .lower_local_invocation_index = mesa_shader_stage_is_compute(nir->info.stage),
+      .lower_workgroup_id_to_index = mesa_shader_stage_is_mesh(nir->info.stage),
+      .lower_cs_local_id_to_index = mesa_shader_stage_is_mesh(nir->info.stage),
    };
    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
 
@@ -387,84 +397,123 @@ nvk_lower_nir(struct nvk_device *dev, nir_shader *nir,
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
             nir_address_format_32bit_offset);
 
-   /* Lower non-uniform access before lower_descriptors */
-   enum nir_lower_non_uniform_access_type lower_non_uniform_access_types =
-      nir_lower_non_uniform_ubo_access;
-
-   if (pdev->info.cls_eng3d < TURING_A) {
-      lower_non_uniform_access_types |= nir_lower_non_uniform_texture_access |
-                                        nir_lower_non_uniform_image_access;
-   }
-
-   /* In practice, most shaders do not have non-uniform-qualified accesses
-    * thus a cheaper and likely to fail check is run first.
-    */
-   if (nir_has_non_uniform_access(nir, lower_non_uniform_access_types)) {
-      struct nir_lower_non_uniform_access_options opts = {
-         .types = lower_non_uniform_access_types,
-         .callback = NULL,
-      };
-      NIR_PASS(_, nir, nir_opt_non_uniform_access);
-      NIR_PASS(_, nir, nir_lower_non_uniform_access, &opts);
-   }
-
-   /* TODO: Kepler image lowering requires image params to be loaded from the
-    * descriptor set which we don't currently support.
-    */
-   assert(pdev->info.cls_eng3d >= MAXWELL_A || !nir_has_image_var(nir));
-
    struct nvk_cbuf_map *cbuf_map = NULL;
-   if (use_nak(pdev, nir->info.stage) &&
-       !(pdev->debug_flags & NVK_DEBUG_NO_CBUF)) {
+   if (!(pdev->debug_flags & NVK_DEBUG_NO_CBUF)) {
       cbuf_map = cbuf_map_out;
 
       /* Large constant support assumes cbufs */
+      /* Needs to run before load_const_to_scalar */
       NIR_PASS(_, nir, nir_opt_large_constants, NULL, 32);
    } else {
-      /* Codegen sometimes puts stuff in cbuf 1 and adds 1 to our cbuf indices
-       * so we can't really rely on it for lowering to cbufs and instead place
-       * the root descriptors in both cbuf 0 and cbuf 1.
-       */
       *cbuf_map_out = (struct nvk_cbuf_map) {
-         .cbuf_count = 2,
+         .cbuf_count = 1,
          .cbufs = {
-            { .type = NVK_CBUF_TYPE_ROOT_DESC },
             { .type = NVK_CBUF_TYPE_ROOT_DESC },
          }
       };
    }
 
-   NIR_PASS(_, nir, nvk_nir_lower_descriptors, rs,
+   NIR_PASS(_, nir, nir_lower_load_const_to_scalar);
+
+   nir_opt_access_options opt_access_options = {
+      .is_vulkan = true,
+   };
+   NIR_PASS(_, nir, nir_opt_access, &opt_access_options);
+
+   /* On Kepler, we have to lower images to addresses */
+   if (pdev->info.cls_eng3d < MAXWELL_A)
+      NIR_PASS(_, nir, nak_nir_lower_image_addrs, pdev->nak);
+
+   NIR_PASS(_, nir, nvk_nir_lower_descriptors, pdev, shader_flags, rs,
             set_layout_count, set_layouts, cbuf_map);
+
+   if (nvk_use_bindless_cbuf(&pdev->info)) {
+      /* On Turing+ where we have bindless cbufs, we use ACCESS_NON_UNIFORM to
+       * determine whether or not it's safe to assume a uniform handle so we
+       * want to optimize it away whenever possible.
+       */
+      if (nir_has_non_uniform_access(nir, nir_lower_non_uniform_ubo_access))
+         NIR_PASS(_, nir, nir_opt_non_uniform_access);
+   }
+
+   if (pdev->info.cls_eng3d < TURING_A) {
+      /* NOTE: This does nothing for images on Kepler since those are lowered
+       * to suldga/sustga before we get here.  That's fine, though, because
+       * our nil_su_info fetches and calculations work fine with non-uniform
+       * descriptors.
+       */
+      struct nir_lower_non_uniform_access_options opts = {
+         .types = nir_lower_non_uniform_texture_access |
+                  nir_lower_non_uniform_texture_query |
+                  nir_lower_non_uniform_image_access |
+                  nir_lower_non_uniform_image_query,
+         .callback = NULL,
+      };
+      /* In practice, most shaders do not have non-uniform-qualified accesses
+       * thus a cheaper and likely to fail check is run first.
+       */
+      if (nir_has_non_uniform_access(nir, opts.types)) {
+         NIR_PASS(_, nir, nir_opt_non_uniform_access);
+         NIR_PASS(_, nir, nir_lower_non_uniform_access, &opts);
+      }
+   }
+
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
-            nvk_buffer_addr_format(rs->storage_buffers));
+            nvk_ssbo_addr_format(pdev, rs));
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
-            nvk_buffer_addr_format(rs->uniform_buffers));
+            nvk_ubo_addr_format(pdev, rs));
    NIR_PASS(_, nir, nir_shader_intrinsics_pass,
-            lower_load_global_constant_offset_instr, nir_metadata_none, NULL);
+            lower_load_intrinsic, nir_metadata_none, pdev);
 
-   if (!nir->info.shared_memory_explicit_layout) {
-      NIR_PASS(_, nir, nir_lower_vars_to_explicit_types,
-               nir_var_mem_shared, shared_var_info);
-   }
-   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared,
-            nir_address_format_32bit_offset);
+   if (mesa_shader_stage_uses_workgroup(nir->info.stage)) {
+      nir_variable_mode var_modes = nir_var_mem_shared;
 
-   if (nir->info.zero_initialize_shared_memory && nir->info.shared_size > 0) {
-      /* QMD::SHARED_MEMORY_SIZE requires an alignment of 256B so it's safe to
-       * align everything up to 16B so we can write whole vec4s.
-       */
-      nir->info.shared_size = align(nir->info.shared_size, 16);
-      NIR_PASS(_, nir, nir_zero_initialize_shared_memory,
-               nir->info.shared_size, 16);
+      if (mesa_shader_stage_is_mesh(nir->info.stage))
+         var_modes |= nir_var_mem_task_payload;
 
-      /* We need to call lower_compute_system_values again because
-       * nir_zero_initialize_shared_memory generates load_invocation_id which
-       * has to be lowered to load_invocation_index.
-       */
-      NIR_PASS(_, nir, nir_lower_compute_system_values, NULL);
+      NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, var_modes,
+               shared_var_info);
+      NIR_PASS(_, nir, nir_lower_explicit_io, var_modes,
+               nir_address_format_32bit_offset);
+
+      if (nir->info.stage == MESA_SHADER_TASK)
+         NIR_PASS(_, nir, nvk_nir_lower_task_shader);
+      else if (nir->info.stage == MESA_SHADER_MESH)
+         NIR_PASS(_, nir, nvk_nir_lower_mesh_shader, shader_flags);
+
+      if (nir->info.zero_initialize_shared_memory && nir->info.shared_size > 0) {
+         uint32_t alignment;
+         uint32_t chunk_size;
+
+         if (mesa_shader_stage_is_mesh(nir->info.stage)) {
+            /* With task/mesh shaders, shared is in ISBE attribute space and is
+             * allocated in "lines" of 128 bytes. Additionally, we ISBE I/O
+             * instructions only support 1B and 4B granualities.*/
+            alignment = 128;
+            chunk_size = 4;
+         } else {
+            /* QMD::SHARED_MEMORY_SIZE requires an alignment of 256B so it's
+             * safe to align everything up to 16B so we can write whole vec4s.
+             */
+            alignment = 16;
+            chunk_size = 16;
+         }
+
+         nir->info.shared_size = align(nir->info.shared_size, alignment);
+         NIR_PASS(_, nir, nir_zero_initialize_shared_memory,
+                  nir->info.shared_size, chunk_size);
+
+         /* We need to call lower_compute_system_values again because
+         * nir_zero_initialize_shared_memory generates load_invocation_id which
+         * has to be lowered to load_invocation_index.
+         */
+         nir_lower_compute_system_values_options csv_options = {
+            .lower_local_invocation_index = mesa_shader_stage_is_compute(nir->info.stage),
+         };
+         NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
+      }
    }
 }
 
@@ -492,15 +541,19 @@ nvk_shader_dump(struct nvk_shader *shader)
 #endif
 
 static VkResult
-nvk_compile_nir_with_nak(struct nvk_physical_device *pdev,
-                         nir_shader *nir,
-                         VkShaderCreateFlagsEXT shader_flags,
-                         const struct vk_pipeline_robustness_state *rs,
-                         const struct nak_fs_key *fs_key,
-                         struct nvk_shader *shader)
+nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
+                VkShaderCreateFlagsEXT shader_flags,
+                const struct vk_pipeline_robustness_state *rs,
+                const struct nak_fs_key *fs_key,
+                struct nvk_shader *shader)
 {
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
    const bool dump_asm =
       shader_flags & VK_SHADER_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_MESA;
+
+   const bool has_task_shader =
+      (shader_flags & VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT) == 0;
 
    nir_variable_mode robust2_modes = 0;
    if (rs->uniform_buffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT)
@@ -508,32 +561,15 @@ nvk_compile_nir_with_nak(struct nvk_physical_device *pdev,
    if (rs->storage_buffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT)
       robust2_modes |= nir_var_mem_ssbo;
 
-   shader->nak = nak_compile_shader(nir, dump_asm, pdev->nak, robust2_modes, fs_key);
+   shader->nak = nak_compile_shader(nir, dump_asm, pdev->nak,
+                                    robust2_modes, fs_key, has_task_shader);
+   if (!shader->nak)
+      return vk_errorf(pdev, VK_ERROR_UNKNOWN, "Internal compiler error in NAK");
+
    shader->info = shader->nak->info;
+   shader->asm_str = shader->nak->asm_str;
    shader->code_ptr = shader->nak->code;
    shader->code_size = shader->nak->code_size;
-
-   return VK_SUCCESS;
-}
-
-static VkResult
-nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
-                VkShaderCreateFlagsEXT shader_flags,
-                const struct vk_pipeline_robustness_state *rs,
-                const struct nak_fs_key *fs_key,
-                struct nvk_shader *shader)
-{
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
-   VkResult result;
-
-   if (use_nak(pdev, nir->info.stage)) {
-      result = nvk_compile_nir_with_nak(pdev, nir, shader_flags, rs,
-                                       fs_key, shader);
-   } else {
-      result = nvk_cg_compile_nir(pdev, nir, fs_key, shader);
-   }
-   if (result != VK_SUCCESS)
-      return result;
 
    if (nir->constant_data_size > 0) {
       uint32_t data_align = nvk_min_cbuf_alignment(&pdev->info);
@@ -553,26 +589,42 @@ nvk_compile_nir(struct nvk_device *dev, nir_shader *nir,
       shader->data_size = data_size;
    }
 
+   if (dump_asm)
+      shader->nir_str = nir_shader_as_str(nir, NULL);
+
    return VK_SUCCESS;
 }
 
-VkResult
-nvk_shader_upload(struct nvk_device *dev, struct nvk_shader *shader)
+static uint32_t
+nvk_shader_get_hdr_size(struct nvk_device *dev, struct nvk_shader *shader)
 {
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   if (shader->info.stage == MESA_SHADER_COMPUTE)
+      return 0;
 
-   uint32_t hdr_size = 0;
-   if (shader->info.stage != MESA_SHADER_COMPUTE) {
-      if (pdev->info.cls_eng3d >= TURING_A)
-         hdr_size = TU102_SHADER_HEADER_SIZE;
-      else
-         hdr_size = GF100_SHADER_HEADER_SIZE;
-   }
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   return pdev->info.cls_eng3d >= TURING_A ? TU102_SHADER_HEADER_SIZE
+                                           : GF100_SHADER_HEADER_SIZE;
+}
+
+static uint32_t
+nvk_shader_get_shader_alignment(struct nvk_device *dev)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
 
    /* Fermi   needs 0x40 alignment
     * Kepler+ needs the first instruction to be 0x80 aligned, so we waste 0x30 bytes
     */
-   int alignment = pdev->info.cls_eng3d >= KEPLER_A ? 0x80 : 0x40;
+   return pdev->info.cls_eng3d >= KEPLER_A ? 0x80 : 0x40;
+}
+
+static uint32_t
+nvk_shader_get_shader_size(struct nvk_device *dev, struct nvk_shader *shader,
+                           uint32_t *out_hdr_offset, uint32_t *out_code_offset,
+                           uint32_t *out_gs_hdr_offset)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const uint32_t hdr_size = nvk_shader_get_hdr_size(dev, shader);
+   const uint32_t alignment = nvk_shader_get_shader_alignment(dev);
 
    uint32_t total_size = 0;
    if (pdev->info.cls_eng3d >= KEPLER_A &&
@@ -584,16 +636,54 @@ nvk_shader_upload(struct nvk_device *dev, struct nvk_shader *shader)
       total_size = alignment - hdr_size;
    }
 
-   const uint32_t hdr_offset = total_size;
+   if (out_hdr_offset)
+      *out_hdr_offset = total_size;
+
    total_size += hdr_size;
 
-   const uint32_t code_offset = total_size;
-   assert(code_offset % alignment == 0);
+   if (out_code_offset) {
+      *out_code_offset = total_size;
+      assert(*out_code_offset % alignment == 0);
+   }
+
    total_size += shader->code_size;
+
+   const bool has_mesh_gs_sph = shader->info.stage == MESA_SHADER_MESH &&
+                                shader->info.mesh.has_gs_sph;
+
+   if (out_gs_hdr_offset)
+      *out_gs_hdr_offset = 0;
+   if (has_mesh_gs_sph) {
+      total_size = align(total_size, nvk_min_cbuf_alignment(&pdev->info));
+      if (out_gs_hdr_offset)
+         *out_gs_hdr_offset = total_size;
+      total_size += hdr_size;
+   }
+
+   return total_size;
+}
+
+static VkResult
+nvk_shader_upload(struct nvk_device *dev, struct nvk_shader *shader)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   const bool has_mesh_gs_sph = shader->info.stage == MESA_SHADER_MESH &&
+                                shader->info.mesh.has_gs_sph;
+   const uint32_t hdr_size = nvk_shader_get_hdr_size(dev, shader);
+   uint32_t hdr_offset;
+   uint32_t code_offset;
+   uint32_t gs_hdr_offset;
+
+   uint32_t total_size = nvk_shader_get_shader_size(dev, shader, &hdr_offset,
+                                                    &code_offset, &gs_hdr_offset);
+   uint32_t alignment = nvk_shader_get_shader_alignment(dev);
 
    uint32_t data_offset = 0;
    if (shader->data_size > 0) {
-      total_size = align(total_size, nvk_min_cbuf_alignment(&pdev->info));
+      uint32_t cbuf_alignment = nvk_min_cbuf_alignment(&pdev->info);
+      alignment = MAX2(alignment, cbuf_alignment);
+      total_size = align(total_size, cbuf_alignment);
       data_offset = total_size;
       total_size += shader->data_size;
    }
@@ -605,6 +695,8 @@ nvk_shader_upload(struct nvk_device *dev, struct nvk_shader *shader)
    assert(hdr_size <= sizeof(shader->info.hdr));
    memcpy(data + hdr_offset, shader->info.hdr, hdr_size);
    memcpy(data + code_offset, shader->code_ptr, shader->code_size);
+   if (has_mesh_gs_sph)
+      memcpy(data + gs_hdr_offset, shader->info.mesh.gs_hdr, hdr_size);
    if (shader->data_size > 0)
       memcpy(data + data_offset, shader->data_ptr, shader->data_size);
 
@@ -626,11 +718,357 @@ nvk_shader_upload(struct nvk_device *dev, struct nvk_shader *shader)
          assert(shader->upload_addr - heap_base_addr < UINT32_MAX);
          shader->hdr_addr -= heap_base_addr;
       }
+      shader->gs_hdr_addr = shader->upload_addr + gs_hdr_offset;
       shader->data_addr = shader->upload_addr + data_offset;
    }
    free(data);
 
    return result;
+}
+
+uint32_t
+mesa_to_nv9097_shader_type(mesa_shader_stage stage, bool has_task_shader)
+{
+   if (stage == MESA_SHADER_MESH && !has_task_shader)
+      stage = MESA_SHADER_TASK;
+
+   static const uint32_t mesa_to_nv9097[] = {
+      [MESA_SHADER_VERTEX]    = NV9097_SET_PIPELINE_SHADER_TYPE_VERTEX,
+      [MESA_SHADER_TESS_CTRL] = NV9097_SET_PIPELINE_SHADER_TYPE_TESSELLATION_INIT,
+      [MESA_SHADER_TESS_EVAL] = NV9097_SET_PIPELINE_SHADER_TYPE_TESSELLATION,
+      [MESA_SHADER_GEOMETRY]  = NV9097_SET_PIPELINE_SHADER_TYPE_GEOMETRY,
+      [MESA_SHADER_FRAGMENT]  = NV9097_SET_PIPELINE_SHADER_TYPE_PIXEL,
+      [MESA_SHADER_TASK]      = NV9097_SET_PIPELINE_SHADER_TYPE_VERTEX,
+      [MESA_SHADER_MESH]      = NV9097_SET_PIPELINE_SHADER_TYPE_TESSELLATION,
+   };
+   assert(stage < ARRAY_SIZE(mesa_to_nv9097));
+   return mesa_to_nv9097[stage];
+}
+
+uint32_t
+nvk_pipeline_bind_group(mesa_shader_stage stage, bool has_task_shader)
+{
+   if (stage == MESA_SHADER_MESH && !has_task_shader)
+      return MESA_SHADER_VERTEX;
+   else if (stage == MESA_SHADER_MESH)
+      return MESA_SHADER_TESS_EVAL;
+   else if (stage == MESA_SHADER_TASK)
+      return MESA_SHADER_VERTEX;
+
+   return stage;
+}
+
+uint16_t
+nvk_max_shader_push_dw(const struct nvk_physical_device *pdev,
+                       mesa_shader_stage stage, bool last_vtgm)
+{
+   if (stage == MESA_SHADER_COMPUTE)
+      return 0;
+
+   uint16_t max_dw_count = 9;
+
+   if (stage == MESA_SHADER_VERTEX || stage == MESA_SHADER_TASK ||
+       stage == MESA_SHADER_MESH)
+      max_dw_count += 2;
+
+   if (stage == MESA_SHADER_TESS_CTRL || stage == MESA_SHADER_TESS_EVAL)
+      max_dw_count += 2;
+
+   if (stage == MESA_SHADER_FRAGMENT)
+      max_dw_count += 13;
+
+   if (stage == MESA_SHADER_TASK)
+      max_dw_count += 2;
+
+   if (stage == MESA_SHADER_MESH)
+      max_dw_count += 15;
+
+   if (last_vtgm) {
+      max_dw_count += 8;
+      max_dw_count += 4 * (5 + (128 / 4));
+   }
+
+   return max_dw_count;
+}
+
+static VkResult
+nvk_shader_fill_push(struct nvk_device *dev,
+                     struct nvk_shader *shader,
+                     const VkAllocationCallbacks* pAllocator)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   ASSERTED uint16_t max_dw_count = 0;
+   uint32_t push_dw[200];
+   struct nv_push push, *p = &push;
+   nv_push_init(&push, push_dw, ARRAY_SIZE(push_dw),
+                nvk_queue_subchannels_from_engines(NVKMD_ENGINE_3D));
+
+   bool has_task_shader = shader->info.stage == MESA_SHADER_MESH &&
+                          shader->info.mesh.has_task_shader;
+   const uint32_t type =
+      mesa_to_nv9097_shader_type(shader->info.stage, has_task_shader);
+
+   /* We always map index == type */
+   const uint32_t idx = type;
+
+   max_dw_count += 2;
+   P_IMMD(p, NV9097, SET_PIPELINE_SHADER(idx), {
+      .enable  = ENABLE_TRUE,
+      .type    = type,
+   });
+
+   max_dw_count += 4;
+   uint64_t addr = shader->hdr_addr;
+   if (pdev->info.cls_eng3d >= VOLTA_A) {
+      P_MTHD(p, NVC397, SET_PIPELINE_PROGRAM_ADDRESS_A(idx));
+      P_NVC397_SET_PIPELINE_PROGRAM_ADDRESS_A(p, idx, addr >> 32);
+      P_NVC397_SET_PIPELINE_PROGRAM_ADDRESS_B(p, idx, addr);
+
+      /* On Ampere B and later, we can be prefetched for up to 127 blocks of a
+       * shader. */
+      if (pdev->info.cls_eng3d >= AMPERE_B) {
+         uint32_t shader_size =
+            nvk_shader_get_shader_size(dev, shader, NULL, NULL, NULL);
+         uint32_t shader_prefetch_size_in_blocks =
+            MIN2(DIV_ROUND_UP(shader_size, 256), 127);
+         P_NVC797_SET_PIPELINE_PROGRAM_PREFETCH(p, idx,
+                                                shader_prefetch_size_in_blocks);
+      }
+   } else {
+      assert(addr < 0xffffffff);
+      P_IMMD(p, NV9097, SET_PIPELINE_PROGRAM(idx), addr);
+   }
+
+   max_dw_count += 3;
+   P_MTHD(p, NVC397, SET_PIPELINE_REGISTER_COUNT(idx));
+   P_NVC397_SET_PIPELINE_REGISTER_COUNT(p, idx, shader->info.num_gprs);
+   P_NVC397_SET_PIPELINE_BINDING(p, idx,
+      nvk_pipeline_bind_group(shader->info.stage, has_task_shader));
+
+   if (shader->info.stage == MESA_SHADER_TESS_CTRL ||
+       shader->info.stage == MESA_SHADER_TESS_EVAL) {
+      max_dw_count += 2;
+      P_1INC(p, NVB197, CALL_MME_MACRO(NVK_MME_SET_TESS_PARAMS));
+      P_INLINE_DATA(p, nvk_mme_tess_params(shader->info.stage,
+                                           shader->info.ts.domain,
+                                           shader->info.ts.spacing,
+                                           shader->info.ts.ccw,
+                                           shader->info.ts.point_mode));
+   }
+
+   bool could_be_first_stage = shader->info.stage == MESA_SHADER_VERTEX ||
+                               shader->info.stage == MESA_SHADER_TASK ||
+                               shader->info.stage == MESA_SHADER_MESH;
+   bool is_first_stage =
+      could_be_first_stage && (shader->info.stage != MESA_SHADER_MESH ||
+                               !shader->info.mesh.has_task_shader);
+
+   if (could_be_first_stage) {
+      max_dw_count += 2;
+
+      if (pdev->info.cls_eng3d >= TURING_A && is_first_stage)
+         P_IMMD(p, NVC597, SET_MESH_CONTROL,
+                shader->info.stage != MESA_SHADER_VERTEX);
+   }
+
+   if (shader->info.stage == MESA_SHADER_TASK) {
+      max_dw_count += 2;
+      uint16_t smem_lines = DIV_ROUND_UP(shader->info.task.smem_size, 128);
+      uint16_t task_smem_lines = DIV_ROUND_UP(shader->info.task.payload_smem_size, 128);
+
+      /* Task payload should be part of shared memory */
+      assert(task_smem_lines <= smem_lines);
+
+      P_IMMD(p, NVC597, SET_MESH_INIT_SHADER, {
+         .thread_count = shader->info.task.local_size,
+         .local_buffer_lines = smem_lines,
+         .output_to_m_s_lines = task_smem_lines,
+      });
+   } else if (shader->info.stage == MESA_SHADER_MESH) {
+      max_dw_count += 15;
+
+      assert(shader->info.mesh.max_vertices != 0);
+      assert(shader->info.mesh.max_primitives != 0);
+
+      /* On Turing only, if a task+mesh pipeline was previously bound and we
+       * bind a mesh only pipeline after it, the hardware will misbehave in
+       * TRACK_WITH_FILTER mode and assume that the vertex stage has a task
+       * shader instead.
+       *
+       * NVIDIA proprietary driver apply this workaround on all generations so
+       * we also do the same here just in case.
+       */
+      P_IMMD(p, NV9097, SET_MME_SHADOW_RAM_CONTROL, MODE_METHOD_TRACK);
+      P_MTHD(p, NVC597, SET_MESH_SHADER_A);
+      P_NVC597_SET_MESH_SHADER_A(p, {
+         .output_topology = shader->info.mesh.topology,
+         .max_vertex = shader->info.mesh.max_vertices,
+         .max_primitive = shader->info.mesh.max_primitives,
+      });
+      P_NVC597_SET_MESH_SHADER_B(p, {
+         .shared_mem_lines = DIV_ROUND_UP(shader->info.mesh.smem_size, 128),
+         .thread_count = shader->info.mesh.local_size,
+      });
+      P_IMMD(p, NV9097, SET_MME_SHADOW_RAM_CONTROL, MODE_METHOD_TRACK_WITH_FILTER);
+
+      if (shader->info.mesh.has_gs_sph) {
+         P_IMMD(p, NV9097, SET_PIPELINE_SHADER(NV9097_SET_PIPELINE_SHADER_TYPE_GEOMETRY), {
+            .enable  = shader->info.mesh.has_gs_sph,
+            .type    = TYPE_GEOMETRY,
+         });
+
+         uint64_t gs_hdr_addr = shader->gs_hdr_addr;
+         P_MTHD(p, NVC397, SET_PIPELINE_PROGRAM_ADDRESS_A(NV9097_SET_PIPELINE_SHADER_TYPE_GEOMETRY));
+         P_NVC397_SET_PIPELINE_PROGRAM_ADDRESS_A(p, NV9097_SET_PIPELINE_SHADER_TYPE_GEOMETRY, gs_hdr_addr >> 32);
+         P_NVC397_SET_PIPELINE_PROGRAM_ADDRESS_B(p, NV9097_SET_PIPELINE_SHADER_TYPE_GEOMETRY, gs_hdr_addr);
+         P_IMMD(p, NVC397, SET_GS_MODE, TYPE_ANY);
+      }
+   } else if (shader->info.stage == MESA_SHADER_FRAGMENT) {
+      max_dw_count += 13;
+
+      P_MTHD(p, NVC397, SET_SUBTILING_PERF_KNOB_A);
+      P_NV9097_SET_SUBTILING_PERF_KNOB_A(p, {
+         .fraction_of_spm_register_file_per_subtile         = 0x10,
+         .fraction_of_spm_pixel_output_buffer_per_subtile   = 0x40,
+         .fraction_of_spm_triangle_ram_per_subtile          = 0x16,
+         .fraction_of_max_quads_per_subtile                 = 0x20,
+      });
+      P_NV9097_SET_SUBTILING_PERF_KNOB_B(p, 0x20);
+
+      P_IMMD(p, NV9097, SET_API_MANDATED_EARLY_Z,
+             shader->info.fs.early_fragment_tests);
+
+      if (pdev->info.cls_eng3d >= MAXWELL_B) {
+         P_IMMD(p, NVB197, SET_POST_Z_PS_IMASK,
+                shader->info.fs.post_depth_coverage);
+      } else {
+         assert(!shader->info.fs.post_depth_coverage);
+      }
+
+      P_IMMD(p, NV9097, SET_ZCULL_BOUNDS, {
+         .z_min_unbounded_enable = shader->info.fs.writes_depth,
+         .z_max_unbounded_enable = shader->info.fs.writes_depth,
+      });
+
+      if (pdev->info.cls_eng3d >= TURING_A) {
+         /* From the Vulkan 1.3.297 spec:
+          *
+          *    "If sample shading is enabled, an implementation must invoke
+          *    the fragment shader at least
+          *
+          *    max( ⌈ minSampleShading × rasterizationSamples ⌉, 1)
+          *
+          *    times per fragment."
+          *
+          * The max() here means that, regardless of the actual value of
+          * minSampleShading, we need to invoke at least once per pixel,
+          * meaning that we need to disable fragment shading rate.  We also
+          * need to disable FSR if sample shading is used by the shader.
+          */
+         P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_SET_SHADING_RATE_CONTROL));
+         P_INLINE_DATA(p, nvk_mme_shading_rate_control_sample_shading(
+            shader->sample_shading_enable ||
+            shader->info.fs.uses_sample_shading));
+      }
+
+      float mss = 0;
+      if (shader->info.fs.uses_sample_shading) {
+         mss = 1;
+      } else if (shader->sample_shading_enable) {
+         mss = CLAMP(shader->min_sample_shading, 0, 1);
+      } else {
+         mss = 0;
+      }
+      P_1INC(p, NVB197, CALL_MME_MACRO(NVK_MME_SET_ANTI_ALIAS));
+      P_INLINE_DATA(p, nvk_mme_anti_alias_min_sample_shading(mss));
+   }
+
+   /* Stash this before we do XFB and clip/cull */
+   shader->push_dw_count = nv_push_dw_count(&push);
+   assert(max_dw_count ==
+          nvk_max_shader_push_dw(pdev, shader->info.stage, false));
+
+   if (shader->info.stage != MESA_SHADER_FRAGMENT &&
+       shader->info.stage != MESA_SHADER_TESS_CTRL) {
+      max_dw_count += 8;
+
+      P_IMMD(p, NV9097, SET_RT_LAYER, {
+         .v       = 0,
+         .control = shader->info.vtg.writes_layer ?
+                    CONTROL_GEOMETRY_SHADER_SELECTS_LAYER :
+                    CONTROL_V_SELECTS_LAYER,
+      });
+
+      if (pdev->info.cls_eng3d >= AMPERE_B) {
+         P_IMMD(p, NVC797, SET_VARIABLE_PIXEL_RATE_SHADING_TABLE_SELECT, {
+            .source = shader->info.vtg.writes_vprs_table_index ?
+                      SOURCE_FROM_VPRS_TABLE_INDEX :
+                      SOURCE_FROM_CONSTANT,
+            .source_constant_value = 0,
+         });
+      }
+
+      const uint8_t clip_enable = shader->info.vtg.clip_enable;
+      const uint8_t cull_enable = shader->info.vtg.cull_enable;
+      P_IMMD(p, NV9097, SET_USER_CLIP_ENABLE, {
+         .plane0 = ((clip_enable | cull_enable) >> 0) & 1,
+         .plane1 = ((clip_enable | cull_enable) >> 1) & 1,
+         .plane2 = ((clip_enable | cull_enable) >> 2) & 1,
+         .plane3 = ((clip_enable | cull_enable) >> 3) & 1,
+         .plane4 = ((clip_enable | cull_enable) >> 4) & 1,
+         .plane5 = ((clip_enable | cull_enable) >> 5) & 1,
+         .plane6 = ((clip_enable | cull_enable) >> 6) & 1,
+         .plane7 = ((clip_enable | cull_enable) >> 7) & 1,
+      });
+      P_IMMD(p, NV9097, SET_USER_CLIP_OP, {
+         .plane0 = (cull_enable >> 0) & 1,
+         .plane1 = (cull_enable >> 1) & 1,
+         .plane2 = (cull_enable >> 2) & 1,
+         .plane3 = (cull_enable >> 3) & 1,
+         .plane4 = (cull_enable >> 4) & 1,
+         .plane5 = (cull_enable >> 5) & 1,
+         .plane6 = (cull_enable >> 6) & 1,
+         .plane7 = (cull_enable >> 7) & 1,
+      });
+
+      struct nak_xfb_info *xfb = &shader->info.vtg.xfb;
+      for (uint8_t b = 0; b < ARRAY_SIZE(xfb->attr_count); b++) {
+         const uint8_t attr_count = xfb->attr_count[b];
+
+         max_dw_count += 5 + (128 / 4);
+
+         P_MTHD(p, NV9097, SET_STREAM_OUT_CONTROL_STREAM(b));
+         P_NV9097_SET_STREAM_OUT_CONTROL_STREAM(p, b, xfb->stream[b]);
+         P_NV9097_SET_STREAM_OUT_CONTROL_COMPONENT_COUNT(p, b, attr_count);
+         P_NV9097_SET_STREAM_OUT_CONTROL_STRIDE(p, b, xfb->stride[b]);
+
+         if (attr_count > 0) {
+            /* upload packed varying indices in multiples of 4 bytes */
+            const uint32_t n = DIV_ROUND_UP(attr_count, 4);
+            P_MTHD(p, NV9097, SET_STREAM_OUT_LAYOUT_SELECT(b, 0));
+            P_INLINE_ARRAY(p, (const uint32_t*)xfb->attr_index[b], n);
+         }
+      }
+
+      shader->vtgm_push_dw_count = nv_push_dw_count(&push);
+      assert(max_dw_count ==
+             nvk_max_shader_push_dw(pdev, shader->info.stage, true));
+   }
+
+   assert(nv_push_dw_count(&push) <= max_dw_count);
+   assert(max_dw_count <= ARRAY_SIZE(push_dw));
+
+   uint16_t dw_count = nv_push_dw_count(&push);
+   shader->push_dw =
+      vk_zalloc2(&dev->vk.alloc, pAllocator, dw_count * sizeof(*push_dw),
+                 sizeof(*push_dw), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (shader->push_dw == NULL)
+      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   memcpy(shader->push_dw, push_dw, dw_count * sizeof(*push_dw));
+
+   return VK_SUCCESS;
 }
 
 static const struct vk_shader_ops nvk_shader_ops;
@@ -643,6 +1081,8 @@ nvk_shader_destroy(struct vk_device *vk_dev,
    struct nvk_device *dev = container_of(vk_dev, struct nvk_device, vk);
    struct nvk_shader *shader = container_of(vk_shader, struct nvk_shader, vk);
 
+   vk_free2(&dev->vk.alloc, pAllocator, shader->push_dw);
+
    if (shader->upload_size > 0) {
       nvk_heap_free(dev, &dev->shader_heap,
                     shader->upload_addr,
@@ -652,11 +1092,13 @@ nvk_shader_destroy(struct vk_device *vk_dev,
    if (shader->nak) {
       nak_shader_bin_destroy(shader->nak);
    } else {
-      /* This came from codegen or deserialize, just free it */
+      /* This came from deserialize, just free it */
       free((void *)shader->code_ptr);
+      free((void *)shader->asm_str);
    }
 
    free((void *)shader->data_ptr);
+   ralloc_free((void *)shader->nir_str);
 
    vk_shader_free(&dev->vk, pAllocator, &shader->vk);
 }
@@ -681,10 +1123,7 @@ nvk_compile_shader(struct nvk_device *dev,
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
-   /* TODO: Multiview with ESO */
-   const bool is_multiview = state && state->rp->view_mask != 0;
-
-   nvk_lower_nir(dev, nir, info->robustness, is_multiview,
+   nvk_lower_nir(dev, nir, info->flags, info->robustness,
                  info->set_layout_count, info->set_layouts,
                  &shader->cbuf_map);
 
@@ -702,26 +1141,65 @@ nvk_compile_shader(struct nvk_device *dev,
       return result;
    }
 
-   result = nvk_shader_upload(dev, shader);
-   if (result != VK_SUCCESS) {
-      nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
-      return result;
+   if (dev->nvkmd) {
+      result = nvk_shader_upload(dev, shader);
+      if (result != VK_SUCCESS) {
+         nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
+         return result;
+      }
    }
 
    if (info->stage == MESA_SHADER_FRAGMENT) {
-      if (shader->info.fs.reads_sample_mask ||
-          shader->info.fs.uses_sample_shading) {
-         shader->min_sample_shading = 1;
-      } else if (state != NULL && state->ms != NULL &&
-                 state->ms->sample_shading_enable) {
-         shader->min_sample_shading =
-            CLAMP(state->ms->min_sample_shading, 0, 1);
-      } else {
-         shader->min_sample_shading = 0;
+      if (state != NULL && state->ms != NULL) {
+         shader->sample_shading_enable = state->ms->sample_shading_enable;
+         if (state->ms->sample_shading_enable)
+            shader->min_sample_shading = state->ms->min_sample_shading;
+      }
+   }
+
+   if (info->stage != MESA_SHADER_COMPUTE && dev->nvkmd) {
+      result = nvk_shader_fill_push(dev, shader, pAllocator);
+      if (result != VK_SUCCESS) {
+         nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
+         return result;
       }
    }
 
    *shader_out = &shader->vk;
+
+   return VK_SUCCESS;
+}
+
+VkResult
+nvk_compile_nir_shader(struct nvk_device *dev, nir_shader *nir,
+                       const VkAllocationCallbacks *alloc,
+                       struct nvk_shader **shader_out)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   const struct vk_pipeline_robustness_state rs_none = {
+      .uniform_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT,
+      .storage_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT,
+      .images = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2_EXT,
+   };
+
+   assert(nir->info.stage == MESA_SHADER_COMPUTE);
+   if (nir->options == NULL)
+      nir->options = nvk_get_nir_options((struct vk_physical_device *)&pdev->vk,
+                                         nir->info.stage, &rs_none);
+
+   struct vk_shader_compile_info info = {
+      .stage = nir->info.stage,
+      .nir = nir,
+      .robustness = &rs_none,
+   };
+
+   struct vk_shader *shader = NULL;
+   VkResult result = nvk_compile_shader(dev, &info, NULL, alloc, &shader);
+   if (result != VK_SUCCESS)
+      return result;
+
+   *shader_out = container_of(shader, struct nvk_shader, vk);
 
    return VK_SUCCESS;
 }
@@ -731,6 +1209,7 @@ nvk_compile_shaders(struct vk_device *vk_dev,
                     uint32_t shader_count,
                     struct vk_shader_compile_info *infos,
                     const struct vk_graphics_pipeline_state *state,
+                    const struct vk_features *enabled_features,
                     const VkAllocationCallbacks* pAllocator,
                     struct vk_shader **shaders_out)
 {
@@ -758,6 +1237,20 @@ nvk_compile_shaders(struct vk_device *vk_dev,
    return VK_SUCCESS;
 }
 
+static uint8_t
+nvk_shader_get_shader_version_override(const struct nvk_device *dev,
+                                       mesa_shader_stage stage)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const struct nvk_instance *instance = nvk_physical_device_instance(pdev);
+
+   if (mesa_shader_stage_is_compute(stage))
+      return instance->drirc.misc.override_compute_shader_version;
+
+   assert(!mesa_shader_stage_is_rt(stage));
+   return instance->drirc.misc.override_graphics_shader_version;
+}
+
 static VkResult
 nvk_deserialize_shader(struct vk_device *vk_dev,
                        struct blob_reader *blob,
@@ -775,8 +1268,18 @@ nvk_deserialize_shader(struct vk_device *vk_dev,
    struct nvk_cbuf_map cbuf_map;
    blob_copy_bytes(blob, &cbuf_map, sizeof(cbuf_map));
 
+   bool sample_shading_enable;
+   blob_copy_bytes(blob, &sample_shading_enable, sizeof(sample_shading_enable));
+
    float min_sample_shading;
    blob_copy_bytes(blob, &min_sample_shading, sizeof(min_sample_shading));
+
+   const uint8_t shader_version_override = blob_read_uint8(blob);
+   const uint8_t expected_shader_version_override =
+      nvk_shader_get_shader_version_override(dev, info.stage);
+
+   if (shader_version_override != expected_shader_version_override)
+      return vk_error(dev, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
 
    const uint32_t code_size = blob_read_uint32(blob);
    const uint32_t data_size = blob_read_uint32(blob);
@@ -790,6 +1293,7 @@ nvk_deserialize_shader(struct vk_device *vk_dev,
 
    shader->info = info;
    shader->cbuf_map = cbuf_map;
+   shader->sample_shading_enable = sample_shading_enable;
    shader->min_sample_shading = min_sample_shading;
    shader->code_size = code_size;
    shader->data_size = data_size;
@@ -808,15 +1312,31 @@ nvk_deserialize_shader(struct vk_device *vk_dev,
 
    blob_copy_bytes(blob, (void *)shader->code_ptr, shader->code_size);
    blob_copy_bytes(blob, (void *)shader->data_ptr, shader->data_size);
+
+   const char *asm_str = blob_read_string(blob);
+   const char *nir_str = blob_read_string(blob);
+   shader->asm_str = (asm_str && asm_str[0]) ? strdup(asm_str) : NULL;
+   shader->nir_str = (nir_str && nir_str[0]) ? ralloc_strdup(NULL, nir_str) : NULL;
+
    if (blob->overrun) {
       nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
       return vk_error(dev, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
    }
 
-   result = nvk_shader_upload(dev, shader);
-   if (result != VK_SUCCESS) {
-      nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
-      return result;
+   if (dev->nvkmd) {
+      result = nvk_shader_upload(dev, shader);
+      if (result != VK_SUCCESS) {
+         nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
+         return result;
+      }
+   }
+
+   if (info.stage != MESA_SHADER_COMPUTE && dev->nvkmd) {
+      result = nvk_shader_fill_push(dev, shader, pAllocator);
+      if (result != VK_SUCCESS) {
+         nvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
+         return result;
+      }
    }
 
    *shader_out = &shader->vk;
@@ -829,21 +1349,24 @@ nvk_shader_serialize(struct vk_device *vk_dev,
                      const struct vk_shader *vk_shader,
                      struct blob *blob)
 {
+   const struct nvk_device *dev = container_of(vk_dev, struct nvk_device, vk);
    struct nvk_shader *shader = container_of(vk_shader, struct nvk_shader, vk);
-
-   /* We can't currently cache assmbly */
-   if (shader->nak != NULL && shader->nak->asm_str != NULL)
-      return false;
 
    blob_write_bytes(blob, &shader->info, sizeof(shader->info));
    blob_write_bytes(blob, &shader->cbuf_map, sizeof(shader->cbuf_map));
+   blob_write_bytes(blob, &shader->sample_shading_enable,
+                    sizeof(shader->sample_shading_enable));
    blob_write_bytes(blob, &shader->min_sample_shading,
                     sizeof(shader->min_sample_shading));
+   blob_write_uint8(blob, nvk_shader_get_shader_version_override(dev, shader->info.stage));
 
    blob_write_uint32(blob, shader->code_size);
    blob_write_uint32(blob, shader->data_size);
    blob_write_bytes(blob, shader->code_ptr, shader->code_size);
    blob_write_bytes(blob, shader->data_ptr, shader->data_size);
+
+   blob_write_string(blob, shader->asm_str ? shader->asm_str : "");
+   blob_write_string(blob, shader->nir_str ? shader->nir_str : "");
 
    return !blob->out_of_memory;
 }
@@ -892,7 +1415,60 @@ nvk_shader_get_executable_statistics(
    assert(executable_index == 0);
 
    vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
-      WRITE_STR(stat->name, "Code Size");
+      WRITE_STR(stat->name, "Instruction count");
+      WRITE_STR(stat->description, "Number of instructions used by this shader");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.num_instrs;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Static cycle count");
+      WRITE_STR(stat->description,
+                "Total cycles used by fixed-latency instructions in this shader");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.num_static_cycles;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Max warps/SM");
+      WRITE_STR(stat->description,
+                "Maximum number of warps per SM based on static information");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.max_warps_per_sm;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Spills to memory");
+      WRITE_STR(stat->description, "Number of spills from GPRs to memory");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.num_spills_to_mem;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Fills from memory");
+      WRITE_STR(stat->description, "Number of fills from memory to GPRs");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.num_fills_from_mem;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Spills to reg");
+      WRITE_STR(stat->description,
+                "Number of spills between different register files");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.num_spills_to_reg;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Fills from reg");
+      WRITE_STR(stat->description,
+                "Number of fills between different register files");
+      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
+      stat->value.u64 = shader->info.num_fills_from_reg;
+   }
+
+   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
+      WRITE_STR(stat->name, "Code size");
       WRITE_STR(stat->description,
                 "Size of the compiled shader binary, in bytes");
       stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
@@ -907,7 +1483,7 @@ nvk_shader_get_executable_statistics(
    }
 
    vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
-      WRITE_STR(stat->name, "SLM Size");
+      WRITE_STR(stat->name, "SLM size");
       WRITE_STR(stat->description,
                 "Size of shader local (scratch) memory, in bytes");
       stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
@@ -954,11 +1530,20 @@ nvk_shader_get_executable_internal_representations(
 
    assert(executable_index == 0);
 
-   if (shader->nak != NULL && shader->nak->asm_str != NULL) {
+   if (shader->nir_str != NULL) {
+      vk_outarray_append_typed(VkPipelineExecutableInternalRepresentationKHR, &out, ir) {
+         WRITE_STR(ir->name, "NIR shader");
+         WRITE_STR(ir->description, "NIR shader");
+         if (!write_ir_text(ir, shader->nir_str))
+            incomplete_text = true;
+      }
+   }
+
+   if (shader->asm_str != NULL) {
       vk_outarray_append_typed(VkPipelineExecutableInternalRepresentationKHR, &out, ir) {
          WRITE_STR(ir->name, "NAK assembly");
          WRITE_STR(ir->description, "NAK assembly");
-         if (!write_ir_text(ir, shader->nak->asm_str))
+         if (!write_ir_text(ir, shader->asm_str))
             incomplete_text = true;
       }
    }
@@ -979,7 +1564,7 @@ const struct vk_device_shader_ops nvk_device_shader_ops = {
    .get_nir_options = nvk_get_nir_options,
    .get_spirv_options = nvk_get_spirv_options,
    .preprocess_nir = nvk_preprocess_nir,
-   .hash_graphics_state = nvk_hash_graphics_state,
+   .hash_state = nvk_hash_state,
    .compile = nvk_compile_shaders,
    .deserialize = nvk_deserialize_shader,
    .cmd_set_dynamic_graphics_state = vk_cmd_set_dynamic_graphics_state,

@@ -79,7 +79,7 @@ static ralloc_header *
 get_header(const void *ptr)
 {
    ralloc_header *info = (ralloc_header *) (((char *) ptr) -
-					    sizeof(ralloc_header));
+                                            sizeof(ralloc_header));
    assert(info->canary == CANARY);
    return info;
 }
@@ -95,7 +95,7 @@ add_child(ralloc_header *parent, ralloc_header *info)
       parent->child = info;
 
       if (info->next != NULL)
-	 info->next->prev = info;
+         info->next->prev = info;
    }
 }
 
@@ -173,13 +173,13 @@ resize(void *ptr, size_t size)
    /* Update parent and sibling's links to the reallocated node. */
    if (info != old && info->parent != NULL) {
       if (info->parent->child == old)
-	 info->parent->child = info;
+         info->parent->child = info;
 
       if (info->prev != NULL)
-	 info->prev->next = info;
+         info->prev->next = info;
 
       if (info->next != NULL)
-	 info->next->prev = info;
+         info->next->prev = info;
    }
 
    /* Update child->parent links for all children */
@@ -264,19 +264,44 @@ ralloc_free(void *ptr)
    unsafe_free(info);
 }
 
+#ifndef NDEBUG
+static size_t
+ralloc_total_size_internal(const ralloc_header *info)
+{
+   /* Count the block itself. This requires NDEBUG for the statistic. */
+   unsigned sum = align64(info->size + sizeof(ralloc_header),
+                          alignof(ralloc_header));
+
+   /* Recursively count children */
+   ralloc_header *it = info->child;
+   while (it != NULL) {
+      sum += ralloc_total_size_internal(it);
+      it = it->next;
+   }
+
+   return sum;
+}
+
+size_t
+ralloc_total_size(const void *ptr)
+{
+   return ralloc_total_size_internal(get_header(ptr));
+}
+#endif
+
 static void
 unlink_block(ralloc_header *info)
 {
    /* Unlink from parent & siblings */
    if (info->parent != NULL) {
       if (info->parent->child == info)
-	 info->parent->child = info->next;
+         info->parent->child = info->next;
 
       if (info->prev != NULL)
-	 info->prev->next = info->next;
+         info->prev->next = info->next;
 
       if (info->next != NULL)
-	 info->next->prev = info->prev;
+         info->next->prev = info->prev;
    }
    info->parent = NULL;
    info->prev = NULL;
@@ -517,7 +542,7 @@ ralloc_asprintf_rewrite_tail(char **str, size_t *start, const char *fmt, ...)
 
 bool
 ralloc_vasprintf_rewrite_tail(char **str, size_t *start, const char *fmt,
-			      va_list args)
+                              va_list args)
 {
    size_t new_length;
    char *ptr;
@@ -593,7 +618,15 @@ typedef struct
  * allocated using a freelist backed by a simple linear allocator.
  */
 typedef struct gc_slab {
-   alignas(HEADER_ALIGN)
+   /* Slabs that handle the same-sized objects. Users of this list must ensure that their list_head
+    * is aligned properly.
+    */
+   alignas(HEADER_ALIGN) struct list_head link;
+
+   /* Free slabs that handle the same-sized objects. Users of this list must ensure that their
+    * list_head is also aligned properly.
+    */
+   alignas(HEADER_ALIGN) struct list_head free_link;
 
    gc_ctx *ctx;
 
@@ -603,12 +636,6 @@ typedef struct gc_slab {
     */
    char *next_available;
    gc_block_header *freelist;
-
-   /* Slabs that handle the same-sized objects. */
-   struct list_head link;
-
-   /* Free slabs that handle the same-sized objects. */
-   struct list_head free_link;
 
    /* Number of allocated and free objects, recorded so that we can free the slab if it
     * becomes empty or add one to the freelist if it's no longer full.
@@ -627,19 +654,30 @@ struct gc_ctx {
     * fixed size. slabs[N] contains allocations of size
     * FREELIST_ALIGNMENT * (N + 1).
     */
-   struct {
-      /* List of slabs in this bucket. */
-      struct list_head slabs;
+   struct gc_slab_bucket {
+      /* List of slabs in this bucket. The member must be aligned identically to gc_slab.link. */
+      alignas(HEADER_ALIGN) struct list_head slabs;
 
       /* List of slabs with free space in this bucket, so we can quickly choose one when
-       * allocating.
+       * allocating. The member must be aligned identically to gc_slab.free_link.
        */
-      struct list_head free_slabs;
+      alignas(HEADER_ALIGN) struct list_head free_slabs;
    } slabs[NUM_FREELIST_BUCKETS];
 
    uint8_t current_gen;
    void *rubbish;
 };
+
+/* These asserts are necessary to enforce that the offset of link and free_link within gc_slab are
+ * congruent modulo alignof(gc_slab) to the offset of slabs and free_slabs within gc_ctx to avoid
+ * alignment issues.
+ */
+static_assert((offsetof(gc_ctx, slabs) +
+               offsetof(struct gc_slab_bucket, slabs)) % alignof(gc_slab) ==
+              offsetof(gc_slab, link) % alignof(gc_slab), "");
+static_assert((offsetof(gc_ctx, slabs) +
+               offsetof(struct gc_slab_bucket, free_slabs)) % alignof(gc_slab) ==
+              offsetof(gc_slab, free_link) % alignof(gc_slab), "");
 
 static gc_block_header *
 get_gc_header(const void *ptr)
@@ -1093,9 +1131,6 @@ linear_context_with_opts(void *ralloc_ctx, const linear_opts *opts)
 {
    linear_ctx *ctx;
 
-   if (unlikely(!ralloc_ctx))
-      return NULL;
-
    const unsigned default_min_buffer_size = 2048;
    const unsigned min_buffer_size =
       MAX2(ALIGN_POT(opts->min_buffer_size, default_min_buffer_size),
@@ -1169,6 +1204,18 @@ ralloc_parent_of_linear_context(linear_ctx *ctx)
 /* All code below is pretty much copied from ralloc and only the alloc
  * calls are different.
  */
+
+void *
+linear_memdup(linear_ctx *ctx, const void *mem, size_t n)
+{
+   void *ptr = linear_alloc_child(ctx, n);
+
+   if (unlikely(ptr == NULL))
+      return NULL;
+
+   memcpy(ptr, mem, n);
+   return ptr;
+}
 
 char *
 linear_strdup(linear_ctx *ctx, const char *str)
@@ -1358,14 +1405,19 @@ ralloc_print_info_helper(ralloc_print_info_state *state, const ralloc_header *in
    const linear_ctx *lin_ctx = ptr;
    const gc_ctx *gc_ctx = ptr;
 
-   if (lin_ctx->magic == LMAGIC_CONTEXT) {
+   const bool is_linear = info->size >= sizeof(*lin_ctx) &&
+                          lin_ctx->magic == LMAGIC_CONTEXT;
+   const bool is_gc = info->size >= sizeof(*gc_ctx) &&
+                      gc_ctx->canary == GC_CONTEXT_CANARY;
+
+   if (is_linear) {
       if (f) fprintf(f, " (linear context)");
       assert(!state->inside_gc && !state->inside_linear);
       state->inside_linear = true;
       state->linear_metadata_bytes += sizeof(linear_ctx);
       state->content_bytes -= sizeof(linear_ctx);
       state->linear_count++;
-   } else if (gc_ctx->canary == GC_CONTEXT_CANARY) {
+   } else if (is_gc) {
       if (f) fprintf(f, " (gc context)");
       assert(!state->inside_gc && !state->inside_linear);
       state->inside_gc = true;
@@ -1396,8 +1448,8 @@ ralloc_print_info_helper(ralloc_print_info_state *state, const ralloc_header *in
    state->indent -= 2;
 
 #ifndef NDEBUG
-   if (lin_ctx->magic == LMAGIC_CONTEXT) state->inside_linear = false;
-   else if (gc_ctx->canary == GC_CONTEXT_CANARY) state->inside_gc = false;
+   if (is_linear) state->inside_linear = false;
+   else if (is_gc) state->inside_gc = false;
 #endif
 }
 

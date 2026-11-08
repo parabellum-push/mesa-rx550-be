@@ -1,5 +1,4 @@
 # Copyright © 2020 Valve Corporation
-#
 # SPDX-License-Identifier: MIT
 
 aco_tests_files = files(
@@ -14,6 +13,8 @@ aco_tests_files = files(
   'test_insert_nops.cpp',
   'test_insert_waitcnt.cpp',
   'test_isel.cpp',
+  'test_lower_branches.cpp',
+  'test_lower_subdword.cpp',
   'test_optimizer.cpp',
   'test_reduce_assign.cpp',
   'test_regalloc.cpp',
@@ -29,10 +30,14 @@ spirv_files = files(
   'test_d3d11_derivs.cpp',
 )
 
-gen_spirv = generator(prog_python,
-                      output    : '@BASENAME@-spirv.h',
-                      arguments : [join_paths(meson.current_source_dir(), 'glsl_scraper.py'),
-                                   '@INPUT@', '--with-glslang', prog_glslang.full_path(), '-o', '@OUTPUT@'])
+gen_spirv = generator(
+  prog_python,
+  output : '@BASENAME@-spirv.h',
+  arguments : [
+    join_paths(meson.current_source_dir(), 'glsl_scraper.py'),
+    '@INPUT@', '--with-glslang', prog_glslang.full_path(), '-o', '@OUTPUT@',
+  ],
+)
 gen_spirv_files = gen_spirv.process(spirv_files)
 
 test(
@@ -48,13 +53,14 @@ test(
       inc_include, inc_src, inc_amd, inc_amd_common, inc_amd_common_llvm,
     ],
     link_with : [
-      libamd_common, libamd_common_llvm, libvulkan_radeon,
+      libamd_common, libamd_common_llvm, libvulkan_radeon, libamdgpu_noop_drm_shim,
     ],
     dependencies : [
-      dep_llvm, dep_thread, idep_aco, idep_nir, idep_mesautil, idep_vulkan_util_headers, idep_amdgfxregs_h,
+      dep_llvm, dep_thread, idep_aco, idep_nir, idep_mesautil, idep_vulkan_util_headers, idep_amd_generated_headers,
     ],
     gnu_symbol_visibility : 'hidden',
     build_by_default : true,
   ),
   suite : ['amd', 'compiler'],
+  env : ['LD_PRELOAD=@0@'.format(libamdgpu_noop_drm_shim.full_path())],
 )

@@ -1,31 +1,14 @@
-/**********************************************************
- * Copyright 2008-2023 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "svga3d_reg.h"
-#include "svga3d_surfacedefs.h"
+#include "vmw_surf_defs.h"
 
+#include "include/svga3d_surfacedefs.h"
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 #include "util/u_thread.h"
@@ -440,13 +423,13 @@ svga_texture_transfer_map_direct(struct svga_context *svga,
           (tex->b.target == PIPE_TEXTURE_2D_ARRAY) ||
           (tex->b.target == PIPE_TEXTURE_CUBE_ARRAY)) {
          st->base.layer_stride =
-            svga3dsurface_get_image_offset(tex->key.format, baseLevelSize,
-                                           tex->b.last_level + 1, 1, 0);
+            vmw_surf_get_image_offset(tex->key.format, baseLevelSize,
+                                      tex->b.last_level + 1, 1, 0);
       }
 
-      offset = svga3dsurface_get_image_offset(tex->key.format, baseLevelSize,
-                                              tex->b.last_level + 1, /* numMips */
-                                              st->slice, level);
+      offset = vmw_surf_get_image_offset(tex->key.format, baseLevelSize,
+                                         tex->b.last_level + 1, /* numMips */
+                                         st->slice, level);
       if (level > 0) {
          assert(offset > 0);
       }
@@ -454,11 +437,11 @@ svga_texture_transfer_map_direct(struct svga_context *svga,
       mip_width = u_minify(tex->b.width0, level);
       mip_height = u_minify(tex->b.height0, level);
 
-      offset += svga3dsurface_get_pixel_offset(tex->key.format,
-                                               mip_width, mip_height,
-                                               st->box.x,
-                                               st->box.y,
-                                               st->box.z);
+      offset += vmw_surf_get_pixel_offset(tex->key.format,
+                                          mip_width, mip_height,
+                                          st->box.x,
+                                          st->box.y,
+                                          st->box.z);
 
       return (void *) (map + offset);
    }
@@ -1122,18 +1105,16 @@ svga_texture_create(struct pipe_screen *screen,
    /* Initialize the backing resource cache */
    tex->backed_handle = NULL;
 
-   svgascreen->hud.total_resource_bytes += tex->size;
-   svgascreen->hud.num_resources++;
+   p_atomic_add(&svgascreen->hud.total_resource_bytes, tex->size);
+   p_atomic_inc(&svgascreen->hud.num_resources);
 
    SVGA_STATS_TIME_POP(svgascreen->sws);
 
    return &tex->b;
 
 fail:
-   if (tex->dirty)
-      FREE(tex->dirty);
-   if (tex->defined)
-      FREE(tex->defined);
+   FREE(tex->dirty);
+   FREE(tex->defined);
    FREE(tex);
 fail_notex:
    SVGA_STATS_TIME_POP(svgascreen->sws);
@@ -1214,7 +1195,7 @@ svga_texture_from_handle(struct pipe_screen *screen,
 
    tex->imported = true;
 
-   ss->hud.num_resources++;
+   p_atomic_inc(&ss->hud.num_resources);
 
    return &tex->b;
 
@@ -1335,7 +1316,7 @@ svga_texture_transfer_map_can_upload(const struct svga_screen *svgascreen,
    if (util_format_is_compressed(texture->format)) {
       /* XXX Need to take a closer look to see why texture upload
        * with 3D texture with compressed format fails
-       */ 
+       */
       if (texture->target == PIPE_TEXTURE_3D)
           return false;
    }
@@ -1353,7 +1334,7 @@ svga_texture_transfer_map_can_upload(const struct svga_screen *svgascreen,
  */
 static bool
 need_update_texture_resource(struct pipe_surface *surf,
-		             struct svga_texture *tex)
+                             struct svga_texture *tex)
 {
    struct svga_texture *stex = svga_texture(surf->texture);
    struct svga_surface *s = svga_surface(surf);
@@ -1370,7 +1351,7 @@ need_update_texture_resource(struct pipe_surface *surf,
  */
 static void
 svga_validate_texture_resource(struct svga_context *svga,
-		               struct svga_texture *tex)
+                               struct svga_texture *tex)
 {
    if (svga_was_texture_rendered_to(tex) == false)
       return;
@@ -1383,12 +1364,12 @@ svga_validate_texture_resource(struct svga_context *svga,
    for (unsigned i = 0; i < svga->state.hw_clear.num_rendertargets; i++) {
       s = svga->state.hw_clear.rtv[i];
       if (s && need_update_texture_resource(s, tex))
-         svga_propagate_surface(svga, s, true);
+         svga_propagate_surface(svga, svga_surface(s), true);
    }
 
    s = svga->state.hw_clear.dsv;
    if (s && need_update_texture_resource(s, tex))
-      svga_propagate_surface(svga, s, true);
+      svga_propagate_surface(svga, svga_surface(s), true);
 }
 
 
@@ -1476,7 +1457,7 @@ svga_texture_transfer_map_upload(struct svga_context *svga,
     * upload buffer manager code will try to allocate a new buffer
     * with the new buffer size.
     */
-   u_upload_alloc(svga->tex_upload, 0, upload_size, 16,
+   u_upload_alloc_ref(svga->tex_upload, 0, upload_size, 16,
                   &offset, &tex_buffer, &tex_map);
 
    if (!tex_map) {
@@ -1559,10 +1540,10 @@ svga_texture_device_format_has_alpha(struct pipe_resource *texture)
    /* the svga_texture() call below is invalid for PIPE_BUFFER resources */
    assert(texture->target != PIPE_BUFFER);
 
-   const struct svga3d_surface_desc *surf_desc =
-      svga3dsurface_get_desc(svga_texture(texture)->key.format);
+   const struct SVGA3dSurfaceDesc *surf_desc =
+      vmw_surf_get_desc(svga_texture(texture)->key.format);
 
-   enum svga3d_block_desc block_desc = surf_desc->block_desc;
+   enum SVGA3dBlockDesc block_desc = surf_desc->blockDesc;
 
    return !!((block_desc & SVGA3DBLOCKDESC_ALPHA) ||
              ((block_desc == SVGA3DBLOCKDESC_TYPELESS) &&

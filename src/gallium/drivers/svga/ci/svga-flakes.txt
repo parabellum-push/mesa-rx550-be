@@ -14,6 +14,8 @@ spec@arb_tessellation_shader@execution@built-in-functions@tcs-op-bitand-neg-ivec
 spec@arb_tessellation_shader@execution@built-in-functions@tcs-op-ne-uvec2-uvec2
 spec@arb_tessellation_shader@execution@isoline
 spec@arb_tessellation_shader@execution@isoline-no-tcs
+spec@arb_tessellation_shader@execution@tcs-input@tcs-input-ivec3_2
+spec@arb_tessellation_shader@execution@tcs-input@tcs-input-uint
 spec@arb_tessellation_shader@execution@tesslevels-indirect
 spec@arb_texture_cube_map_array@arb_texture_cube_map_array-cubemap
 spec@arb_texture_multisample@texelfetch@8-vs-isampler2dmsarray
@@ -46,6 +48,20 @@ spec@oes_texture_view@rendering-formats@sample GL_RGB8_SNORM as GL_RGB8
 # uprev Piglit in Mesa
 spec@arb_tessellation_shader@execution@tcs-input@tcs-input-mat2x3
 spec@arb_tessellation_shader@execution@tcs-input@tcs-input-uvec3_2
+spec@arb_texture_multisample@texelfetch fs sampler2dmsarray 4 98x1x9-98x129x9
 spec@egl_chromium_sync_control@conformance
 spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test
 spec@egl_khr_gl_colorspace@linear
+spec@glsl-1.30@execution@texelfetch fs sampler3d 1x129x9-98x129x9
+spec@glsl-1.30@execution@texelfetch@fs-texelfetch-isampler2darray-swizzle
+
+# weston with no xwayland decor
+glx@glx-multithread-buffer
+spec@!opengl 3.2@gl-3.2-adj-prims line cull-back pv-first
+spec@arb_gpu_shader_fp64@shader_storage@layout-std140-fp64-mixed-shader
+spec@arb_shader_storage_buffer_object@layout-std430-write-shader
+spec@arb_tessellation_shader@execution@tcs-input@tcs-input-ivec3
+spec@arb_tessellation_shader@execution@tcs-input@tcs-input-mat4x3_2
+spec@arb_tessellation_shader@execution@tcs-input@tcs-input-uvec3
+spec@glsl-1.50@execution@primitive-id-no-gs-strip
+spec@glsl-1.50@execution@vs-input-arrays

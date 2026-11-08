@@ -1,22 +1,5 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 # Mesa-local imports in the Python files must be declared here for correct
 # dependency tracking.
@@ -24,7 +7,6 @@
 vulkan_lite_runtime_files = files(
   'rmv/vk_rmv_common.c',
   'rmv/vk_rmv_exporter.c',
-  'vk_acceleration_structure.c',
   'vk_blend.c',
   'vk_buffer.c',
   'vk_buffer_view.c',
@@ -39,12 +21,14 @@ vulkan_lite_runtime_files = files(
   'vk_descriptors.c',
   'vk_descriptor_update_template.c',
   'vk_device.c',
+  'vk_device_generated_commands.c',
   'vk_device_memory.c',
   'vk_fence.c',
   'vk_framebuffer.c',
   'vk_graphics_state.c',
   'vk_image.c',
   'vk_log.c',
+  'vk_meta_object_list.c',
   'vk_object.c',
   'vk_physical_device.c',
   'vk_pipeline_layout.c',
@@ -77,7 +61,7 @@ endif
 
 if with_platform_android
   vulkan_lite_runtime_files += files('vk_android.c')
-  vulkan_lite_runtime_deps += dep_android
+  vulkan_lite_runtime_deps += [dep_android, idep_u_gralloc]
 endif
 
 vk_common_entrypoints = custom_target(
@@ -153,6 +137,17 @@ vk_physical_device_properties = custom_target(
   depend_files : vk_physical_device_properties_gen_depend_files,
 )
 
+vk_physical_device_spirv_caps = custom_target(
+  'vk_physical_device_spirv_caps',
+  input : [vk_physical_device_spirv_caps_gen, vk_api_xml],
+  output : 'vk_physical_device_spirv_caps.c',
+  command : [
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@',
+    '--out-c', '@OUTPUT0@', '--beta', with_vulkan_beta.to_string()
+  ],
+  depend_files : vk_physical_device_spirv_caps_gen_depend_files,
+)
+
 vk_synchronization_helpers = custom_target(
   'vk_synchronization_helpers',
   input : [vk_synchronization_helpers_gen, vk_api_xml],
@@ -183,12 +178,14 @@ vulkan_lite_runtime_files += [
   vk_format_info,
   vk_physical_device_features,
   vk_physical_device_properties,
+  vk_physical_device_spirv_caps,
   vk_synchronization_helpers,
 ]
 
 # as a runtime library dep to ensure header gen order
 vulkan_lite_runtime_header_gen_deps = declare_dependency(
   sources : [
+    spirv_info_h,
     vk_cmd_enqueue_entrypoints[0],
     vk_cmd_queue[1],
     vk_common_entrypoints[0],
@@ -206,7 +203,7 @@ libvulkan_lite_runtime = static_library(
   vulkan_lite_runtime_files,
   include_directories : [inc_include, inc_src],
   dependencies : vulkan_lite_runtime_deps,
-  c_args : c_msvc_compat_args,
+  c_args : [c_msvc_compat_args, soong_compat_c_args, '-DMESA_VK_LOG=@0@'.format(get_option('debug').to_int())],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -216,7 +213,7 @@ libvulkan_lite_instance = static_library(
   ['vk_instance.c'],
   include_directories : [inc_include, inc_src],
   dependencies : vulkan_lite_runtime_deps,
-  c_args : ['-DVK_LITE_RUNTIME_INSTANCE=1', c_msvc_compat_args],
+  c_args : ['-DVK_LITE_RUNTIME_INSTANCE=1', c_msvc_compat_args, soong_compat_c_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -229,14 +226,8 @@ libvulkan_lite_instance = static_library(
 # - idep_vulkan_runtime_headers
 # - idep_vulkan_runtime
 idep_vulkan_lite_runtime_headers = declare_dependency(
-  sources : [
-    vk_cmd_enqueue_entrypoints[0],
-    vk_cmd_queue[1],
-    vk_common_entrypoints[0],
-    vk_physical_device_features[1],
-    vk_physical_device_properties[1],
-  ],
   include_directories : include_directories('.'),
+  dependencies : [vulkan_lite_runtime_header_gen_deps]
 )
 
 # This is likely a bug in the Meson VS backend, as MSVC with ninja works fine.
@@ -260,9 +251,11 @@ vulkan_runtime_files = files(
   'vk_meta.c',
   'vk_meta_blit_resolve.c',
   'vk_meta_clear.c',
+  'vk_meta_copy_fill_update.c',
   'vk_meta_draw_rects.c',
   'vk_nir.c',
   'vk_nir_convert_ycbcr.c',
+  'vk_nir_lower_descriptor_heaps.c',
   'vk_pipeline.c',
   'vk_pipeline_cache.c',
   'vk_shader.c',
@@ -277,12 +270,24 @@ vulkan_runtime_deps = [
 ]
 
 if prog_glslang.found()
+  if with_bvh
+    subdir('radix_sort')
+    vulkan_runtime_files += radix_sort_files
+    vulkan_runtime_files += radix_sort_spv
+    subdir('bvh')
+    vulkan_runtime_files += files('vk_acceleration_structure.c')
+    vulkan_runtime_files += bvh_spv
+  endif
   vulkan_runtime_files += files('vk_texcompress_astc.c')
   vulkan_runtime_files += custom_target(
     'astc_spv.h',
     input : astc_decoder_glsl_file,
     output : 'astc_spv.h',
-    command : [prog_glslang, '-V', '-S', 'comp', '-x', '-o', '@OUTPUT@', '@INPUT@'] + glslang_quiet,
+    command : [
+      prog_glslang, '-V', '-S', 'comp', '-x', '-o', '@OUTPUT@', '@INPUT@',
+      glslang_quiet, glslang_depfile,
+    ],
+    depfile : 'astc_spv.h.d',
   )
 endif
 
@@ -291,7 +296,7 @@ libvulkan_runtime = static_library(
   [vulkan_runtime_files],
   include_directories : [inc_include, inc_src],
   dependencies : vulkan_runtime_deps,
-  c_args : c_msvc_compat_args,
+  c_args : [c_msvc_compat_args, soong_compat_c_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -301,7 +306,7 @@ libvulkan_instance = static_library(
   ['vk_instance.c'],
   include_directories : [inc_include, inc_src],
   dependencies : vulkan_runtime_deps,
-  c_args : ['-DVK_LITE_RUNTIME_INSTANCE=0', c_msvc_compat_args],
+  c_args : ['-DVK_LITE_RUNTIME_INSTANCE=0', c_msvc_compat_args, soong_compat_c_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -316,7 +321,10 @@ else
   )
 endif
 
-idep_vulkan_runtime_headers = idep_vulkan_lite_runtime_headers
+idep_vulkan_runtime_headers = [idep_vulkan_lite_runtime_headers]
+idep_vulkan_runtime_headers += declare_dependency(
+  include_directories : include_directories('bvh'),
+)
 
 idep_vulkan_runtime = declare_dependency(
   dependencies : [

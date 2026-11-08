@@ -208,27 +208,24 @@ try_copy_prop(struct v3d_compile *c, struct qinst *inst, struct qinst **movs)
                                         break;
                                 }
                         }
+
+                        /* These are only available with FMOV */
+                        if (mov->qpu.alu.mul.a.unpack >= V3D71_QPU_UNPACK_SAT &&
+                            mov->qpu.alu.mul.a.unpack <= V3D71_QPU_UNPACK_MAX0 &&
+                            inst->qpu.alu.mul.op != V3D_QPU_M_FMOV) {
+                            assert(c->devinfo->ver >= 71);
+                            return false;
+                        }
                 }
 
-                if (debug) {
-                        fprintf(stderr, "Copy propagate: ");
-                        vir_dump_inst(c, inst);
-                        fprintf(stderr, "\n");
+                LOG_INST_OPT("Copy propagate", c, inst) {
+                        inst->src[i] = mov->src[0];
+                        if (vir_has_unpack(mov, 0)) {
+                                enum v3d_qpu_input_unpack unpack = mov->qpu.alu.mul.a.unpack;
+
+                                vir_set_unpack(inst, i, unpack);
+                        }
                 }
-
-                inst->src[i] = mov->src[0];
-                if (vir_has_unpack(mov, 0)) {
-                        enum v3d_qpu_input_unpack unpack = mov->qpu.alu.mul.a.unpack;
-
-                        vir_set_unpack(inst, i, unpack);
-                }
-
-                if (debug) {
-                        fprintf(stderr, "to: ");
-                        vir_dump_inst(c, inst);
-                        fprintf(stderr, "\n");
-                }
-
                 progress = true;
         }
 

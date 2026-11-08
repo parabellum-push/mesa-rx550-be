@@ -15,9 +15,12 @@ The following section describes the ABI used by non-monolithic programs.
 Registers have the following layout at the beginning of the vertex shader
 (written by the vertex prolog):
 
-* `r0-r4` and `r7` undefined. This avoids preloading into the nesting counter or
+* `r0-r3` and `r7` undefined. This avoids preloading into the nesting counter or
   having unaligned values. The prolog is free to use these registers as
   temporaries.
+* `r4` is the zero-based vertex ID if the vertex shader is running as a hardware
+  compute shader, useful to avoid a redundant special register read in the main
+  shader. Undefined in hardware vertex shaders.
 * `r5-r6` retain their usual meanings, even if the vertex shader is running as a
   hardware compute shader. This allows software index fetch code to run in the
   prolog without contaminating the main shader key.
@@ -38,16 +41,17 @@ For a vertex shader reading $n$ attributes, the following layout is used:
 * The first $n$ 64-bit uniforms are the base addresses of each attribute.
 * The next $n$ 32-bit uniforms are the associated clamps (sizes). Presently
   robustness is always used.
-* The next 32-bit uniform is the base instance. This must always be reserved
-  because it is unknown at vertex shader compile-time whether any attribute will
-  use instancing.
-* For a hardware compute shader, the next 32-bit uniform is the base/first
-  vertex.
+* The next 2x32-bit uniform is the base vertex and base instance. This must
+  always be reserved because it is unknown at vertex shader compile-time whether
+  any attribute will use instancing. Reserving also the base vertex allows us to
+  push both conveniently with a single USC Uniform word.
+* The next 16-bit is the draw ID.
+* For a hardware compute shader, the next 48-bit is padding.
 * For a hardware compute shader, the next 64-bit uniform is a pointer to the
   input assembly buffer.
 
-In total, the first $6n + 2$ 16-bit uniform slots are reserved for a hardware
-vertex shader, or $6n + 8$ for a hardware compute shader.
+In total, the first $6n + 5$ 16-bit uniform slots are reserved for a hardware
+vertex shader, or $6n + 12$ for a hardware compute shader.
 
 ## Fragment
 
@@ -55,7 +59,7 @@ When sample shading is enabled in a non-monolithic fragment shader, the fragment
 shader has the following register inputs:
 
 * `r0l = 0`. This is the hardware nesting counter.
-* `r0h` is the mask of samples currently being shaded. This usually equals to
+* `r1l` is the mask of samples currently being shaded. This usually equals to
   `1 << sample ID`, for "true" per-sample shading.
 
 When sample shading is disabled, no register inputs are defined. The fragment
@@ -65,11 +69,13 @@ Registers have the following layout at the end of the fragment shader (read by
 the fragment epilog):
 
 * `r0l = 0` if sample shading is enabled. This is implicitly true.
-* `r0h` preserved if sample shading is enabled.
+* `r1l` preserved if sample shading is enabled.
 * `r2` and `r3l` contain the emitted depth/stencil respectively, if
   depth and/or stencil are written by the fragment shader. Depth/stencil writes
   must be deferred to the epilog for correctness when the epilog can discard
   (i.e. when alpha-to-coverage is enabled).
+* `r3h` contains the logically emitted sample mask, if the fragment shader uses
+  forced early tests. This predicates the epilog's stores.
 * The vec4 of 32-bit registers beginning at `r(4 * (i + 1))` contains the colour
   output for render target `i`. When dual source blending is enabled, there is
   only a single render target and the dual source colour is treated as the

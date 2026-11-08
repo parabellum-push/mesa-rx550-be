@@ -28,8 +28,8 @@
 
 #include "util/glheader.h"
 #include "compiler/glsl_types.h"
-#include "compiler/glsl/ir_uniform.h"
 #include "program/prog_parameter.h"
+#include "main/shader_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,7 +91,7 @@ _mesa_sampler_uniforms_pipeline_are_valid(struct gl_pipeline_object *);
 
 extern void
 _mesa_flush_vertices_for_uniforms(struct gl_context *ctx,
-                                  const struct gl_uniform_storage *uni);
+                                  struct gl_uniform_storage *uni);
 
 extern GLint
 _mesa_GetUniformLocation_impl(GLuint programObj, const GLcharARB *name,

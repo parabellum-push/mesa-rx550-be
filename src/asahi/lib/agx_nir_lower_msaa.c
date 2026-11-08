@@ -20,15 +20,14 @@ lower_to_per_sample(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    case nir_intrinsic_load_sample_id: {
       nir_def *mask = nir_u2u32(b, nir_load_active_samples_agx(b));
       nir_def *bit = nir_ufind_msb(b, mask);
-      nir_def_rewrite_uses(&intr->def, nir_u2uN(b, bit, intr->def.bit_size));
-      nir_instr_remove(&intr->instr);
+      nir_def_replace(&intr->def, nir_u2uN(b, bit, intr->def.bit_size));
       return true;
    }
 
    case nir_intrinsic_load_local_pixel_agx:
    case nir_intrinsic_store_local_pixel_agx:
    case nir_intrinsic_store_zs_agx:
-   case nir_intrinsic_discard_agx:
+   case nir_intrinsic_demote_samples:
    case nir_intrinsic_sample_mask_agx: {
       /* Fragment I/O inside the loop should only affect active samples. */
       unsigned mask_index =
@@ -50,9 +49,8 @@ lower_to_per_sample(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 bool
 agx_nir_lower_to_per_sample(nir_shader *shader)
 {
-   return nir_shader_intrinsics_pass(
-      shader, lower_to_per_sample,
-      nir_metadata_block_index | nir_metadata_dominance, NULL);
+   return nir_shader_intrinsics_pass(shader, lower_to_per_sample,
+                                     nir_metadata_control_flow, NULL);
 }
 
 static bool
@@ -96,11 +94,7 @@ agx_nir_wrap_per_sample_loop(nir_shader *shader, uint8_t nr_samples)
    nir_loop *loop = nir_push_loop(&b);
    {
       bit = nir_load_var(&b, i);
-      nir_push_if(&b, nir_uge(&b, bit, end_bit));
-      {
-         nir_jump(&b, nir_jump_break);
-      }
-      nir_pop_if(&b, NULL);
+      nir_break_if(&b, nir_uge(&b, bit, end_bit));
 
       b.cursor = nir_cf_reinsert(&list, b.cursor);
       nir_store_var(&b, i, nir_ishl_imm(&b, bit, 1), ~0);
@@ -108,12 +102,11 @@ agx_nir_wrap_per_sample_loop(nir_shader *shader, uint8_t nr_samples)
    nir_pop_loop(&b, loop);
 
    /* We've mucked about with control flow */
-   nir_metadata_preserve(impl, nir_metadata_none);
+   nir_progress(true, impl, nir_metadata_none);
 
    /* Use the loop variable for the active sampple mask each iteration */
    nir_shader_intrinsics_pass(shader, lower_active_samples,
-                              nir_metadata_block_index | nir_metadata_dominance,
-                              bit);
+                              nir_metadata_control_flow, bit);
    return true;
 }
 
@@ -133,9 +126,12 @@ agx_nir_lower_monolithic_msaa(nir_shader *shader, uint8_t nr_samples)
    /* In single sampled programs, interpolateAtSample needs to return the
     * center pixel.
     */
-   if (nr_samples == 1)
-      nir_lower_single_sampled(shader);
-   else if (shader->info.fs.uses_sample_shading) {
+   if (nr_samples == 1) {
+      nir_lower_single_sampled_options lss_opts = {
+         .lower_sample_mask_in = true,
+      };
+      nir_lower_single_sampled(shader, &lss_opts);
+   } else if (shader->info.fs.uses_sample_shading) {
       agx_nir_lower_to_per_sample(shader);
       agx_nir_wrap_per_sample_loop(shader, nr_samples);
    }

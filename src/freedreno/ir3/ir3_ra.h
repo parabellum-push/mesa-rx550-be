@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2021 Valve Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2021 Valve Corporation
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef _IR3_RA_H
@@ -143,6 +125,7 @@ ra_reg_is_predicate(const struct ir3_register *reg)
 #define RA_HALF_SIZE     (4 * 48)
 #define RA_FULL_SIZE     (4 * 48 * 2)
 #define RA_SHARED_SIZE   (2 * 4 * 8)
+#define RA_SHARED_HALF_SIZE (4 * 8)
 #define RA_MAX_FILE_SIZE RA_FULL_SIZE
 
 struct ir3_liveness {
@@ -171,15 +154,21 @@ bool ir3_def_live_after(struct ir3_liveness *live, struct ir3_register *def,
 void ir3_create_parallel_copies(struct ir3 *ir);
 
 void ir3_merge_regs(struct ir3_liveness *live, struct ir3 *ir);
+void ir3_aggressive_coalesce(struct ir3_liveness *live,
+                             struct ir3_instruction *instr);
 
 void ir3_force_merge(struct ir3_register *a, struct ir3_register *b,
                      int b_offset);
+void ir3_update_merge_sets_index(struct ir3_liveness *live, struct ir3 *ir);
 
 void ir3_index_instrs_for_merge_sets(struct ir3 *ir);
 
 struct ir3_pressure {
-   unsigned full, half, shared;
+   /* Register number limits for RA, in units of half regs. */
+   unsigned full, half, shared, shared_half;
 };
+
+struct ir3_pressure ir3_ra_get_reg_file_limits(struct ir3_shader_variant *so);
 
 void ir3_calc_pressure(struct ir3_shader_variant *v, struct ir3_liveness *live,
                        struct ir3_pressure *max_pressure);
@@ -304,5 +293,13 @@ void ir3_reg_interval_remove(struct ir3_reg_ctx *ctx,
 
 void ir3_reg_interval_remove_all(struct ir3_reg_ctx *ctx,
                                  struct ir3_reg_interval *interval);
+
+void ra_update_affinity(unsigned file_size, struct ir3_register *reg,
+                        physreg_t physreg);
+
+void ir3_ra_handle_unavailable_merge_set(struct ir3_register *reg);
+
+bool ir3_ra_src_is_killed(struct ir3_register *src,
+                          struct ir3_reg_interval *def_interval);
 
 #endif

@@ -30,6 +30,8 @@
 #include "common/intel_engine.h"
 #include "common/xe/intel_device_query.h"
 #include "common/xe/intel_engine.h"
+#include "common/xe/intel_gem.h"
+#include "common/xe/intel_queue.h"
 
 #include "drm-uapi/xe_drm.h"
 #include "drm-uapi/gpu_scheduler.h"
@@ -53,7 +55,8 @@ static bool
 iris_xe_init_batch(struct iris_bufmgr *bufmgr,
                    struct intel_query_engine_info *engines_info,
                    enum intel_engine_class engine_class,
-                   enum iris_context_priority priority, uint32_t *exec_queue_id)
+                   enum iris_context_priority priority, uint32_t *exec_queue_id,
+                   bool protected)
 
 {
    struct drm_xe_engine_class_instance *instances;
@@ -87,20 +90,37 @@ iris_xe_init_batch(struct iris_bufmgr *bufmgr,
       instances[count].engine_instance = engine.engine_instance;
       instances[count++].gt_id = engine.gt_id;
    }
-   struct drm_xe_ext_set_property ext = {
-      .base.name = DRM_XE_EXEC_QUEUE_EXTENSION_SET_PROPERTY,
+   struct drm_xe_ext_set_property priority_ext = {
       .property = DRM_XE_EXEC_QUEUE_SET_PROPERTY_PRIORITY,
       .value = allowed_priority,
+   };
+   struct drm_xe_ext_set_property pxp_ext = {
+      .property = DRM_XE_EXEC_QUEUE_SET_PROPERTY_PXP_TYPE,
+      .value = DRM_XE_PXP_TYPE_HWDRM,
    };
    struct drm_xe_exec_queue_create create = {
          .instances = (uintptr_t)instances,
          .vm_id = iris_bufmgr_get_global_vm_id(bufmgr),
          .width = 1,
          .num_placements = count,
-         .extensions = (uintptr_t)&ext,
    };
-   int ret = intel_ioctl(iris_bufmgr_get_fd(bufmgr),
-                         DRM_IOCTL_XE_EXEC_QUEUE_CREATE, &create);
+   intel_xe_gem_add_ext((uint64_t *)&create.extensions,
+                        DRM_XE_EXEC_QUEUE_EXTENSION_SET_PROPERTY,
+                        &priority_ext.base);
+   if (protected)
+      intel_xe_gem_add_ext((uint64_t *)&create.extensions,
+                           DRM_XE_EXEC_QUEUE_EXTENSION_SET_PROPERTY,
+                           &pxp_ext.base);
+   int ret;
+   bool retry;
+   do {
+      ret = intel_ioctl(iris_bufmgr_get_fd(bufmgr),
+                        DRM_IOCTL_XE_EXEC_QUEUE_CREATE, &create);
+      retry = protected && ret == -1 && errno == EBUSY;
+      if (retry)
+         usleep(1000);
+   } while (retry);
+
    free(instances);
    if (ret)
       goto error_create_exec_queue;
@@ -144,7 +164,8 @@ void iris_xe_init_batches(struct iris_context *ice)
       ASSERTED bool ret;
 
       ret = iris_xe_init_batch(bufmgr, engines_info, engine_classes[name],
-                               ice->priority, &batch->xe.exec_queue_id);
+                               ice->priority, &batch->xe.exec_queue_id,
+                               ice->protected);
       assert(ret);
    }
 
@@ -159,35 +180,28 @@ static void
 iris_xe_wait_exec_queue_idle(struct iris_batch *batch)
 {
    struct iris_bufmgr *bufmgr = batch->screen->bufmgr;
-   struct iris_syncobj *syncobj = iris_create_syncobj(bufmgr);
-   struct drm_xe_sync xe_sync = {
-      .type = DRM_XE_SYNC_TYPE_SYNCOBJ,
-      .flags = DRM_XE_SYNC_FLAG_SIGNAL,
-   };
-   struct drm_xe_exec exec = {
-      .exec_queue_id = batch->xe.exec_queue_id,
-      .num_syncs = 1,
-      .syncs = (uintptr_t)&xe_sync,
-   };
-   int ret;
+   int fd = iris_bufmgr_get_fd(bufmgr);
+   uint32_t syncobj;
+   int ret = xe_queue_get_syncobj_for_idle(fd, batch->xe.exec_queue_id,
+                                           &syncobj);
 
-   if (!syncobj)
+   if (ret) {
+      assert(iris_batch_is_banned(bufmgr, ret) == true);
       return;
-
-   xe_sync.handle = syncobj->handle;
-   /* Using the special exec.num_batch_buffer == 0 handling to get syncobj
-    * signaled when the last DRM_IOCTL_XE_EXEC is completed.
-    */
-   ret = intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_EXEC, &exec);
-   if (ret == 0) {
-      ASSERTED bool success;
-      success = iris_wait_syncobj(bufmgr, syncobj, INT64_MAX);
-      assert(success);
-   } else {
-      assert(iris_batch_is_banned(bufmgr, -errno) == true);
    }
 
-   iris_syncobj_destroy(bufmgr, syncobj);
+   struct drm_syncobj_wait wait = {
+      .handles = (uintptr_t)&syncobj,
+      .count_handles = 1,
+      .timeout_nsec = INT64_MAX,
+   };
+   ret = intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &wait);
+   assert(ret == 0);
+
+   struct drm_syncobj_destroy syncobj_destroy = {
+      .handle = syncobj,
+   };
+   intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &syncobj_destroy);
 }
 
 static void
@@ -231,7 +245,7 @@ bool iris_xe_replace_batch(struct iris_batch *batch)
    iris_xe_map_intel_engine_class(bufmgr, engines_info, engine_classes);
 
    ret = iris_xe_init_batch(bufmgr, engines_info, engine_classes[batch->name],
-                            ice->priority, &new_exec_queue_id);
+                            ice->priority, &new_exec_queue_id, ice->protected);
    if (ret) {
       iris_xe_destroy_exec_queue(batch);
       batch->xe.exec_queue_id = new_exec_queue_id;

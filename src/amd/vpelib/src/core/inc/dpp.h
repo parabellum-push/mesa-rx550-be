@@ -44,24 +44,27 @@ struct cnv_alpha_2bit_lut {
     int lut3;
 };
 
-enum CNV_COLOR_KEYER_MODE {
-    CNV_COLOR_KEYER_MODE_FORCE_00 = 0,
-    CNV_COLOR_KEYER_MODE_FORCE_FF = 1,
-    CNV_COLOR_KEYER_MODE_RANGE_00 = 2,
-    CNV_COLOR_KEYER_MODE_RANGE_FF = 3
-};
+struct cnv_keyer_params {
+    uint8_t             keyer_en;
+    uint8_t             is_color_key;
+    enum vpe_keyer_mode keyer_mode;
+    union {
+        struct {
+            uint16_t color_keyer_green_low;
+            uint16_t color_keyer_green_high;
+            uint16_t color_keyer_alpha_low;
+            uint16_t color_keyer_alpha_high;
+            uint16_t color_keyer_red_low;
+            uint16_t color_keyer_red_high;
+            uint16_t color_keyer_blue_low;
+            uint16_t color_keyer_blue_high;
+        } color_keyer;
 
-struct cnv_color_keyer_params {
-    int color_keyer_en;
-    int color_keyer_mode;
-    int color_keyer_alpha_low;
-    int color_keyer_alpha_high;
-    int color_keyer_red_low;
-    int color_keyer_red_high;
-    int color_keyer_green_low;
-    int color_keyer_green_high;
-    int color_keyer_blue_low;
-    int color_keyer_blue_high;
+        struct {
+            uint16_t lower_luma_bound;
+            uint16_t upper_luma_bound;
+        } luma_keyer;
+    };
 };
 
 enum input_csc_select {
@@ -71,13 +74,7 @@ enum input_csc_select {
 
 struct dpp_funcs {
 
-    bool (*get_optimal_number_of_taps)(
-        struct dpp *dpp, struct scaler_data *scl_data, const struct vpe_scaling_taps *taps);
-
-    void (*dscl_calc_lb_num_partitions)(const struct scaler_data *scl_data,
-        enum lb_memory_config lb_config, uint32_t *num_part_y, uint32_t *num_part_c);
-
-    /** non segment specific */
+    /** non segment specific - CNV */
     void (*program_cnv)(
         struct dpp *dpp, enum vpe_surface_pixel_format format, enum vpe_expansion_mode mode);
 
@@ -85,8 +82,14 @@ struct dpp_funcs {
 
     void (*program_cnv_bias_scale)(struct dpp *dpp, struct bias_and_scale *bias_and_scale);
 
-    void (*program_alpha_keyer)(struct dpp *dpp, struct cnv_color_keyer_params *color_keyer);
+    void (*build_keyer_params)(struct dpp *dpp, const struct stream_ctx *stream_ctx,
+        struct cnv_keyer_params *keyer_params);
 
+    void (*program_alpha_keyer)(struct dpp *dpp, const struct cnv_keyer_params *keyer_params);
+
+    void (*program_crc)(struct dpp *opp, bool enable);
+
+    /** CM */
     void (*program_input_transfer_func)(struct dpp *dpp, struct transfer_func *input_tf);
 
     void (*program_gamut_remap)(struct dpp *dpp, struct colorspace_transform *gamut_remap);
@@ -98,20 +101,37 @@ struct dpp_funcs {
     void (*set_hdr_multiplier)(struct dpp *dpp, uint32_t multiplier);
 
     /** scaler */
+    bool (*get_optimal_number_of_taps)(
+        struct vpe_rect *src_rect, struct vpe_rect *dst_rect, struct vpe_scaling_taps *taps);
+
+    void (*dscl_calc_lb_num_partitions)(const struct scaler_data *scl_data,
+        enum lb_memory_config lb_config, uint32_t *num_part_y, uint32_t *num_part_c);
+
     void (*set_segment_scaler)(struct dpp *dpp, const struct scaler_data *scl_data);
+
+    void (*dscl_set_scaler_position)(struct dpp *dpp, const struct scaler_data *scl_data);
 
     void (*set_frame_scaler)(struct dpp *dpp, const struct scaler_data *scl_data);
 
     uint32_t (*get_line_buffer_size)(void);
 
     bool (*validate_number_of_taps)(struct dpp *dpp, struct scaler_data *scl_data);
+    void (*enable_clocks)(struct dpp *dpp, bool enable);
 
-    void (*program_crc)(struct dpp *opp, bool enable);
+    void (*dscl_program_easf)(struct dpp *dpp, const struct scaler_data *scl_data);
+
+    void (*dscl_disable_easf)(struct dpp *dpp, const struct scaler_data *scl_data);
+
+    void (*dscl_program_isharp)(struct dpp *dpp, const struct scaler_data *scl_data);
+
+    void (*program_histogram)(struct dpp* dpp, struct vpe_histogram_param* hist_param, enum color_space cs);
+
 };
 
 struct dpp {
     struct vpe_priv  *vpe_priv;
     struct dpp_funcs *funcs;
+    unsigned int      inst;
 
     struct pwl_params degamma_params;
 };

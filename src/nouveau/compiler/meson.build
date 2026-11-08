@@ -1,137 +1,92 @@
 # Copyright © 2022 Collabora, Ltd.
 # SPDX-License-Identifier: MIT
-if meson.version().version_compare('< 1.3.0')
-  error('NVK requires meson 1.3.0 or newer')
-endif
 
-add_languages('rust', required: true)
-rust = import('rust')
-
-rc = meson.get_compiler('rust')
-if rc.version().version_compare('< 1.73.0')
-  error('NAK requires Rust 1.73.0')
-endif
-
-bindgen_version = find_program('bindgen').version()
-
-if bindgen_version == 'unknown'
-  error('Failed to detect bindgen version. If you are using bindgen 0.69.0, ' +
-        'please either update to 0.69.1 or downgrade to 0.68.1. You can ' +
-        'install the latest version for your user with ' +
-        '`cargo install bindgen-cli`.')
-endif
-
-if bindgen_version.version_compare('< 0.65')
-  error('NAK requires bindgen 0.65 or newer. If your distribution does not ' +
-        'ship a recent enough version, you can install the latest version ' +
-        'for your user with `cargo install bindgen-cli`.')
-endif
-
-nak_rust_args = [
-  '-Aclippy::identity_op',
-  '-Aclippy::len_zero',
-  '-Aclippy::manual_range_contains',
-  # normally this is a good one, but we use it where the "better" code is worse
-  '-Aclippy::needless_range_loop',
-  '-Aclippy::redundant_field_names',
-  '-Aclippy::upper_case_acronyms',
-  '-Aclippy::vec_box',
-  '-Aclippy::write_with_newline',
-  # warns about public function might dereference a raw pointer, but nothing is
-  # actually public here
-  '-Aclippy::not_unsafe_ptr_arg_deref',
-  '-Anon_snake_case',
-]
-
-dep_syn = dependency('syn',
-  version : '>= 2.0.15',
-  fallback : ['syn', 'dep_syn'],
-  required : true,
-)
+subdir('latencies')
 
 dep_paste = dependency('paste',
   version : '>= 1.0.14',
-  fallback : ['paste', 'dep_paste'],
+  fallback : ['paste-1-rs', 'dep_paste'],
   required : true,
+)
+
+dep_rustc_hash = dependency('rustc-hash',
+  version: '>= 2.0',
+  fallback: ['rustc-hash-2-rs', 'dep_rustc_hash'],
+  required: true,
 )
 
 libnak_c_files = files(
   'nak.h',
   'nak_nir.c',
   'nak_nir_lower_cf.c',
+  'nak_nir_lower_cmat.c',
   'nak_nir_lower_fs_inputs.c',
   'nak_nir_lower_gs_intrinsics.c',
+  'nak_nir_lower_image_addrs.c',
+  'nak_nir_lower_mesh_intrinsics.c',
+  'nak_nir_lower_non_uniform_ldcx.c',
   'nak_nir_lower_scan_reduce.c',
+  'nak_nir_lower_shared_atomics.c',
   'nak_nir_lower_tex.c',
   'nak_nir_lower_vtg_io.c',
-  'nak_memstream.c',
-)
-
-_libbitview_rs = static_library(
-  'bitview',
-  files('bitview/lib.rs'),
-  gnu_symbol_visibility : 'hidden',
-  rust_abi : 'rust',
-  rust_args : nak_rust_args,
-)
-
-idep_bitview_rs = declare_dependency(
-  link_with : _libbitview_rs,
+  'nak_nir_mark_lcssa_invariants.c',
+  'nak_nir_rematerialize_load_const.c',
 )
 
 libnak_deps = [
   idep_mesautil,
   idep_nir_headers,
   idep_nvidia_headers,
+  idep_nil_h,
 ]
 
-nak_bindings_rs = rust.bindgen(
+_nak_bindings_rs = rust.bindgen(
   input : ['nak_bindings.h'],
   output : 'nak_bindings.rs',
   c_args : [
     pre_args,
   ],
   args : [
-    '--raw-line', '#![allow(non_camel_case_types)]',
-    '--raw-line', '#![allow(non_snake_case)]',
-    '--raw-line', '#![allow(non_upper_case_globals)]',
-    '--allowlist-type', 'exec_list',
-    '--allowlist-type', 'exec_node',
-    '--allowlist-type', 'float_controls',
-    '--allowlist-type', 'gl_access_qualifier',
-    '--allowlist-type', 'gl_frag_result',
-    '--allowlist-type', 'gl_interp_mode',
-    '--allowlist-type', 'gl_shader_stage',
-    '--allowlist-type', 'gl_system_value',
-    '--allowlist-type', 'gl_tess_spacing',
-    '--allowlist-type', 'gl_varying_slot',
-    '--allowlist-type', 'gl_vert_attrib',
+    bindgen_output_args,
+    compiler_rs_bindgen_blocklist,
+    '--raw-line', 'use compiler::bindings::*;',
+    '--allowlist-type', 'drm.*',
     '--allowlist-type', 'nak_.*',
-    '--allowlist-type', 'nir_.*',
-    '--allowlist-type', 'mesa_scope',
-    '--allowlist-type', 'mesa_prim',
-    '--allowlist-type', 'tess_primitive_mode',
-    '--allowlist-var', 'nir_.*_infos',
-    '--allowlist-function', '_mesa_shader_stage_to_string',
+    '--allowlist-type', 'nouveau_ws_.*',
+    '--allowlist-var', 'DRM_.*',
+    '--allowlist-var', 'NAK_.*',
+    '--allowlist-var', 'NVIDIA_VENDOR_ID',
+    '--allowlist-function', 'drm.*',
     '--allowlist-function', 'nak_.*',
-    '--allowlist-function', 'nir_.*',
-    '--allowlist-function', 'glsl_.*',
+    '--allowlist-function', 'nouveau_ws_.*',
+    # provided through compiler::bindings::*
+    '--blocklist-type', 'glsl_.*',
+    '--blocklist-type', 'pipe_format.*',
     '--no-prepend-enum-name',
+    '--with-derive-default',
   ],
-  dependencies : libnak_deps,
+  dependencies : [
+    dep_libdrm,
+    idep_nouveau_ws,
+    libnak_deps,
+  ],
 )
 
-libnak_bindings_gen = static_library(
+_libnak_bindings_rs = static_library(
   'nak_bindings',
-  nak_bindings_rs,
+  _nak_bindings_rs,
   gnu_symbol_visibility : 'hidden',
+  dependencies : [
+    idep_compiler_rs,
+  ],
   rust_abi : 'rust',
 )
 
 _libnak_ir_proc_rs = rust.proc_macro(
   'nak_ir_proc',
   files('nak/ir_proc.rs'),
-  dependencies : [dep_syn],
+  dependencies : [idep_compiler_proc_rs],
+  rust_args : rust_global_args,
 )
 
 _libnak_rs = static_library(
@@ -139,16 +94,53 @@ _libnak_rs = static_library(
   files('nak/lib.rs'),
   gnu_symbol_visibility : 'hidden',
   rust_abi : 'c',
-  rust_args : nak_rust_args,
+  rust_args : [
+    nouveau_rust_args,
+    # Otherwise, rustc trips up on -pthread
+    '-Clink-arg=-Wno-unused-command-line-argument',
+  ],
   dependencies : [
     dep_paste,
+    dep_rustc_hash,
+    idep_bitview_rs,
+    idep_compiler_rs,
     idep_nvidia_headers_rs,
   ],
-  link_with: [_libbitview_rs, libnak_bindings_gen, _libnak_ir_proc_rs],
+  link_with : [
+    _libnak_bindings_rs,
+    _libnak_ir_proc_rs,
+    libnak_latencies_rs,
+  ],
 )
 
-if with_tests
-  rust.test('nak', _libnak_rs, suite : ['nouveau'])
+# TODO: Linking Rust executables (such as unit tests) doesn't play nicely
+# with the sanitizers because meson doesn't know to pass -fsanitize to the
+# Rust linker.  See also https://github.com/mesonbuild/meson/issues/11741
+#
+# Also, don't build on Android because we do cross-builds and, unlike most
+# tests, these depend on libdrm and that confuses the build system.
+if with_tests and get_option('b_sanitize') == 'none' and not with_platform_android
+  rust.test(
+    'nak',
+    _libnak_rs,
+    args : [
+      # Don't run HW or nvdisasm tests by default
+      '--skip', 'hw_tests::',
+      '--skip', 'nvdisasm_tests::',
+    ],
+    suite : ['nouveau'],
+    dependencies : [
+      dep_libdrm,
+      idep_nouveau_ws,
+      idep_compiler.partial_dependency(link_args : true, links : true),
+      idep_mesautil.partial_dependency(link_args : true, links : true),
+      idep_nv_push_rs,
+      idep_acorn_rs,
+    ],
+    # This is needed to ensure we link against glibc
+    # See also https://gitlab.freedesktop.org/mesa/mesa/-/issues/11632
+    rust_args: ['-C', 'default-linker-libraries'],
+  )
 endif
 
 nak_nir_algebraic_c = custom_target(
@@ -166,22 +158,12 @@ nak_nir_algebraic_c = custom_target(
 _libnak = static_library(
   'nak',
   [libnak_c_files, nak_nir_algebraic_c],
-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium],
+  include_directories : [inc_include, inc_src],
   dependencies : libnak_deps,
   link_with : [_libnak_rs],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
 )
-
-if with_tools.contains('nouveau')
-  executable(
-    'nvfuzz',
-    files('nvfuzz/main.rs'),
-    rust_crate_type : 'bin',
-    link_with: [_libbitview_rs],
-    install : true
-  )
-endif
 
 idep_nak = declare_dependency(
   include_directories : include_directories('.'),

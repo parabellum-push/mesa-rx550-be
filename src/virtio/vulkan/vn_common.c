@@ -32,6 +32,11 @@ static const struct debug_control vn_debug_options[] = {
    { "cache", VN_DEBUG_CACHE },
    { "no_sparse", VN_DEBUG_NO_SPARSE },
    { "no_gpl", VN_DEBUG_NO_GPL },
+   { "no_second_queue", VN_DEBUG_NO_SECOND_QUEUE },
+   { "no_ray_tracing", VN_DEBUG_NO_RAY_TRACING },
+   { "mem_budget", VN_DEBUG_MEM_BUDGET },
+   { "no_desc_heap", VN_DEBUG_NO_DESC_HEAP },
+   { "no_drm_syncobj", VN_DEBUG_NO_DRM_SYNCOBJ },
    { NULL, 0 },
    /* clang-format on */
 };
@@ -42,8 +47,6 @@ static const struct debug_control vn_perf_options[] = {
    { "no_async_buffer_create", VN_PERF_NO_ASYNC_BUFFER_CREATE },
    { "no_async_queue_submit", VN_PERF_NO_ASYNC_QUEUE_SUBMIT },
    { "no_event_feedback", VN_PERF_NO_EVENT_FEEDBACK },
-   { "no_fence_feedback", VN_PERF_NO_FENCE_FEEDBACK },
-   { "no_memory_suballoc", VN_PERF_NO_MEMORY_SUBALLOC },
    { "no_cmd_batching", VN_PERF_NO_CMD_BATCHING },
    { "no_semaphore_feedback", VN_PERF_NO_SEMAPHORE_FEEDBACK },
    { "no_query_feedback", VN_PERF_NO_QUERY_FEEDBACK },
@@ -52,6 +55,8 @@ static const struct debug_control vn_perf_options[] = {
    { "no_multi_ring", VN_PERF_NO_MULTI_RING },
    { "no_async_image_create", VN_PERF_NO_ASYNC_IMAGE_CREATE },
    { "no_async_image_format", VN_PERF_NO_ASYNC_IMAGE_FORMAT },
+   { "no_async_present", VN_PERF_NO_ASYNC_PRESENT },
+   { "no_timeline_sync", VN_PERF_NO_TIMELINE_SYNC },
    { NULL, 0 },
    /* clang-format on */
 };
@@ -82,16 +87,6 @@ vn_env_init(void)
              "\n\tperf = 0x%" PRIx64 "",
              vn_env.debug, vn_env.perf);
    }
-}
-
-void
-vn_trace_init(void)
-{
-#if DETECT_OS_ANDROID
-   atrace_init();
-#else
-   util_cpu_trace_init();
-#endif
 }
 
 void
@@ -145,6 +140,10 @@ vn_watchdog_acquire(struct vn_watchdog *watchdog, bool alive)
        mtx_trylock(&watchdog->mutex) == thrd_success) {
       /* register as the only waiting thread that monitors the ring. */
       watchdog->tid = tid;
+      /* Always set alive to true for new watchdog owner because the
+       * last owner might have just unset the alive bit before release.
+       */
+      alive = true;
    }
 
    if (tid != watchdog->tid)
@@ -171,8 +170,6 @@ vn_relax_reason_string(enum vn_relax_reason reason)
       return "tls ring seqno";
    case VN_RELAX_REASON_RING_SPACE:
       return "ring space";
-   case VN_RELAX_REASON_FENCE:
-      return "fence";
    case VN_RELAX_REASON_SEMAPHORE:
       return "semaphore";
    case VN_RELAX_REASON_QUERY:
@@ -208,7 +205,6 @@ vn_relax_get_profile(enum vn_relax_reason reason)
       };
    case VN_RELAX_REASON_TLS_RING_SEQNO:
    case VN_RELAX_REASON_RING_SPACE:
-   case VN_RELAX_REASON_FENCE:
    case VN_RELAX_REASON_SEMAPHORE:
    case VN_RELAX_REASON_QUERY:
       /* warn every 1024 iters after having already slept ~3.5s:
@@ -227,7 +223,7 @@ vn_relax_get_profile(enum vn_relax_reason reason)
       };
    }
 
-   unreachable("unhandled vn_relax_reason");
+   UNREACHABLE("unhandled vn_relax_reason");
 }
 
 struct vn_relax_state
@@ -261,8 +257,10 @@ vn_relax(struct vn_relax_state *state)
       return;
    }
 
+   state->warn = false;
    if (unlikely(*iter % (1 << warn_order) == 0)) {
       struct vn_instance *instance = state->instance;
+      state->warn = true;
       vn_log(instance, "stuck in %s wait with iter at %d", state->reason_str,
              *iter);
 
@@ -334,7 +332,8 @@ vn_tls_get_ring(struct vn_instance *instance)
    struct vn_ring_layout layout;
    vn_ring_get_layout(buf_size, extra_size, &layout);
 
-   tls_ring->ring = vn_ring_create(instance, &layout, direct_order);
+   tls_ring->ring =
+      vn_ring_create(instance, &layout, direct_order, true /* is_tls_ring */);
    if (!tls_ring->ring) {
       free(tls_ring);
       return NULL;
@@ -343,7 +342,10 @@ vn_tls_get_ring(struct vn_instance *instance)
    mtx_init(&tls_ring->mutex, mtx_plain);
    tls_ring->instance = instance;
    list_add(&tls_ring->tls_head, &tls->tls_rings);
+
+   simple_mtx_lock(&instance->ring.tls_rings_mutex);
    list_add(&tls_ring->vk_head, &instance->ring.tls_rings);
+   simple_mtx_unlock(&instance->ring.tls_rings_mutex);
 
    return tls_ring->ring;
 }
@@ -379,11 +381,30 @@ static tss_t vn_tls_key;
 static bool vn_tls_key_valid;
 
 static void
+vn_tls_key_fini(void)
+{
+   vn_tls_key_valid = false;
+   vn_tls_free(tss_get(vn_tls_key));
+   tss_delete(vn_tls_key);
+}
+
+static void
 vn_tls_key_create_once(void)
 {
    vn_tls_key_valid = tss_create(&vn_tls_key, vn_tls_free) == thrd_success;
-   if (!vn_tls_key_valid && VN_DEBUG(INIT))
-      vn_log(NULL, "WARNING: failed to create vn_tls_key");
+   if (!vn_tls_key_valid) {
+      if (VN_DEBUG(INIT))
+         vn_log(NULL, "WARNING: failed to create vn_tls_key");
+      return;
+   }
+
+   /* Nothing ensures all threads that called vn_tls_get() have completed when
+    * the last vulkan instance is destroyed, which unmaps the driver.
+    *
+    * Delete the TLS key so that threads still holding venus TLS leak it
+    * instead of calling into unmapped code.
+    */
+   atexit(vn_tls_key_fini);
 }
 
 struct vn_tls *

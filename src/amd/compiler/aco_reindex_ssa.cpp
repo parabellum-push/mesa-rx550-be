@@ -69,22 +69,16 @@ reindex_program(idx_ctx& ctx, Program* program)
    }
 
    /* update program members */
-   program->private_segment_buffer = Temp(ctx.renames[program->private_segment_buffer.id()],
-                                          program->private_segment_buffer.regClass());
-   program->scratch_offset =
-      Temp(ctx.renames[program->scratch_offset.id()], program->scratch_offset.regClass());
-   program->temp_rc = ctx.temp_rc;
-}
-
-void
-update_live_out(idx_ctx& ctx, std::vector<IDSet>& live_out)
-{
-   for (IDSet& set : live_out) {
-      IDSet new_set;
-      for (uint32_t id : set)
-         new_set.insert(ctx.renames[id]);
-      set = new_set;
+   for (auto& private_segment_buffer : program->private_segment_buffers) {
+      private_segment_buffer =
+         Temp(ctx.renames[private_segment_buffer.id()], private_segment_buffer.regClass());
    }
+   for (auto& scratch_offset : program->scratch_offsets) {
+      scratch_offset =
+         Temp(ctx.renames[scratch_offset.id()], scratch_offset.regClass());
+   }
+   program->stack_ptr = Temp(ctx.renames[program->stack_ptr.id()], program->stack_ptr.regClass());
+   program->temp_rc = ctx.temp_rc;
 }
 
 } /* end namespace */
@@ -95,17 +89,13 @@ reindex_ssa(Program* program)
    idx_ctx ctx;
    reindex_program(ctx, program);
 
-   program->allocationID = program->temp_rc.size();
-}
-
-void
-reindex_ssa(Program* program, std::vector<IDSet>& live_out)
-{
-   idx_ctx ctx;
-   reindex_program(ctx, program);
-   update_live_out(ctx, live_out);
-
-   program->allocationID = program->temp_rc.size();
+   monotonic_buffer_resource old_memory = std::move(program->live.memory);
+   for (IDSet& set : program->live.live_in) {
+      IDSet new_set(program->live.memory);
+      for (uint32_t id : set)
+         new_set.insert(ctx.renames[id]);
+      set = std::move(new_set);
+   }
 }
 
 } // namespace aco

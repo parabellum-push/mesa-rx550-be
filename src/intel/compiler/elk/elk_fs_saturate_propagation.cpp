@@ -1,24 +1,6 @@
 /*
  * Copyright © 2013 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "elk_fs.h"
@@ -45,7 +27,8 @@ using namespace elk;
  */
 
 static bool
-opt_saturate_propagation_local(const fs_live_variables &live, elk_bblock_t *block)
+opt_saturate_propagation_local(const intel_device_info *devinfo,
+                               const fs_live_variables &live, elk_bblock_t *block)
 {
    bool progress = false;
    int ip = block->end_ip + 1;
@@ -73,6 +56,16 @@ opt_saturate_propagation_local(const fs_live_variables &live, elk_bblock_t *bloc
                 (scan_inst->dst.type != inst->dst.type &&
                  !scan_inst->can_change_types()))
                break;
+
+            /* min and max pseudo ops modify the flags on Gfx4 and Gfx5, but
+             * it's not based on the result of the operation. This is the one
+             * case where it is always safe to propagate a saturate to an
+             * instruction that writes the flags.
+             */
+            if (scan_inst->flags_written(devinfo) != 0 &&
+                scan_inst->opcode != ELK_OPCODE_SEL) {
+               break;
+            }
 
             if (scan_inst->saturate) {
                inst->saturate = false;
@@ -156,7 +149,7 @@ elk_fs_visitor::opt_saturate_propagation()
    bool progress = false;
 
    foreach_block (block, cfg) {
-      progress = opt_saturate_propagation_local(live, block) || progress;
+      progress = opt_saturate_propagation_local(devinfo, live, block) || progress;
    }
 
    /* Live intervals are still valid. */

@@ -348,55 +348,71 @@ util_pack_color(const float rgba[4], enum pipe_format format, union util_color *
       a = float_to_ubyte(rgba[3]);
    }
 
+#define PACK32(r,g,b,a) (((uint32_t)(r) << 24) | \
+                         ((uint32_t)(g) << 16) | \
+                         ((uint32_t)(b) <<  8) | \
+                          (uint32_t)(a))
+
    switch (format) {
    case PIPE_FORMAT_ABGR8888_UNORM:
       {
-         uc->ui[0] = (r << 24) | (g << 16) | (b << 8) | a;
+         uc->ui[0] = PACK32(r, g, b, a);
       }
       return;
    case PIPE_FORMAT_XBGR8888_UNORM:
       {
-         uc->ui[0] = (r << 24) | (g << 16) | (b << 8) | 0xff;
+         uc->ui[0] = PACK32(r, g, b, 0xff);
       }
       return;
    case PIPE_FORMAT_BGRA8888_UNORM:
       {
-         uc->ui[0] = (a << 24) | (r << 16) | (g << 8) | b;
+         uc->ui[0] = PACK32(a, r, g, b);
       }
       return;
    case PIPE_FORMAT_BGRX8888_UNORM:
       {
-         uc->ui[0] = (0xffu << 24) | (r << 16) | (g << 8) | b;
+         uc->ui[0] = PACK32(0xff, r, g, b);
       }
       return;
    case PIPE_FORMAT_ARGB8888_UNORM:
       {
-         uc->ui[0] = (b << 24) | (g << 16) | (r << 8) | a;
+         uc->ui[0] = PACK32(b, g, r, a);
       }
       return;
    case PIPE_FORMAT_XRGB8888_UNORM:
       {
-         uc->ui[0] = (b << 24) | (g << 16) | (r << 8) | 0xff;
+         uc->ui[0] = PACK32(b, g, r, 0xff);
       }
       return;
    case PIPE_FORMAT_B5G6R5_UNORM:
       {
-         uc->us = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
+         uc->us = (((uint16_t)r & 0xf8) << 8) |
+                  (((uint16_t)g & 0xfc) << 3) |
+                  ((uint16_t)b >> 3);
       }
       return;
    case PIPE_FORMAT_B5G5R5X1_UNORM:
       {
-         uc->us = ((0x80) << 8) | ((r & 0xf8) << 7) | ((g & 0xf8) << 2) | (b >> 3);
+         uc->us = ((uint16_t)0x80 << 8) |
+                  (((uint16_t)r & 0xf8) << 7) |
+                  (((uint16_t)g & 0xf8) << 2) |
+                  ((uint16_t)b >> 3);
       }
       return;
    case PIPE_FORMAT_B5G5R5A1_UNORM:
       {
-         uc->us = ((a & 0x80) << 8) | ((r & 0xf8) << 7) | ((g & 0xf8) << 2) | (b >> 3);
+         uc->us = (((uint16_t)a & 0x80) << 8) |
+                  (((uint16_t)r & 0xf8) << 7) |
+                  (((uint16_t)g & 0xf8) << 2) |
+                  ((uint16_t)b >> 3);
       }
       return;
    case PIPE_FORMAT_B4G4R4A4_UNORM:
       {
-         uc->us = ((a & 0xf0) << 8) | ((r & 0xf0) << 4) | ((g & 0xf0) << 0) | (b >> 4);
+         uc->us = (((uint16_t)a & 0xf0) << 8) |
+                  (((uint16_t)r & 0xf0) << 4) |
+                  (((uint16_t)g & 0xf0) << 0) |
+                  ((uint16_t)b >> 4);
       }
       return;
    case PIPE_FORMAT_A8_UNORM:
@@ -425,6 +441,8 @@ util_pack_color(const float rgba[4], enum pipe_format format, union util_color *
          uc->f[2] = rgba[2];
       }
       return;
+
+#undef PACK32
 
    /* Handle other cases with a generic function.
     */
@@ -512,8 +530,13 @@ util_pack64_mask_z_stencil(enum pipe_format format, uint32_t z, uint8_t s)
 
    switch (format) {
    case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+#if UTIL_ARCH_BIG_ENDIAN
+      packed = util_pack64_mask_z(format, z) << 32ull;
+      packed |= s;
+#else
       packed = util_pack64_mask_z(format, z);
       packed |= (uint64_t)s << 32ull;
+#endif
       return packed;
    default:
       return util_pack_mask_z_stencil(format, z, s);
@@ -621,8 +644,13 @@ util_pack64_z_stencil(enum pipe_format format, double z, uint8_t s)
 
    switch (format) {
    case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+#if UTIL_ARCH_BIG_ENDIAN
+      packed = util_pack64_z(format, z) << 32ull;
+      packed |= s;
+#else
       packed = util_pack64_z(format, z);
       packed |= (uint64_t)s << 32ull;
+#endif
       break;
    default:
       return util_pack_z_stencil(format, z, s);

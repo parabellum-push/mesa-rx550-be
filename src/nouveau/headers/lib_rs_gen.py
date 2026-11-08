@@ -9,9 +9,13 @@
 import argparse
 import os.path
 import re
+import subprocess
 import sys
 
 from mako.template import Template
+
+import util
+
 
 TEMPLATE_RS = Template("""\
 // Copyright © 2024 Collabora Ltd. and Red Hat Inc.
@@ -48,6 +52,26 @@ ${decl_mod(m.children[name], path + [name])}
 }
 % endif
 </%def>
+
+/// Converts a method to its raw representation.
+pub trait Mthd {
+    /// The hardware address of the method.
+    const ADDR: u16;
+    /// The class of the method.
+    const CLASS: u16;
+    /// Converts the method to its raw representation.
+    fn to_bits(self) -> u32;
+}
+
+pub trait ArrayMthd {
+    /// The class of the method.
+    const CLASS: u16;
+    /// The hardware address of the method for the given index.
+    fn addr(i: usize) -> u16;
+    /// Converts the method to its raw representation.
+    fn to_bits(self) -> u32;
+}
+
 ${decl_mod(root, [])}
 """)
 
@@ -85,19 +109,8 @@ def main():
         assert mod_path[0] == 'nvh'
         root.add_child(mod_path[1:])
 
-    try:
-        with open(args.out_rs, 'w', encoding='utf-8') as f:
-            f.write(TEMPLATE_RS.render(root=root))
+    util.write_template_rs(args.out_rs, TEMPLATE_RS, dict(root=root))
 
-    except Exception:
-        # In the event there's an error, this imports some helpers from mako
-        # to print a useful stack trace and prints it, then exits with
-        # status 1, if python is run with debug; otherwise it just raises
-        # the exception
-        import sys
-        from mako import exceptions
-        print(exceptions.text_error_template().render(), file=sys.stderr)
-        sys.exit(1)
 
 if __name__ == '__main__':
     main()

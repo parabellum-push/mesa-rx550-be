@@ -16,8 +16,7 @@
 
 #include "util/simple_mtx.h"
 
-#define VIRGL_RENDERER_UNSTABLE_APIS 1
-#include "virglrenderer_hw.h"
+#include "virtio/virtio-gpu/drm_hw.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,9 +41,10 @@ struct vdrm_device_funcs {
    uint32_t (*handle_to_res_id)(struct vdrm_device *vdev, uint32_t handle);
 
    uint32_t (*bo_create)(struct vdrm_device *vdev, size_t size, uint32_t blob_flags,
-                         uint64_t blob_id, struct vdrm_ccmd_req *req);
+                         uint64_t blob_id, uint32_t blob_hints,
+                         struct vdrm_ccmd_req *req);
    int (*bo_wait)(struct vdrm_device *vdev, uint32_t handle);
-   void *(*bo_map)(struct vdrm_device *vdev, uint32_t handle, size_t size);
+   void *(*bo_map)(struct vdrm_device *vdev, uint32_t handle, size_t size, void *placed_addr);
    int (*bo_export_dmabuf)(struct vdrm_device *vdev, uint32_t handle);
    void (*bo_close)(struct vdrm_device *vdev, uint32_t handle);
 
@@ -54,7 +54,7 @@ struct vdrm_device_funcs {
 struct vdrm_device {
    const struct vdrm_device_funcs *funcs;
 
-   struct virgl_renderer_capset_drm caps;
+   bool supports_cross_device;
    struct vdrm_shmem *shmem;
    uint8_t *rsp_mem;
    uint32_t rsp_mem_len;
@@ -70,6 +70,12 @@ struct vdrm_device {
    uint32_t reqbuf_len;
    uint32_t reqbuf_cnt;
    uint8_t reqbuf[0x4000];
+
+   /*
+    * struct virgl_renderer_capset_drm has a varying size and must be placed
+    * in the end of struct vdrm_device.
+    */
+   struct virgl_renderer_capset_drm caps;
 };
 
 struct vdrm_device *vdrm_device_connect(int fd, uint32_t context_type);
@@ -125,6 +131,7 @@ vdrm_handle_to_res_id(struct vdrm_device *vdev, uint32_t handle)
 
 uint32_t vdrm_bo_create(struct vdrm_device *vdev, size_t size,
                         uint32_t blob_flags, uint64_t blob_id,
+                        uint32_t blob_hints,
                         struct vdrm_ccmd_req *req);
 
 static inline int
@@ -134,9 +141,9 @@ vdrm_bo_wait(struct vdrm_device *vdev, uint32_t handle)
 }
 
 static inline void *
-vdrm_bo_map(struct vdrm_device *vdev, uint32_t handle, size_t size)
+vdrm_bo_map(struct vdrm_device *vdev, uint32_t handle, size_t size, void *placed_addr)
 {
-   return vdev->funcs->bo_map(vdev, handle, size);
+   return vdev->funcs->bo_map(vdev, handle, size, placed_addr);
 }
 
 static inline int
@@ -150,6 +157,13 @@ vdrm_bo_close(struct vdrm_device *vdev, uint32_t handle)
 {
    vdev->funcs->bo_close(vdev, handle);
 }
+
+/*
+ * Special interface for dealing with syncobjs when we don't have direct
+ * access to a rendernode:
+ */
+struct util_sync_provider;
+struct util_sync_provider *vdrm_vpipe_get_sync(struct vdrm_device *vdrm);
 
 #ifdef __cplusplus
 } /* end of extern "C" */

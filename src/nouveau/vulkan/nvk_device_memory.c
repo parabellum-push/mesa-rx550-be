@@ -4,21 +4,16 @@
  */
 #include "nvk_device_memory.h"
 
-#include "nouveau_bo.h"
-
 #include "nvk_device.h"
 #include "nvk_entrypoints.h"
 #include "nvk_image.h"
 #include "nvk_physical_device.h"
+#include "nvkmd/nvkmd.h"
 
-#include "nv_push.h"
 #include "util/u_atomic.h"
 
 #include <inttypes.h>
 #include <sys/mman.h>
-
-#include "nvtypes.h"
-#include "nvk_cl90b5.h"
 
 /* Supports opaque fd only */
 const VkExternalMemoryProperties nvk_opaque_fd_mem_props = {
@@ -44,72 +39,28 @@ const VkExternalMemoryProperties nvk_dma_buf_mem_props = {
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
 };
 
-static VkResult
-zero_vram(struct nvk_device *dev, struct nouveau_ws_bo *bo)
-{
-   uint32_t push_data[256];
-   struct nv_push push;
-   nv_push_init(&push, push_data, ARRAY_SIZE(push_data));
-   struct nv_push *p = &push;
-
-   uint64_t addr = bo->offset;
-
-   assert((bo->size % 4096) == 0);
-   assert((bo->size / 4096) < (1 << 15));
-
-   P_MTHD(p, NV90B5, OFFSET_OUT_UPPER);
-   P_NV90B5_OFFSET_OUT_UPPER(p, addr >> 32);
-   P_NV90B5_OFFSET_OUT_LOWER(p, addr & 0xffffffff);
-   P_NV90B5_PITCH_IN(p, 4096);
-   P_NV90B5_PITCH_OUT(p, 4096);
-   P_NV90B5_LINE_LENGTH_IN(p, (4096 / 16));
-   P_NV90B5_LINE_COUNT(p, bo->size / 4096);
-
-   P_IMMD(p, NV90B5, SET_REMAP_CONST_A, 0);
-   P_IMMD(p, NV90B5, SET_REMAP_COMPONENTS, {
-      .dst_x = DST_X_CONST_A,
-      .dst_y = DST_Y_CONST_A,
-      .dst_z = DST_Z_CONST_A,
-      .dst_w = DST_W_CONST_A,
-      .component_size = COMPONENT_SIZE_FOUR,
-      .num_src_components = NUM_SRC_COMPONENTS_FOUR,
-      .num_dst_components = NUM_DST_COMPONENTS_FOUR,
-   });
-
-   P_IMMD(p, NV90B5, LAUNCH_DMA, {
-      .data_transfer_type = DATA_TRANSFER_TYPE_NON_PIPELINED,
-      .multi_line_enable = MULTI_LINE_ENABLE_TRUE,
-      .flush_enable = FLUSH_ENABLE_TRUE,
-      .src_memory_layout = SRC_MEMORY_LAYOUT_PITCH,
-      .dst_memory_layout = DST_MEMORY_LAYOUT_PITCH,
-      .remap_enable = REMAP_ENABLE_TRUE,
-   });
-
-   return nvk_queue_submit_simple(&dev->queue, nv_push_dw_count(&push),
-                                  push_data, 1, &bo);
-}
-
-static enum nouveau_ws_bo_flags
+static enum nvkmd_mem_flags
 nvk_memory_type_flags(const VkMemoryType *type,
-                      VkExternalMemoryHandleTypeFlagBits handle_types)
+                      VkExternalMemoryHandleTypeFlagBits handle_types,
+                      bool pinned_to_vram)
 {
-   enum nouveau_ws_bo_flags flags = 0;
+   enum nvkmd_mem_flags flags = 0;
    if (type->propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-      flags = NOUVEAU_WS_BO_LOCAL;
+      if (pinned_to_vram)
+         flags = NVKMD_MEM_VRAM;
+      else
+         flags = NVKMD_MEM_LOCAL;
    else
-      flags = NOUVEAU_WS_BO_GART;
+      flags = NVKMD_MEM_GART;
 
    if (type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-      flags |= NOUVEAU_WS_BO_MAP;
+      flags |= NVKMD_MEM_CAN_MAP;
 
-   /* For dma-bufs, we have to allow them to live in GART because they might
-    * get forced there by the kernel if they're shared with another GPU.
-    */
-   if (handle_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
-      flags |= NOUVEAU_WS_BO_GART;
+   if (type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      flags |= NVKMD_MEM_COHERENT;
 
-   if (handle_types == 0)
-      flags |= NOUVEAU_WS_BO_NO_SHARE;
+   if (handle_types != 0)
+      flags |= NVKMD_MEM_SHARED;
 
    return flags;
 }
@@ -121,41 +72,59 @@ nvk_GetMemoryFdPropertiesKHR(VkDevice device,
                              VkMemoryFdPropertiesKHR *pMemoryFdProperties)
 {
    VK_FROM_HANDLE(nvk_device, dev, device);
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
-   struct nouveau_ws_bo *bo;
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   struct nvkmd_mem *mem;
+   VkResult result;
 
    switch (handleType) {
-   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
-      bo = nouveau_ws_bo_from_dma_buf(dev->ws_dev, fd);
-      if (bo == NULL)
-         return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+      result = nvkmd_dev_import_dma_buf(dev->nvkmd, &dev->vk.base, fd, &mem);
+      if (result != VK_SUCCESS)
+         return result;
       break;
+   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+      /* From the Vulkan 1.4.315 spec:
+       *
+       *     VUID-vkGetMemoryFdPropertiesKHR-handleType-00674
+       *
+       *     "handleType must not be
+       *     VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT"
+       */
+      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    default:
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    }
 
    uint32_t type_bits = 0;
-   if (handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
-      /* We allow a dma-buf to be imported anywhere because there's no way
-       * for us to actually know where it came from.
+   for (unsigned t = 0; t < ARRAY_SIZE(pdev->mem_types); t++) {
+      const VkMemoryType *type = &pdev->mem_types[t];
+      const enum nvkmd_mem_flags type_flags =
+         nvk_memory_type_flags(type, handleType, false);
+
+      /* Flags required to be set on mem to be imported as type
+       *
+       * If we're importing into a host-visible heap, we have to be able to
+       * map the memory.
        */
-      type_bits = BITFIELD_MASK(pdev->mem_type_count);
-   } else {
-      for (unsigned t = 0; t < ARRAY_SIZE(pdev->mem_types); t++) {
-         const enum nouveau_ws_bo_flags flags =
-            nvk_memory_type_flags(&pdev->mem_types[t], handleType);
-         if (!(flags & ~bo->flags))
-            type_bits |= (1 << t);
-      }
+      const enum nvkmd_mem_flags req_flags = type_flags & NVKMD_MEM_CAN_MAP;
+      if (req_flags & ~mem->flags)
+         continue;
+
+      type_bits |= (1 << t);
    }
 
    pMemoryFdProperties->memoryTypeBits = type_bits;
 
-   nouveau_ws_bo_destroy(bo);
+   nvkmd_mem_unref(mem);
 
    return VK_SUCCESS;
 }
+
+enum nvk_memory_init {
+   NVK_MEMORY_INIT_NONE,
+   NVK_MEMORY_INIT_ZERO,
+   NVK_MEMORY_INIT_TRASH,
+};
 
 VKAPI_ATTR VkResult VKAPI_CALL
 nvk_AllocateMemory(VkDevice device,
@@ -164,9 +133,14 @@ nvk_AllocateMemory(VkDevice device,
                    VkDeviceMemory *pMem)
 {
    VK_FROM_HANDLE(nvk_device, dev, device);
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   struct nvk_physical_device *pdev = nvk_device_physical_mut(dev);
    struct nvk_device_memory *mem;
    VkResult result = VK_SUCCESS;
+
+   mem = vk_device_memory_create(&dev->vk, pAllocateInfo,
+                                 pAllocator, sizeof(*mem));
+   if (!mem)
+      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    const VkImportMemoryFdInfoKHR *fd_info =
       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
@@ -183,18 +157,23 @@ nvk_AllocateMemory(VkDevice device,
    if (fd_info != NULL)
       handle_types |= fd_info->handleType;
 
-   const enum nouveau_ws_bo_flags flags =
-      nvk_memory_type_flags(type, handle_types);
+   const bool not_shared = handle_types == 0;
+   bool pinned_to_vram = false;
 
-   uint32_t alignment = (1ULL << 12);
-   if (flags & NOUVEAU_WS_BO_LOCAL)
-      alignment = (1ULL << 16);
+   /* Align to os page size (typically 4K) as a start as this works for
+    * everything, and then depending on placement and size, we either keep
+    * it as is or increase it to 64K or 2M.
+    */
+   uint32_t alignment = pdev->nvkmd->bind_align_B;
 
    uint8_t pte_kind = 0, tile_mode = 0;
-   if (dedicated_info != NULL) {
+   if (dedicated_info != NULL && dedicated_info->image != VK_NULL_HANDLE) {
       VK_FROM_HANDLE(nvk_image, image, dedicated_info->image);
-      if (image != NULL &&
-          image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+
+      mem->dedicated_image = image;
+
+      if (image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
+          image->vk.drm_format_mod != DRM_FORMAT_MOD_LINEAR) {
          /* This image might be shared with GL so we need to set the BO flags
           * such that GL can bind and use it.
           */
@@ -202,64 +181,111 @@ nvk_AllocateMemory(VkDevice device,
          alignment = MAX2(alignment, image->planes[0].nil.align_B);
          pte_kind = image->planes[0].nil.pte_kind;
          tile_mode = image->planes[0].nil.tile_mode;
+      } else if (image->can_compress && not_shared) {
+         /* If it's a dedicated alloc and it's not modifiers or shared, then
+          * it's marked for compression and larger pages, so we set the pinned
+          * bit and up the alignment.
+          *
+          * Disabling compression for export/import is a bit nicer to apps.
+          * Eg. QtWebEngine likes to export/import buffers with
+          * VK_IMAGE_TILING_OPTIMAL and renders incorrectly if we remove
+          * the not_shared check.
+          * https://qt-project.atlassian.net/browse/QTBUG-141866
+          */
+         pinned_to_vram = true;
+         pte_kind = image->planes[0].nil.compressed_pte_kind;
+         tile_mode = image->planes[0].nil.tile_mode;
+         /* Align to 2MiB if size is >= 2MiB, otherwise align to 64KiB. */
+         if (pAllocateInfo->allocationSize >= (1ULL << 21))
+            alignment = (1ULL << 21);
+         else
+            alignment = (1ULL << 16);
       }
    }
+
+   const enum nvkmd_mem_flags flags =
+      nvk_memory_type_flags(type, handle_types, pinned_to_vram);
 
    const uint64_t aligned_size =
       align64(pAllocateInfo->allocationSize, alignment);
 
-   mem = vk_device_memory_create(&dev->vk, pAllocateInfo,
-                                 pAllocator, sizeof(*mem));
-   if (!mem)
-      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   mem->map = NULL;
-   if (fd_info && fd_info->handleType) {
+   const bool is_import = fd_info && fd_info->handleType;
+   if (is_import) {
       assert(fd_info->handleType ==
                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
              fd_info->handleType ==
                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 
-      mem->bo = nouveau_ws_bo_from_dma_buf(dev->ws_dev, fd_info->fd);
-      if (mem->bo == NULL) {
-         result = vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+      result = nvkmd_dev_import_dma_buf(dev->nvkmd, &dev->vk.base,
+                                        fd_info->fd, &mem->mem);
+      if (result != VK_SUCCESS)
          goto fail_alloc;
-      }
 
       /* We can't really assert anything for dma-bufs because they could come
        * in from some other device.
        */
-      if (fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
-         assert(!(flags & ~mem->bo->flags));
+      assert(!(flags & ~mem->mem->flags & ~NVKMD_MEM_PLACEMENT_FLAGS));
    } else if (pte_kind != 0 || tile_mode != 0) {
-      mem->bo = nouveau_ws_bo_new_tiled(dev->ws_dev, aligned_size, alignment,
-                                        pte_kind, tile_mode, flags);
-      if (!mem->bo) {
-         result = vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
+      result = nvkmd_dev_alloc_tiled_mem(dev->nvkmd, &dev->vk.base,
+                                         aligned_size, alignment,
+                                         pte_kind, tile_mode, flags,
+                                         &mem->mem);
+      if (result != VK_SUCCESS)
          goto fail_alloc;
-      }
    } else {
-      mem->bo = nouveau_ws_bo_new(dev->ws_dev, aligned_size, alignment, flags);
-      if (!mem->bo) {
-         result = vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      result = nvkmd_dev_alloc_mem(dev->nvkmd, &dev->vk.base,
+                                   aligned_size, alignment, flags,
+                                   &mem->mem);
+      if (result != VK_SUCCESS)
          goto fail_alloc;
-      }
    }
 
-   if (dev->ws_dev->debug_flags & NVK_DEBUG_ZERO_MEMORY) {
+   enum nvk_memory_init init;
+   if (is_import) {
+      /* From the Vulkan 1.4.315 spec:
+       *
+       *    VUID-VkMemoryAllocateFlagsInfo-flags-10760
+       *
+       *    "If the allocation is performing a memory import operation, then
+       *    flags must not contain VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT"
+       */
+      assert(!(mem->vk.alloc_flags & VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT));
+      init = NVK_MEMORY_INIT_NONE;
+   } else {
+      if (mem->vk.alloc_flags & VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT)
+         init = NVK_MEMORY_INIT_ZERO;
+      else if (pdev->debug_flags & NVK_DEBUG_ZERO_MEMORY)
+         init = NVK_MEMORY_INIT_ZERO;
+      else if (pdev->debug_flags & NVK_DEBUG_TRASH_MEMORY)
+         init = NVK_MEMORY_INIT_TRASH;
+      else
+         init = NVK_MEMORY_INIT_NONE;
+   }
+
+   if (init != NVK_MEMORY_INIT_NONE) {
+      bool use_zero = init == NVK_MEMORY_INIT_ZERO;
       if (type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-         void *map = nouveau_ws_bo_map(mem->bo, NOUVEAU_WS_BO_RDWR, NULL);
-         if (map == NULL) {
-            result = vk_errorf(dev, VK_ERROR_OUT_OF_HOST_MEMORY,
-                               "Memory map failed");
-            goto fail_bo;
-         }
-         memset(map, 0, mem->bo->size);
-         nouveau_ws_bo_unmap(mem->bo, map);
-      } else {
-         result = zero_vram(dev, mem->bo);
+         void *map;
+         result = nvkmd_mem_map(mem->mem, &dev->vk.base,
+                                NVKMD_MEM_MAP_RDWR, NULL, &map);
          if (result != VK_SUCCESS)
-            goto fail_bo;
+            goto fail_mem;
+
+         memset(map, use_zero ? 0 : 0xF1, mem->mem->size_B);
+         nvkmd_mem_sync_map_to_gpu(mem->mem, 0, mem->mem->size_B);
+         nvkmd_mem_unmap(mem->mem, 0);
+      } else {
+         result = nvk_upload_queue_fill(dev, &dev->upload,
+                                        mem->mem->va->addr,
+                                        use_zero ? 0 : 0xCAFEF00D,
+                                        mem->mem->size_B);
+         if (result != VK_SUCCESS)
+            goto fail_mem;
+
+         /* Since we don't know when the memory will be freed, sync now */
+         result = nvk_upload_queue_sync(dev, &dev->upload);
+         if (result != VK_SUCCESS)
+            goto fail_mem;
       }
    }
 
@@ -277,14 +303,14 @@ nvk_AllocateMemory(VkDevice device,
    }
 
    struct nvk_memory_heap *heap = &pdev->mem_heaps[type->heapIndex];
-   p_atomic_add(&heap->used, mem->bo->size);
+   p_atomic_add(&heap->used, mem->mem->size_B);
 
    *pMem = nvk_device_memory_to_handle(mem);
 
    return VK_SUCCESS;
 
-fail_bo:
-   nouveau_ws_bo_destroy(mem->bo);
+fail_mem:
+   nvkmd_mem_unref(mem->mem);
 fail_alloc:
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
    return result;
@@ -297,19 +323,16 @@ nvk_FreeMemory(VkDevice device,
 {
    VK_FROM_HANDLE(nvk_device, dev, device);
    VK_FROM_HANDLE(nvk_device_memory, mem, _mem);
-   struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   struct nvk_physical_device *pdev = nvk_device_physical_mut(dev);
 
    if (!mem)
       return;
 
-   if (mem->map)
-      nouveau_ws_bo_unmap(mem->bo, mem->map);
-
    const VkMemoryType *type = &pdev->mem_types[mem->vk.memory_type_index];
    struct nvk_memory_heap *heap = &pdev->mem_heaps[type->heapIndex];
-   p_atomic_add(&heap->used, -((int64_t)mem->bo->size));
+   p_atomic_add(&heap->used, -((int64_t)mem->mem->size_B));
 
-   nouveau_ws_bo_destroy(mem->bo);
+   nvkmd_mem_unref(mem->mem);
 
    vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
 }
@@ -321,6 +344,7 @@ nvk_MapMemory2KHR(VkDevice device,
 {
    VK_FROM_HANDLE(nvk_device, dev, device);
    VK_FROM_HANDLE(nvk_device_memory, mem, pMemoryMapInfo->memory);
+   VkResult result;
 
    if (mem == NULL) {
       *ppData = NULL;
@@ -332,10 +356,14 @@ nvk_MapMemory2KHR(VkDevice device,
       vk_device_memory_range(&mem->vk, pMemoryMapInfo->offset,
                                        pMemoryMapInfo->size);
 
+   enum nvkmd_mem_map_flags map_flags = NVKMD_MEM_MAP_CLIENT |
+                                        NVKMD_MEM_MAP_RDWR;
+
    void *fixed_addr = NULL;
    if (pMemoryMapInfo->flags & VK_MEMORY_MAP_PLACED_BIT_EXT) {
       const VkMemoryMapPlacedInfoEXT *placed_info =
          vk_find_struct_const(pMemoryMapInfo->pNext, MEMORY_MAP_PLACED_INFO_EXT);
+      map_flags |= NVKMD_MEM_MAP_FIXED;
       fixed_addr = placed_info->pPlacedAddress;
    }
 
@@ -347,7 +375,7 @@ nvk_MapMemory2KHR(VkDevice device,
     *    equal to the size of the memory minus offset
     */
    assert(size > 0);
-   assert(offset + size <= mem->bo->size);
+   assert(offset + size <= mem->mem->size_B);
 
    if (size != (size_t)size) {
       return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
@@ -359,18 +387,18 @@ nvk_MapMemory2KHR(VkDevice device,
     *
     *    "memory must not be currently host mapped"
     */
-   if (mem->map != NULL) {
+   if (mem->mem->map != NULL) {
       return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
                        "Memory object already mapped.");
    }
 
-   mem->map = nouveau_ws_bo_map(mem->bo, NOUVEAU_WS_BO_RDWR, fixed_addr);
-   if (mem->map == NULL) {
-      return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
-                       "Memory object couldn't be mapped.");
-   }
+   void *mem_map;
+   result = nvkmd_mem_map(mem->mem, &mem->vk.base, map_flags,
+                          fixed_addr, &mem_map);
+   if (result != VK_SUCCESS)
+      return result;
 
-   *ppData = mem->map + offset;
+   *ppData = mem_map + offset;
 
    return VK_SUCCESS;
 }
@@ -379,25 +407,17 @@ VKAPI_ATTR VkResult VKAPI_CALL
 nvk_UnmapMemory2KHR(VkDevice device,
                     const VkMemoryUnmapInfoKHR *pMemoryUnmapInfo)
 {
-   VK_FROM_HANDLE(nvk_device, dev, device);
    VK_FROM_HANDLE(nvk_device_memory, mem, pMemoryUnmapInfo->memory);
 
    if (mem == NULL)
       return VK_SUCCESS;
 
    if (pMemoryUnmapInfo->flags & VK_MEMORY_UNMAP_RESERVE_BIT_EXT) {
-      int err = nouveau_ws_bo_overmap(mem->bo, mem->map);
-      if (err) {
-         return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED,
-                          "Failed to map over original mapping");
-      }
+      return nvkmd_mem_overmap(mem->mem, &mem->vk.base, NVKMD_MEM_MAP_CLIENT);
    } else {
-      nouveau_ws_bo_unmap(mem->bo, mem->map);
+      nvkmd_mem_unmap(mem->mem, NVKMD_MEM_MAP_CLIENT);
+      return VK_SUCCESS;
    }
-
-   mem->map = NULL;
-
-   return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -405,6 +425,45 @@ nvk_FlushMappedMemoryRanges(VkDevice device,
                             uint32_t memoryRangeCount,
                             const VkMappedMemoryRange *pMemoryRanges)
 {
+   VK_FROM_HANDLE(nvk_device, dev, device);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const uint32_t nc_atom_size_B = pdev->info.nc_atom_size_B;
+
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      const VkMappedMemoryRange *range = &pMemoryRanges[i];
+      VK_FROM_HANDLE(nvk_device_memory, mem, range->memory);
+
+      /* From the Vulkan 1.4.305 spec:
+       *
+       *    "offset must be a multiple of
+       *    VkPhysicalDeviceLimits::nonCoherentAtomSize"
+       */
+      assert(range->offset % nc_atom_size_B == 0);
+
+      /* From the Vulkan 1.4.305 spec:
+       *
+       *    "If size is equal to VK_WHOLE_SIZE, the end of the current mapping
+       *    of memory must either be a multiple of
+       *    VkPhysicalDeviceLimits::nonCoherentAtomSize bytes from the
+       *    beginning of the memory object, or be equal to the end of the
+       *    memory object"
+       *
+       *    "If size is not equal to VK_WHOLE_SIZE, size must either be a
+       *    multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, or offset
+       *    plus size must equal the size of memory"
+       *
+       * Ensure that either the size is aligned or the range is the full
+       * object.
+       */
+      VkDeviceSize size =
+         vk_device_memory_range(&mem->vk, range->offset, range->size);
+      assert(size % nc_atom_size_B == 0 ||
+             (range->offset + size) == mem->vk.size);
+      size = ALIGN_POT(size, mem->mem->dev->pdev->dev_info.nc_atom_size_B);
+
+      nvkmd_mem_sync_client_map_to_gpu(mem->mem, range->offset, size);
+   }
+
    return VK_SUCCESS;
 }
 
@@ -413,6 +472,45 @@ nvk_InvalidateMappedMemoryRanges(VkDevice device,
                                  uint32_t memoryRangeCount,
                                  const VkMappedMemoryRange *pMemoryRanges)
 {
+   VK_FROM_HANDLE(nvk_device, dev, device);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const uint32_t nc_atom_size_B = pdev->info.nc_atom_size_B;
+
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      const VkMappedMemoryRange *range = &pMemoryRanges[i];
+      VK_FROM_HANDLE(nvk_device_memory, mem, range->memory);
+
+      /* From the Vulkan 1.4.305 spec:
+       *
+       *    "offset must be a multiple of
+       *    VkPhysicalDeviceLimits::nonCoherentAtomSize"
+       */
+      assert(range->offset % nc_atom_size_B == 0);
+
+      /* From the Vulkan 1.4.305 spec:
+       *
+       *    "If size is equal to VK_WHOLE_SIZE, the end of the current mapping
+       *    of memory must either be a multiple of
+       *    VkPhysicalDeviceLimits::nonCoherentAtomSize bytes from the
+       *    beginning of the memory object, or be equal to the end of the
+       *    memory object"
+       *
+       *    "If size is not equal to VK_WHOLE_SIZE, size must either be a
+       *    multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, or offset
+       *    plus size must equal the size of memory"
+       *
+       * Ensure that either the size is aligned or the range is the full
+       * object.
+       */
+      VkDeviceSize size =
+         vk_device_memory_range(&mem->vk, range->offset, range->size);
+      assert(size % nc_atom_size_B == 0 ||
+             (range->offset + size) == mem->vk.size);
+      size = ALIGN_POT(size, mem->mem->dev->pdev->dev_info.nc_atom_size_B);
+
+      nvkmd_mem_sync_client_map_from_gpu(mem->mem, range->offset, size);
+   }
+
    return VK_SUCCESS;
 }
 
@@ -423,7 +521,7 @@ nvk_GetDeviceMemoryCommitment(VkDevice device,
 {
    VK_FROM_HANDLE(nvk_device_memory, mem, _mem);
 
-   *pCommittedMemoryInBytes = mem->bo->size;
+   *pCommittedMemoryInBytes = mem->mem->size_B;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -432,15 +530,12 @@ nvk_GetMemoryFdKHR(VkDevice device,
                    int *pFD)
 {
    VK_FROM_HANDLE(nvk_device, dev, device);
-   VK_FROM_HANDLE(nvk_device_memory, memory, pGetFdInfo->memory);
+   VK_FROM_HANDLE(nvk_device_memory, mem, pGetFdInfo->memory);
 
    switch (pGetFdInfo->handleType) {
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
-      if (nouveau_ws_bo_dma_buf(memory->bo, pFD))
-         return vk_errorf(dev, VK_ERROR_TOO_MANY_OBJECTS,
-                          "Failed to export dma-buf: %m");
-      return VK_SUCCESS;
+      return nvkmd_mem_export_dma_buf(mem->mem, &mem->vk.base, pFD);
    default:
       assert(!"unsupported handle type");
       return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
@@ -452,7 +547,6 @@ nvk_GetDeviceMemoryOpaqueCaptureAddress(
    UNUSED VkDevice device,
    const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
 {
-   VK_FROM_HANDLE(nvk_device_memory, mem, pInfo->memory);
-
-   return mem->bo->offset;
+   /* Addresses are replayed at buffer and image creation, not memory. */
+   return 0;
 }

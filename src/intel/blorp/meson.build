@@ -1,28 +1,43 @@
 # Copyright © 2017 Intel Corporation
+# SPDX-License-Identifier: MIT
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+blorp_shader_files = files(
+  'blorp_shaders.cl',
+)
 
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
+blorp_shaders_spv = custom_target(
+  input : blorp_shader_files,
+  output : 'blorp_shaders.spv',
+  command : [
+    prog_mesa_clc, '-o', '@OUTPUT@', '--depfile', '@DEPFILE@',
+    blorp_shader_files, '--',
+    '-I' + join_paths(meson.project_source_root(), 'include'),
+    '-I' + join_paths(meson.project_source_root(), 'src/compiler/libcl'),
+    '-I' + join_paths(meson.project_source_root(), 'src'),
+    '-I' + join_paths(meson.current_source_dir(), '.'),
+    cl_args,
+    ],
+  depends : [gen_cl_xml_pack],
+  depfile : 'blorp_shaders.h.d',
+)
 
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+blorp_shaders = custom_target(
+  input : blorp_shaders_spv,
+  output : ['blorp_shaders.cpp', 'blorp_shaders.h'],
+  command : [prog_vtn_bindgen2, blorp_shaders_spv, '@OUTPUT0@', '@OUTPUT1@'],
+)
+
+idep_blorp_shaders = declare_dependency(
+  sources : [blorp_shaders],
+  include_directories : include_directories('.'),
+)
 
 files_libblorp = files(
   'blorp.c',
   'blorp.h',
   'blorp_blit.c',
   'blorp_clear.c',
+  'blorp_indirect_copy.c',
   'blorp_nir_builder.h',
   'blorp_priv.h',
 )
@@ -40,28 +55,39 @@ files_blorp_elk = files(
 libblorp = static_library(
   'blorp',
   [files_libblorp, files_blorp_brw],
-  include_directories : [inc_include, inc_src, inc_intel],
-  c_args : [no_override_init_args],
+  include_directories : [inc_include, inc_src, inc_intel, inc_intel_compiler],
+  c_args : [no_override_init_args, soong_compat_c_args],
   gnu_symbol_visibility : 'hidden',
-  dependencies : [idep_nir_headers, idep_genxml, idep_mesautil, idep_intel_dev],
+  dependencies : [
+    idep_nir_headers, idep_genxml, idep_mesautil, idep_intel_dev,
+    idep_intel_compiler_gen, idep_blorp_shaders
+  ],
   build_by_default: false,
 )
 
 idep_intel_blorp = declare_dependency(
   link_with: libblorp,
+  dependencies: [idep_intel_compiler_gen],
 )
 
-libblorp_elk = static_library(
-  'blorp_elk',
-  [files_libblorp, files_blorp_elk],
-  include_directories : [inc_include, inc_src, inc_intel],
-  c_args : [no_override_init_args],
-  gnu_symbol_visibility : 'hidden',
-  dependencies : [idep_nir_headers, idep_genxml, idep_mesautil, idep_intel_dev],
-  build_by_default: true, # FIXME XXX
-)
+if with_intel_elk
+  libblorp_elk = static_library(
+    'blorp_elk',
+    [files_libblorp, files_blorp_elk],
+    include_directories : [inc_include, inc_src, inc_intel],
+    c_args : [no_override_init_args, soong_compat_c_args],
+    gnu_symbol_visibility : 'hidden',
+    dependencies : [
+      idep_nir_headers, idep_genxml, idep_mesautil, idep_intel_dev,
+      idep_blorp_shaders
+    ],
+    build_by_default: false,
+  )
 
-idep_intel_blorp_elk = declare_dependency(
-  link_with: libblorp_elk,
-)
-
+  idep_intel_blorp_elk = declare_dependency(
+    dependencies: [idep_intel_dev],
+    link_with: libblorp_elk,
+  )
+else
+  idep_intel_blorp_elk = null_dep
+endif

@@ -46,8 +46,6 @@
  * BOs).
  */
 
-#ifdef USE_V3D_SIMULATOR
-
 #include <stdio.h>
 #include <sys/mman.h>
 #include "c11/threads.h"
@@ -58,9 +56,11 @@
 #include "util/u_dynarray.h"
 #include "util/u_memory.h"
 #include "util/u_mm.h"
+#include "util/log.h"
 #include "util/u_math.h"
 
 #include <xf86drm.h>
+#include "drm-uapi/asahi_drm.h"
 #include "drm-uapi/amdgpu_drm.h"
 #include "drm-uapi/i915_drm.h"
 #include "drm-uapi/v3d_drm.h"
@@ -77,6 +77,7 @@ static struct v3d_simulator_state {
 
         struct v3d_hw *v3d;
         int ver;
+        int rev;
 
         /* Size of the heap. */
         uint64_t mem_size;
@@ -102,6 +103,7 @@ static struct v3d_simulator_state {
 enum gem_type {
         GEM_I915,
         GEM_AMDGPU,
+        GEM_ASAHI,
         GEM_DUMB
 };
 
@@ -122,6 +124,9 @@ struct v3d_simulator_file {
 
         /** For specific gpus, use their create ioctl. Otherwise use dumb bo. */
         enum gem_type gem_type;
+
+        /** The stride alignment required for raster textures. */
+        uint32_t raster_stride_align;
 };
 
 /** Wrapper for drm_v3d_bo tracking the simulator-specific state. */
@@ -277,6 +282,16 @@ v3d_create_simulator_bo_for_gem(int fd, int handle, unsigned size)
                 sim_bo->mmap_offset = map.out.addr_ptr;
                 break;
         }
+        case GEM_ASAHI:
+        {
+                struct drm_asahi_gem_mmap_offset gem_mmap_offset = {
+                        .handle = handle
+                };
+
+                ret = drmIoctl(fd, DRM_IOCTL_ASAHI_GEM_MMAP_OFFSET, &gem_mmap_offset);
+                sim_bo->mmap_offset = gem_mmap_offset.offset;
+                break;
+        }
         default:
         {
                 struct drm_mode_map_dumb map = {
@@ -287,7 +302,7 @@ v3d_create_simulator_bo_for_gem(int fd, int handle, unsigned size)
         }
         }
         if (ret) {
-                fprintf(stderr, "Failed to get MMAP offset: %d\n", ret);
+                mesa_loge("Failed to get MMAP offset: %d", ret);
                 abort();
         }
 
@@ -295,8 +310,8 @@ v3d_create_simulator_bo_for_gem(int fd, int handle, unsigned size)
                                  PROT_READ | PROT_WRITE, MAP_SHARED,
                                  fd, sim_bo->mmap_offset);
         if (sim_bo->gem_vaddr == MAP_FAILED) {
-                fprintf(stderr, "mmap of bo %d (offset 0x%016llx, size %d) failed\n",
-                        handle, (long long)sim_bo->mmap_offset, sim_bo->size);
+                mesa_loge("mmap of bo %d (offset 0x%016llx, size %d) failed",
+                          handle, (long long)sim_bo->mmap_offset, sim_bo->size);
                 abort();
         }
 
@@ -321,8 +336,7 @@ v3d_simulator_get_spill(uint32_t spill_size)
         struct v3d_simulator_bo *sim_bo =
                 v3d_create_simulator_bo(bin_fd, spill_size);
 
-        util_dynarray_append(&sim_state.bin_oom, struct v3d_simulator_bo *,
-                             sim_bo);
+        util_dynarray_append(&sim_state.bin_oom, sim_bo);
 
         return sim_bo->block->ofs;
 }
@@ -385,8 +399,7 @@ v3d_simulator_copy_out_handle(struct v3d_simulator_file *file, int handle)
         uint32_t sentinel;
         v3d_hw_read_mem(sim_state.v3d, &sentinel, sim_bo->sim_addr + sim_bo->size, sizeof(sentinel));
         if (sentinel != BO_SENTINEL) {
-                fprintf(stderr, "Buffer overflow in handle %d\n",
-                        handle);
+                mesa_loge("Buffer overflow in handle %d", handle);
         }
 }
 
@@ -558,10 +571,24 @@ v3d_simulator_create_bo_ioctl(int fd, struct drm_v3d_create_bo *args)
         {
                 union drm_amdgpu_gem_create create = { 0 };
                 create.in.bo_size = args->size;
+                create.in.domains = AMDGPU_GEM_DOMAIN_GTT;
+                create.in.domain_flags =
+                        AMDGPU_GEM_CREATE_CPU_ACCESS_REQUIRED;
 
                 ret = drmIoctl(fd, DRM_IOCTL_AMDGPU_GEM_CREATE, &create);
 
                 args->handle = create.out.handle;
+                break;
+        }
+        case GEM_ASAHI:
+        {
+                struct drm_asahi_gem_create create = {
+                        .size = args->size,
+                };
+
+                ret = drmIoctl(fd, DRM_IOCTL_ASAHI_GEM_CREATE, &create);
+
+                args->handle = create.handle;
                 break;
         }
         default:
@@ -710,8 +737,17 @@ v3d_rewrite_csd_job_wg_counts_from_indirect(int fd,
 	submit->cfg[0] = wg_counts[0] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
 	submit->cfg[1] = wg_counts[1] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
 	submit->cfg[2] = wg_counts[2] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
-	submit->cfg[4] = DIV_ROUND_UP(indirect_csd->wg_size, 16) *
-			(wg_counts[0] * wg_counts[1] * wg_counts[2]) - 1;
+
+	uint32_t num_batches = DIV_ROUND_UP(indirect_csd->wg_size, 16) *
+	                       (wg_counts[0] * wg_counts[1] * wg_counts[2]);
+
+	/* V3D 7.1.6 and later don't subtract 1 from the number of batches */
+	if (sim_state.ver < 71 || (sim_state.ver == 71 && sim_state.rev < 6)) {
+		submit->cfg[4] = num_batches - 1;
+	} else {
+		submit->cfg[4] = num_batches;
+	}
+	assert(submit->cfg[4] != ~0);
 
 	for (int i = 0; i < 3; i++) {
 		/* 0xffffffff indicates that the uniform rewrite is not needed */
@@ -958,7 +994,7 @@ v3d_simulator_submit_cpu_ioctl(int fd, struct drm_v3d_submit_cpu *args)
 			v3d_copy_performance_query(fd, ext, args);
 			break;
 		default:
-			fprintf(stderr, "Unknown CPU job 0x%08x\n", (int)ext->id);
+			mesa_loge("Unknown CPU job 0x%08x", (int)ext->id);
 			break;
 		}
 
@@ -1074,7 +1110,9 @@ v3d_simulator_ioctl(int fd, unsigned long request, void *args)
                 return 0;
 
         case DRM_IOCTL_V3D_GET_PARAM:
-                return v3d_X_simulator(get_param_ioctl)(sim_state.v3d, args);
+                return v3d_X_simulator(get_param_ioctl)(sim_state.v3d,
+                                                        sim_state.perfcnt_total,
+                                                        args);
 
         case DRM_IOCTL_GEM_CLOSE:
                 return v3d_simulator_gem_close_ioctl(fd, args);
@@ -1097,11 +1135,15 @@ v3d_simulator_ioctl(int fd, unsigned long request, void *args)
         case DRM_IOCTL_V3D_PERFMON_GET_VALUES:
                 return v3d_simulator_perfmon_get_values_ioctl(fd, args);
 
+        case DRM_IOCTL_V3D_PERFMON_GET_COUNTER:
+                return v3d_X_simulator(perfmon_get_counter_ioctl)(sim_state.perfcnt_total,
+                                                                  args);
+
         case DRM_IOCTL_GEM_OPEN:
         case DRM_IOCTL_GEM_FLINK:
                 return drmIoctl(fd, request, args);
         default:
-                fprintf(stderr, "Unknown ioctl 0x%08x\n", (int)request);
+                mesa_loge("Unknown ioctl 0x%08x", (int)request);
                 abort();
         }
 }
@@ -1120,6 +1162,13 @@ v3d_simulator_get_mem_free(void)
    for (p = sim_state.heap->next_free; p != sim_state.heap; p = p->next_free)
       total_free += p->size;
    return total_free;
+}
+
+uint32_t
+v3d_simulator_get_raster_stride_align(int fd)
+{
+        struct v3d_simulator_file *file = v3d_get_simulator_file_for_fd(fd);
+        return file->raster_stride_align;
 }
 
 static void
@@ -1148,6 +1197,7 @@ v3d_simulator_init_global()
         v3d_hw_set_mem(sim_state.v3d, b->ofs, 0xd0, 4096);
 
         sim_state.ver = v3d_hw_get_version(sim_state.v3d);
+        sim_state.rev = v3d_hw_get_revision(sim_state.v3d);
 
         simple_mtx_unlock(&sim_state.mutex);
 
@@ -1156,7 +1206,7 @@ v3d_simulator_init_global()
                                         _mesa_hash_pointer,
                                         _mesa_key_pointer_equal);
 
-        util_dynarray_init(&sim_state.bin_oom, NULL);
+        sim_state.bin_oom = UTIL_DYNARRAY_INIT;
 
         v3d_X_simulator(init_regs)(sim_state.v3d);
         v3d_X_simulator(get_perfcnt_total)(&sim_state.perfcnt_total);
@@ -1174,8 +1224,16 @@ v3d_simulator_init(int fd)
                 sim_file->gem_type = GEM_I915;
         else if (version && strncmp(version->name, "amdgpu", version->name_len) == 0)
                 sim_file->gem_type = GEM_AMDGPU;
+        else if (version && strncmp(version->name, "asahi", version->name_len) == 0)
+                sim_file->gem_type = GEM_ASAHI;
         else
                 sim_file->gem_type = GEM_DUMB;
+
+        if (sim_file->gem_type == GEM_AMDGPU)
+                sim_file->raster_stride_align = 256;
+        else
+                sim_file->raster_stride_align = 1;
+
         drmFreeVersion(version);
 
         sim_file->bo_map =
@@ -1209,5 +1267,3 @@ v3d_simulator_destroy(struct v3d_simulator_file *sim_file)
         ralloc_free(sim_file);
         simple_mtx_unlock(&sim_state.mutex);
 }
-
-#endif /* USE_V3D_SIMULATOR */

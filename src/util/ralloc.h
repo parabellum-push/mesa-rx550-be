@@ -483,6 +483,16 @@ bool ralloc_asprintf_append (char **str, const char *fmt, ...)
 bool ralloc_vasprintf_append(char **str, const char *fmt, va_list args);
 /// @}
 
+/**
+ * Estimate the memory usage in bytes of a ralloc context, recursively including
+ * all of its child counts. This is only available in debug builds as release
+ * builds do not track size information. It is providing as a aid for debugging
+ * memory bloat.
+ */
+#ifndef NDEBUG
+size_t ralloc_total_size(const void *ptr);
+#endif
+
 typedef struct gc_ctx gc_ctx;
 
 /**
@@ -556,21 +566,37 @@ public:                                                                  \
    DECLARE_RALLOC_CXX_OPERATORS_TEMPLATE(type, rzalloc_size)
 
 
-#define DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(TYPE, ALLOC_FUNC)    \
+#define DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(TYPE, ALLOC_FUNC, new_cmd, new_array_cmd, ATTRIBUTE) \
 public:                                                                  \
+   ATTRIBUTE                                                             \
    static void* operator new(size_t size, linear_ctx *ctx)               \
    {                                                                     \
       void *p = ALLOC_FUNC(ctx, size);                                   \
       assert(p != NULL);                                                 \
-      static_assert(HAS_TRIVIAL_DESTRUCTOR(TYPE));                       \
+      new_cmd                                                            \
+      return p;                                                          \
+   }                                                                     \
+   ATTRIBUTE                                                             \
+   static void* operator new[](size_t size, linear_ctx *ctx)             \
+   {                                                                     \
+      void *p = ALLOC_FUNC(ctx, size);                                   \
+      assert(p != NULL);                                                 \
+      new_array_cmd                                                      \
       return p;                                                          \
    }
 
-#define DECLARE_LINEAR_ALLOC_CXX_OPERATORS(type) \
-   DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(type, linear_alloc_child)
+#define DECLARE_LINEAR_ALLOC_CXX_OPERATORS(type, new_cmd, new_array_cmd) \
+   DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(type, linear_alloc_child, \
+                                               new_cmd, new_array_cmd,)
 
-#define DECLARE_LINEAR_ZALLOC_CXX_OPERATORS(type) \
-   DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(type, linear_zalloc_child)
+#define DECLARE_LINEAR_ZALLOC_CXX_OPERATORS(type, new_cmd, new_array_cmd) \
+   DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(type, linear_zalloc_child, \
+                                               new_cmd, new_array_cmd,)
+
+#define DECLARE_LINEAR_ZALLOC_CXX_OPERATORS_NO_SANITIZE(type, new_cmd, new_array_cmd, FLAG) \
+   DECLARE_LINEAR_ALLOC_CXX_OPERATORS_TEMPLATE(type, linear_zalloc_child, \
+                                               new_cmd, new_array_cmd,    \
+                                               ATTRIBUTE_NO_SANITIZE_##FLAG)
 
 typedef struct linear_ctx linear_ctx;
 
@@ -646,6 +672,7 @@ void *linear_zalloc_child_array(linear_ctx *ctx, size_t size, unsigned count) MA
 char *linear_strdup(linear_ctx *ctx, const char *str) MALLOCLIKE;
 char *linear_asprintf(linear_ctx *ctx, const char *fmt, ...) PRINTFLIKE(2, 3) MALLOCLIKE;
 char *linear_vasprintf(linear_ctx *ctx, const char *fmt, va_list args) MALLOCLIKE;
+void *linear_memdup(linear_ctx *ctx, const void *mem, size_t n) MALLOCLIKE;
 bool linear_asprintf_append(linear_ctx *ctx, char **str, const char *fmt, ...) PRINTFLIKE(3, 4);
 bool linear_vasprintf_append(linear_ctx *ctx, char **str, const char *fmt,
                              va_list args);

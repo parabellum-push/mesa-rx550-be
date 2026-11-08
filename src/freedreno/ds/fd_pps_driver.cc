@@ -1,6 +1,5 @@
 /*
  * Copyright © 2021 Google, Inc.
- *
  * SPDX-License-Identifier: MIT
  */
 
@@ -8,40 +7,27 @@
 
 #include <cstring>
 #include <iostream>
-#include <perfetto.h>
 
+#include <err.h>
+#include "util/perf/u_perfetto.h"
+#include <poll.h>
+
+#include <xf86drm.h>
+
+#include "common/freedreno_common.h"
 #include "common/freedreno_dev_info.h"
+#include "drm-uapi/msm_drm.h"
 #include "drm/freedreno_drmif.h"
 #include "drm/freedreno_ringbuffer.h"
 #include "perfcntrs/freedreno_dt.h"
 #include "perfcntrs/freedreno_perfcntr.h"
+#include "util/hash_table.h"
 
 #include "pps/pps.h"
 #include "pps/pps_algorithm.h"
 
 namespace pps
 {
-
-double
-safe_div(uint64_t a, uint64_t b)
-{
-   if (b == 0)
-      return 0;
-
-   return a / static_cast<double>(b);
-}
-
-float
-percent(uint64_t a, uint64_t b)
-{
-   /* Sometimes we get bogus values but we want for the timeline
-    * to look nice without higher than 100% values.
-    */
-   if (b == 0 || a > b)
-      return 0;
-
-   return 100.f * (a / static_cast<double>(b));
-}
 
 bool
 FreedrenoDriver::is_dump_perfcnt_preemptible() const
@@ -55,354 +41,6 @@ FreedrenoDriver::get_min_sampling_period_ns()
    return 100000;
 }
 
-/*
-TODO this sees like it would be largely the same for a5xx as well
-(ie. same countable names)..
- */
-void
-FreedrenoDriver::setup_a6xx_counters()
-{
-   /* TODO is there a reason to want more than one group? */
-   CounterGroup group = {};
-   group.name = "counters";
-   groups.clear();
-   counters.clear();
-   countables.clear();
-   enabled_counters.clear();
-   groups.emplace_back(std::move(group));
-
-   /*
-    * Create the countables that we'll be using.
-    */
-
-   auto PERF_CP_ALWAYS_COUNT = countable("PERF_CP_ALWAYS_COUNT");
-   auto PERF_CP_BUSY_CYCLES  = countable("PERF_CP_BUSY_CYCLES");
-   auto PERF_RB_3D_PIXELS    = countable("PERF_RB_3D_PIXELS");
-   auto PERF_TP_L1_CACHELINE_MISSES = countable("PERF_TP_L1_CACHELINE_MISSES");
-   auto PERF_TP_L1_CACHELINE_REQUESTS = countable("PERF_TP_L1_CACHELINE_REQUESTS");
-
-   auto PERF_TP_OUTPUT_PIXELS  = countable("PERF_TP_OUTPUT_PIXELS");
-   auto PERF_TP_OUTPUT_PIXELS_ANISO  = countable("PERF_TP_OUTPUT_PIXELS_ANISO");
-   auto PERF_TP_OUTPUT_PIXELS_BILINEAR = countable("PERF_TP_OUTPUT_PIXELS_BILINEAR");
-   auto PERF_TP_OUTPUT_PIXELS_POINT = countable("PERF_TP_OUTPUT_PIXELS_POINT");
-   auto PERF_TP_OUTPUT_PIXELS_ZERO_LOD = countable("PERF_TP_OUTPUT_PIXELS_ZERO_LOD");
-
-   auto PERF_TSE_INPUT_PRIM  = countable("PERF_TSE_INPUT_PRIM");
-   auto PERF_TSE_CLIPPED_PRIM  = countable("PERF_TSE_CLIPPED_PRIM");
-   auto PERF_TSE_TRIVAL_REJ_PRIM  = countable("PERF_TSE_TRIVAL_REJ_PRIM");
-   auto PERF_TSE_OUTPUT_VISIBLE_PRIM = countable("PERF_TSE_OUTPUT_VISIBLE_PRIM");
-
-   auto PERF_SP_BUSY_CYCLES  = countable("PERF_SP_BUSY_CYCLES");
-   auto PERF_SP_ALU_WORKING_CYCLES = countable("PERF_SP_ALU_WORKING_CYCLES");
-   auto PERF_SP_EFU_WORKING_CYCLES = countable("PERF_SP_EFU_WORKING_CYCLES");
-   auto PERF_SP_VS_STAGE_EFU_INSTRUCTIONS = countable("PERF_SP_VS_STAGE_EFU_INSTRUCTIONS");
-   auto PERF_SP_VS_STAGE_FULL_ALU_INSTRUCTIONS = countable("PERF_SP_VS_STAGE_FULL_ALU_INSTRUCTIONS");
-   auto PERF_SP_VS_STAGE_TEX_INSTRUCTIONS = countable("PERF_SP_VS_STAGE_TEX_INSTRUCTIONS");
-   auto PERF_SP_FS_STAGE_EFU_INSTRUCTIONS = countable("PERF_SP_FS_STAGE_EFU_INSTRUCTIONS");
-   auto PERF_SP_FS_STAGE_FULL_ALU_INSTRUCTIONS = countable("PERF_SP_FS_STAGE_FULL_ALU_INSTRUCTIONS");
-   auto PERF_SP_FS_STAGE_HALF_ALU_INSTRUCTIONS = countable("PERF_SP_FS_STAGE_HALF_ALU_INSTRUCTIONS");
-   auto PERF_SP_STALL_CYCLES_TP = countable("PERF_SP_STALL_CYCLES_TP");
-   auto PERF_SP_ANY_EU_WORKING_FS_STAGE = countable("PERF_SP_ANY_EU_WORKING_FS_STAGE");
-   auto PERF_SP_ANY_EU_WORKING_VS_STAGE = countable("PERF_SP_ANY_EU_WORKING_VS_STAGE");
-   auto PERF_SP_ANY_EU_WORKING_CS_STAGE = countable("PERF_SP_ANY_EU_WORKING_CS_STAGE");
-
-   auto PERF_UCHE_STALL_CYCLES_ARBITER = countable("PERF_UCHE_STALL_CYCLES_ARBITER");
-   auto PERF_UCHE_VBIF_READ_BEATS_TP = countable("PERF_UCHE_VBIF_READ_BEATS_TP");
-   auto PERF_UCHE_VBIF_READ_BEATS_VFD = countable("PERF_UCHE_VBIF_READ_BEATS_VFD");
-   auto PERF_UCHE_VBIF_READ_BEATS_SP = countable("PERF_UCHE_VBIF_READ_BEATS_SP");
-   auto PERF_UCHE_READ_REQUESTS_TP = countable("PERF_UCHE_READ_REQUESTS_TP");
-
-   auto PERF_PC_STALL_CYCLES_VFD = countable("PERF_PC_STALL_CYCLES_VFD");
-   auto PERF_PC_VS_INVOCATIONS = countable("PERF_PC_VS_INVOCATIONS");
-   auto PERF_PC_VERTEX_HITS = countable("PERF_PC_VERTEX_HITS");
-
-   auto PERF_HLSQ_QUADS = countable("PERF_HLSQ_QUADS"); /* Quads (fragments / 4) produced */
-
-   auto PERF_CP_NUM_PREEMPTIONS = countable("PERF_CP_NUM_PREEMPTIONS");
-   auto PERF_CP_PREEMPTION_REACTION_DELAY = countable("PERF_CP_PREEMPTION_REACTION_DELAY");
-
-   /* TODO: resolve() tells there is no PERF_CMPDECMP_VBIF_READ_DATA */
-   // auto PERF_CMPDECMP_VBIF_READ_DATA = countable("PERF_CMPDECMP_VBIF_READ_DATA");
-
-   /*
-    * And then setup the derived counters that we are exporting to
-    * pps based on the captured countable values.
-    *
-    * We try to expose the same counters as blob:
-    * https://gpuinspector.dev/docs/gpu-counters/qualcomm
-    */
-
-   counter("GPU Frequency", Counter::Units::Hertz, [=]() {
-         return PERF_CP_ALWAYS_COUNT / time;
-      }
-   );
-
-   counter("GPU % Utilization", Counter::Units::Percent, [=]() {
-         return percent(PERF_CP_BUSY_CYCLES / time, max_freq);
-      }
-   );
-
-   counter("TP L1 Cache Misses", Counter::Units::None, [=]() {
-         return PERF_TP_L1_CACHELINE_MISSES / time;
-      }
-   );
-
-   counter("Shader Core Utilization", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_BUSY_CYCLES / time, max_freq * info->num_sp_cores);
-      }
-   );
-
-   /* TODO: verify */
-   counter("(?) % Texture Fetch Stall", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_STALL_CYCLES_TP / time, max_freq * info->num_sp_cores);
-      }
-   );
-
-   /* TODO: verify */
-   counter("(?) % Vertex Fetch Stall", Counter::Units::Percent, [=]() {
-         return percent(PERF_PC_STALL_CYCLES_VFD / time, max_freq * info->num_sp_cores);
-      }
-   );
-
-   counter("L1 Texture Cache Miss Per Pixel", Counter::Units::None, [=]() {
-         return safe_div(PERF_TP_L1_CACHELINE_MISSES, PERF_HLSQ_QUADS * 4);
-      }
-   );
-
-   counter("% Texture L1 Miss", Counter::Units::Percent, [=]() {
-         return percent(PERF_TP_L1_CACHELINE_MISSES, PERF_TP_L1_CACHELINE_REQUESTS);
-      }
-   );
-
-   counter("% Texture L2 Miss", Counter::Units::Percent, [=]() {
-         return percent(PERF_UCHE_VBIF_READ_BEATS_TP / 2, PERF_UCHE_READ_REQUESTS_TP);
-      }
-   );
-
-   /* TODO: verify */
-   counter("(?) % Stalled on System Memory", Counter::Units::Percent, [=]() {
-         return percent(PERF_UCHE_STALL_CYCLES_ARBITER / time, max_freq * info->num_sp_cores);
-      }
-   );
-
-   counter("Pre-clipped Polygons / Second", Counter::Units::None, [=]() {
-         return PERF_TSE_INPUT_PRIM * (1.f / time);
-      }
-   );
-
-   counter("% Prims Trivially Rejected", Counter::Units::Percent, [=]() {
-         return percent(PERF_TSE_TRIVAL_REJ_PRIM, PERF_TSE_INPUT_PRIM);
-      }
-   );
-
-   counter("% Prims Clipped", Counter::Units::Percent, [=]() {
-         return percent(PERF_TSE_CLIPPED_PRIM, PERF_TSE_INPUT_PRIM);
-      }
-   );
-
-   counter("Average Vertices / Polygon", Counter::Units::None, [=]() {
-         return PERF_PC_VS_INVOCATIONS / PERF_TSE_INPUT_PRIM;
-      }
-   );
-
-   counter("Reused Vertices / Second", Counter::Units::None, [=]() {
-         return PERF_PC_VERTEX_HITS * (1.f / time);
-      }
-   );
-
-   counter("Average Polygon Area", Counter::Units::None, [=]() {
-         return safe_div(PERF_HLSQ_QUADS * 4, PERF_TSE_OUTPUT_VISIBLE_PRIM);
-      }
-   );
-
-   /* TODO: find formula */
-   // counter("% Shaders Busy", Counter::Units::Percent, [=]() {
-   //       return 100.0 * 0;
-   //    }
-   // );
-
-   counter("Vertices Shaded / Second", Counter::Units::None, [=]() {
-         return PERF_PC_VS_INVOCATIONS * (1.f / time);
-      }
-   );
-
-   counter("Fragments Shaded / Second", Counter::Units::None, [=]() {
-         return PERF_HLSQ_QUADS * 4 * (1.f / time);
-      }
-   );
-
-   counter("Vertex Instructions / Second", Counter::Units::None, [=]() {
-         return (PERF_SP_VS_STAGE_FULL_ALU_INSTRUCTIONS +
-                 PERF_SP_VS_STAGE_EFU_INSTRUCTIONS) * (1.f / time);
-      }
-   );
-
-   counter("Fragment Instructions / Second", Counter::Units::None, [=]() {
-         return (PERF_SP_FS_STAGE_FULL_ALU_INSTRUCTIONS +
-                 PERF_SP_FS_STAGE_HALF_ALU_INSTRUCTIONS / 2 +
-                 PERF_SP_FS_STAGE_EFU_INSTRUCTIONS) * (1.f / time);
-      }
-   );
-
-   counter("Fragment ALU Instructions / Sec (Full)", Counter::Units::None, [=]() {
-         return PERF_SP_FS_STAGE_FULL_ALU_INSTRUCTIONS * (1.f / time);
-      }
-   );
-
-   counter("Fragment ALU Instructions / Sec (Half)", Counter::Units::None, [=]() {
-         return PERF_SP_FS_STAGE_HALF_ALU_INSTRUCTIONS * (1.f / time);
-      }
-   );
-
-   counter("Fragment EFU Instructions / Second", Counter::Units::None, [=]() {
-         return PERF_SP_FS_STAGE_EFU_INSTRUCTIONS * (1.f / time);
-      }
-   );
-
-   counter("Textures / Vertex", Counter::Units::None, [=]() {
-         return safe_div(PERF_SP_VS_STAGE_TEX_INSTRUCTIONS, PERF_PC_VS_INVOCATIONS);
-      }
-   );
-
-   counter("Textures / Fragment", Counter::Units::None, [=]() {
-         return safe_div(PERF_TP_OUTPUT_PIXELS, PERF_HLSQ_QUADS * 4);
-      }
-   );
-
-   counter("ALU / Vertex", Counter::Units::None, [=]() {
-         return safe_div(PERF_SP_VS_STAGE_FULL_ALU_INSTRUCTIONS, PERF_PC_VS_INVOCATIONS);
-      }
-   );
-
-   counter("EFU / Vertex", Counter::Units::None, [=]() {
-         return safe_div(PERF_SP_VS_STAGE_EFU_INSTRUCTIONS, PERF_PC_VS_INVOCATIONS);
-      }
-   );
-
-   counter("ALU / Fragment", Counter::Units::None, [=]() {
-         return safe_div(PERF_SP_FS_STAGE_FULL_ALU_INSTRUCTIONS +
-                         PERF_SP_FS_STAGE_HALF_ALU_INSTRUCTIONS / 2, PERF_HLSQ_QUADS);
-      }
-   );
-
-   counter("EFU / Fragment", Counter::Units::None, [=]() {
-         return safe_div(PERF_SP_FS_STAGE_EFU_INSTRUCTIONS, PERF_HLSQ_QUADS);
-      }
-   );
-
-   counter("% Time Shading Vertices", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_ANY_EU_WORKING_VS_STAGE,
-                        (PERF_SP_ANY_EU_WORKING_VS_STAGE +
-                         PERF_SP_ANY_EU_WORKING_FS_STAGE +
-                         PERF_SP_ANY_EU_WORKING_CS_STAGE));
-      }
-   );
-
-   counter("% Time Shading Fragments", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_ANY_EU_WORKING_FS_STAGE,
-                        (PERF_SP_ANY_EU_WORKING_VS_STAGE +
-                         PERF_SP_ANY_EU_WORKING_FS_STAGE +
-                         PERF_SP_ANY_EU_WORKING_CS_STAGE));
-      }
-   );
-
-   counter("% Time Compute", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_ANY_EU_WORKING_CS_STAGE,
-                        (PERF_SP_ANY_EU_WORKING_VS_STAGE +
-                         PERF_SP_ANY_EU_WORKING_FS_STAGE +
-                         PERF_SP_ANY_EU_WORKING_CS_STAGE));
-      }
-   );
-
-   counter("% Shader ALU Capacity Utilized", Counter::Units::Percent, [=]() {
-         return percent((PERF_SP_VS_STAGE_FULL_ALU_INSTRUCTIONS +
-                         PERF_SP_FS_STAGE_FULL_ALU_INSTRUCTIONS +
-                         PERF_SP_FS_STAGE_HALF_ALU_INSTRUCTIONS / 2) / 64,
-                        PERF_SP_BUSY_CYCLES);
-      }
-   );
-
-   counter("% Time ALUs Working", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_ALU_WORKING_CYCLES / 2, PERF_SP_BUSY_CYCLES);
-      }
-   );
-
-   counter("% Time EFUs Working", Counter::Units::Percent, [=]() {
-         return percent(PERF_SP_EFU_WORKING_CYCLES / 2, PERF_SP_BUSY_CYCLES);
-      }
-   );
-
-   counter("% Anisotropic Filtered", Counter::Units::Percent, [=]() {
-         return percent(PERF_TP_OUTPUT_PIXELS_ANISO, PERF_TP_OUTPUT_PIXELS);
-      }
-   );
-
-   counter("% Linear Filtered", Counter::Units::Percent, [=]() {
-         return percent(PERF_TP_OUTPUT_PIXELS_BILINEAR, PERF_TP_OUTPUT_PIXELS);
-      }
-   );
-
-   counter("% Nearest Filtered", Counter::Units::Percent, [=]() {
-         return percent(PERF_TP_OUTPUT_PIXELS_POINT, PERF_TP_OUTPUT_PIXELS);
-      }
-   );
-
-   counter("% Non-Base Level Textures", Counter::Units::Percent, [=]() {
-         return percent(PERF_TP_OUTPUT_PIXELS_ZERO_LOD, PERF_TP_OUTPUT_PIXELS);
-      }
-   );
-
-   /* Reads from KGSL_PERFCOUNTER_GROUP_VBIF countable=63 */
-   // counter("Read Total (Bytes/sec)", Counter::Units::Byte, [=]() {
-   //       return  * (1.f / time);
-   //    }
-   // );
-
-   /* Reads from KGSL_PERFCOUNTER_GROUP_VBIF countable=84 */
-   // counter("Write Total (Bytes/sec)", Counter::Units::Byte, [=]() {
-   //       return  * (1.f / time);
-   //    }
-   // );
-
-   /* Cannot get PERF_CMPDECMP_VBIF_READ_DATA countable */
-   // counter("Texture Memory Read BW (Bytes/Second)", Counter::Units::Byte, [=]() {
-   //       return (PERF_CMPDECMP_VBIF_READ_DATA + PERF_UCHE_VBIF_READ_BEATS_TP) * (1.f / time);
-   //    }
-   // );
-
-   /* TODO: verify */
-   counter("(?) Vertex Memory Read (Bytes/Second)", Counter::Units::Byte, [=]() {
-         return PERF_UCHE_VBIF_READ_BEATS_VFD * 32 * (1.f / time);
-      }
-   );
-
-   /* TODO: verify */
-   counter("SP Memory Read (Bytes/Second)", Counter::Units::Byte, [=]() {
-         return PERF_UCHE_VBIF_READ_BEATS_SP * 32 * (1.f / time);
-      }
-   );
-
-   counter("Avg Bytes / Fragment", Counter::Units::Byte, [=]() {
-         return safe_div(PERF_UCHE_VBIF_READ_BEATS_TP * 32, PERF_HLSQ_QUADS * 4);
-      }
-   );
-
-   counter("Avg Bytes / Vertex", Counter::Units::Byte, [=]() {
-         return safe_div(PERF_UCHE_VBIF_READ_BEATS_VFD * 32, PERF_PC_VS_INVOCATIONS);
-      }
-   );
-
-   counter("Preemptions / second", Counter::Units::None, [=]() {
-         return PERF_CP_NUM_PREEMPTIONS * (1.f / time);
-      }
-   );
-
-   counter("Avg Preemption Delay", Counter::Units::None, [=]() {
-         return PERF_CP_PREEMPTION_REACTION_DELAY * (1.f / time);
-      }
-   );
-}
-
 /**
  * Generate an submit the cmdstream to configure the counter/countable
  * muxing
@@ -414,6 +52,8 @@ FreedrenoDriver::configure_counters(bool reset, bool wait)
    enum fd_ringbuffer_flags flags =
       (enum fd_ringbuffer_flags)(FD_RINGBUFFER_PRIMARY | FD_RINGBUFFER_GROWABLE);
    struct fd_ringbuffer *ring = fd_submit_new_ringbuffer(submit, 0x1000, flags);
+
+   assert(io);  /* This is legacy path only */
 
    for (const auto &countable : countables)
       countable.configure(ring, reset);
@@ -436,10 +76,147 @@ FreedrenoDriver::configure_counters(bool reset, bool wait)
 void
 FreedrenoDriver::collect_countables()
 {
-   last_dump_ts = perfetto::base::GetBootTimeNs().count();
+   assert(io);  /* This is legacy path only */
+
+   last_dump_ts = gpu_timestamp();
 
    for (const auto &countable : countables)
       countable.collect();
+}
+
+int
+FreedrenoDriver::configure_counters_stream()
+{
+   if (perfcntr_stream_fd >= 0) {
+      close(perfcntr_stream_fd);
+      perfcntr_stream_fd = -1;
+   }
+
+   unsigned sample_size = sizeof(uint64_t) * (2 + countables.size());
+   unsigned bufsz = 2 * sample_size;
+   unsigned bufsz_shift = ffs(util_next_power_of_two(bufsz)) - 1;
+
+   struct drm_msm_perfcntr_group groups[num_perfcntrs];
+   memset(groups, 0, sizeof(groups));
+
+   struct drm_msm_perfcntr_config req = {
+      .flags = MSM_PERFCNTR_STREAM,
+      .groups = VOID2U64(groups),
+      .period = sampling_period_ns_,
+      .bufsz_shift = bufsz_shift,
+      .group_stride = sizeof(struct drm_msm_perfcntr_group),
+   };
+
+   assert(req.period);
+
+   for (const auto &countable : countables)
+      countable.configure_stream(&req);
+
+   /* Now that the groups are fully populated, resolve the sample indices: */
+   for (const auto &countable : countables)
+      countable.resolve_sample_idx(&req);
+
+   int fd = drmIoctl(fd_device_fd(dev), DRM_IOCTL_MSM_PERFCNTR_CONFIG, &req);
+   if (fd < 0)
+      return fd;
+
+   sample_buf = malloc(sample_size);
+
+   perfcntr_stream_fd = fd;
+
+   /* Unlike the legacy path, the kernel handles reconfiguring counters
+    * after power collapse for us, so we won't need to configure the
+    * stream again.  So cleanup allocated memory now:
+    */
+   for (unsigned i = 0; i < num_perfcntrs; i++) {
+      if (!groups[i].countables)
+         break;
+      free(U642VOID(groups[i].countables));
+   }
+
+   return 0;
+}
+
+static bool
+perfcntr_stream_ready(int perfcntr_stream_fd)
+{
+   struct pollfd pfd;
+
+   pfd.fd = perfcntr_stream_fd;
+   pfd.events = POLLIN;
+   pfd.revents = 0;
+
+   if (poll(&pfd, 1, 0) < 0)
+      return false;
+
+   if (!(pfd.revents & POLLIN))
+      return false;
+
+   return true;
+}
+
+static uint64_t
+ticks_to_ns(uint64_t ticks)
+{
+   constexpr uint64_t ALWAYS_ON_FREQUENCY_HZ = 19200000;
+   constexpr double GPU_TICKS_PER_NS = ALWAYS_ON_FREQUENCY_HZ / 1000000000.0;
+
+   return ticks / GPU_TICKS_PER_NS;
+}
+
+bool
+FreedrenoDriver::collect_countables_stream()
+{
+   unsigned nsamples = 0;
+   bool discontinuity = false;
+
+   assert(perfcntr_stream_fd >= 0);
+
+   while (perfcntr_stream_ready(perfcntr_stream_fd)) {
+      unsigned sample_size = sizeof(uint64_t) * (2 + countables.size());
+      size_t sz = sample_size;
+      void *ptr = sample_buf;
+
+      while (sz > 0) {
+         ssize_t ret = read(perfcntr_stream_fd, ptr, sz);
+
+         if (ret < 0)
+            ret = -errno;
+
+         if (ret == -EINTR || ret == -EAGAIN)
+            continue;
+
+         if (ret < 0)
+            errx(ret, "read failed");
+
+         sz -= ret;
+         ptr = static_cast<char *>(ptr) + ret;
+      }
+
+      uint64_t *buf = (uint64_t *)sample_buf;
+      uint64_t ts = buf[0];
+      uint32_t seqno = buf[1] & 0xffffffff;
+
+      discontinuity = seqno == 0;
+
+      /* Capture the timestamp from the *start* of the sampling period: */
+      last_capture_ts = last_dump_ts;
+      last_dump_ts = ts;
+
+      auto elapsed_time_ns = ticks_to_ns(last_dump_ts - last_capture_ts);
+
+      time = (float)elapsed_time_ns / 1000000000.0;
+
+      /* advance past header: */
+      buf += 2;
+
+      for (const auto &countable : countables)
+         countable.collect_stream(buf);
+
+      nsamples++;
+   }
+
+   return (nsamples > 0) && !discontinuity;
 }
 
 bool
@@ -448,7 +225,7 @@ FreedrenoDriver::init_perfcnt()
    uint64_t val;
 
    if (dev)
-      return true;
+      fd_device_del(dev);
 
    dev = fd_device_new(drm_device.fd);
    pipe = fd_pipe_new2(dev, FD_PIPE_3D, 0);
@@ -467,9 +244,7 @@ FreedrenoDriver::init_perfcnt()
       has_suspend_count = true;
    }
 
-   fd_pipe_set_param(pipe, FD_SYSPROF, 1);
-
-   perfcntrs = fd_perfcntrs(fd_pipe_dev_id(pipe), &num_perfcntrs);
+   perfcntrs = fd_perfcntrs(dev_id, &num_perfcntrs);
    if (num_perfcntrs == 0) {
       PERFETTO_FATAL("No hw counters available");
       return false;
@@ -478,9 +253,17 @@ FreedrenoDriver::init_perfcnt()
    assigned_counters.resize(num_perfcntrs);
    assigned_counters.assign(assigned_counters.size(), 0);
 
+   info = fd_dev_info_raw(dev_id);
+
    switch (fd_dev_gen(dev_id)) {
    case 6:
       setup_a6xx_counters();
+      break;
+   case 7:
+      setup_a7xx_counters();
+      break;
+   case 8:
+      setup_a8xx_counters();
       break;
    default:
       PERFETTO_FATAL("Unsupported GPU: a%03u", fd_dev_gpu_id(dev_id));
@@ -492,13 +275,19 @@ FreedrenoDriver::init_perfcnt()
    for (const auto &countable : countables)
       countable.resolve();
 
-   info = fd_dev_info_raw(dev_id);
+   if (!configure_counters_stream()) {
+      close(perfcntr_stream_fd);
+      perfcntr_stream_fd = -1;
+      return true;
+   }
 
    io = fd_dt_find_io();
    if (!io) {
       PERFETTO_FATAL("Could not map GPU I/O space");
       return false;
    }
+
+   fd_pipe_set_param(pipe, FD_SYSPROF, 1);
 
    configure_counters(true, true);
    collect_countables();
@@ -522,14 +311,26 @@ FreedrenoDriver::enable_all_counters()
 }
 
 void
-FreedrenoDriver::enable_perfcnt(const uint64_t /* sampling_period_ns */)
+FreedrenoDriver::enable_perfcnt(const uint64_t sampling_period_ns)
 {
+   sampling_period_ns_ = sampling_period_ns;
+
+   if (!io) {
+      /* reconfigure counter stream: */
+      configure_counters_stream();
+      collect_countables_stream();
+   }
 }
 
 bool
 FreedrenoDriver::dump_perfcnt()
 {
-   if (has_suspend_count) {
+   /* Note, when using perfcntr stream instead of mmio basec counter
+    * reads, we can skip this (since the seqno in the data read from
+    * the stream will tell us if there is a discontinuity, and the
+    * kernel will handle reconfiguring counters on resume)
+    */
+   if (has_suspend_count && io) {
       uint64_t val;
 
       fd_pipe_get_param(pipe, FD_SUSPEND_COUNT, &val);
@@ -550,6 +351,9 @@ FreedrenoDriver::dump_perfcnt()
       }
    }
 
+   if (!io)
+      return collect_countables_stream();
+
    auto last_ts = last_dump_ts;
 
    /* Capture the timestamp from the *start* of the sampling period: */
@@ -557,7 +361,7 @@ FreedrenoDriver::dump_perfcnt()
 
    collect_countables();
 
-   auto elapsed_time_ns = last_dump_ts - last_ts;
+   auto elapsed_time_ns = ticks_to_ns(last_dump_ts - last_ts);
 
    time = (float)elapsed_time_ns / 1000000000.0;
 
@@ -580,11 +384,13 @@ uint64_t FreedrenoDriver::next()
    return ret;
 }
 
-void FreedrenoDriver::disable_perfcnt()
+void
+FreedrenoDriver::disable_perfcnt()
 {
-   /* There isn't really any disable, only reconfiguring which countables
-    * get muxed to which counters
-    */
+   if (perfcntr_stream_fd >= 0) {
+      close(perfcntr_stream_fd);
+      perfcntr_stream_fd = -1;
+   }
 }
 
 /*
@@ -592,15 +398,15 @@ void FreedrenoDriver::disable_perfcnt()
  */
 
 FreedrenoDriver::Countable
-FreedrenoDriver::countable(std::string name)
+FreedrenoDriver::countable(std::string group, std::string name)
 {
-   auto countable = Countable(this, name);
+   auto countable = Countable(this, group, name);
    countables.emplace_back(countable);
    return countable;
 }
 
-FreedrenoDriver::Countable::Countable(FreedrenoDriver *d, std::string name)
-   : id {d->next_countable_id++}, d {d}, name {name}
+FreedrenoDriver::Countable::Countable(FreedrenoDriver *d, std::string group, std::string name)
+   : id {d->next_countable_id++}, d {d}, group {group}, name {name}
 {
 }
 
@@ -635,6 +441,80 @@ FreedrenoDriver::Countable::configure(struct fd_ringbuffer *ring, bool reset) co
    }
 }
 
+void
+FreedrenoDriver::Countable::configure_stream(struct drm_msm_perfcntr_config *req) const
+{
+   const struct fd_perfcntr_countable *countable = d->state[id].countable;
+   struct drm_msm_perfcntr_group *groups =
+      (struct drm_msm_perfcntr_group *)U642VOID(req->groups);
+
+   /* Find group: */
+   struct drm_msm_perfcntr_group *g = NULL;
+
+   for (unsigned i = 0; i < req->nr_groups; i++) {
+      if (!strcmp(groups[i].group_name, group.c_str())) {
+         g = &groups[i];
+         break;
+      }
+   }
+
+   /* If not found, append a new group: */
+   if (!g) {
+      g = &groups[req->nr_groups++];
+      strcpy(g->group_name, group.c_str());
+
+      /* allocate countables for max # of counters in the group */
+      for (unsigned i = 0; i < d->num_perfcntrs; i++) {
+         if (!strcmp(d->perfcntrs[i].name, group.c_str())) {
+            void *countables = calloc(sizeof(uint32_t), d->perfcntrs[i].num_counters);
+            g->countables = VOID2U64(countables);
+            break;
+         }
+      }
+
+      assert(g->countables);
+   }
+
+   /* Initially, just store the index within the group, since earlier groups
+    * are not yet fully populated (ie. we don't yet know the offset of the
+    * first sample in the group)
+    */
+   d->state[id].idx = g->nr_countables;
+
+   /* And last, append the countable: */
+   uint32_t *countables = (uint32_t *)U642VOID(g->countables);
+   countables[g->nr_countables++] = countable->selector;
+}
+
+static unsigned
+find_group_offset(const struct drm_msm_perfcntr_config *req, const char *group)
+{
+   struct drm_msm_perfcntr_group *groups =
+      (struct drm_msm_perfcntr_group *)U642VOID(req->groups);
+   unsigned off = 0;
+
+   for (unsigned i = 0; i < req->nr_groups; i++) {
+      if (!strcmp(groups[i].group_name, group))
+         break;
+      off += groups[i].nr_countables;
+   }
+
+   return off;
+}
+
+void
+FreedrenoDriver::Countable::resolve_sample_idx(const struct drm_msm_perfcntr_config *req) const
+{
+   d->state[id].idx += find_group_offset(req, group.c_str());
+}
+
+void
+FreedrenoDriver::Countable::collect_stream(const uint64_t *buf) const
+{
+   d->state[id].last_value = d->state[id].value;
+   d->state[id].value = buf[d->state[id].idx];
+}
+
 /* Collect current counter value and calculate delta since last sample: */
 void
 FreedrenoDriver::Countable::collect() const
@@ -650,29 +530,35 @@ FreedrenoDriver::Countable::collect() const
    d->state[id].value = *reg;
 }
 
-/* Resolve the countable and assign next counter from it's group: */
+/* Resolve the countable and assign the next counter from its group. */
 void
 FreedrenoDriver::Countable::resolve() const
 {
    for (unsigned i = 0; i < d->num_perfcntrs; i++) {
       const struct fd_perfcntr_group *g = &d->perfcntrs[i];
-      for (unsigned j = 0; j < g->num_countables; j++) {
-         const struct fd_perfcntr_countable *c = &g->countables[j];
-         if (name == c->name) {
-            d->state[id].countable = c;
+      if (group != g->name)
+         continue;
 
-            /* Assign a counter from the same group: */
-            assert(d->assigned_counters[i] < g->num_counters);
-            d->state[id].counter = &g->counters[d->assigned_counters[i]++];
+      const struct fd_perfcntr_countable *c =
+         fd_perfcntrs_countable(g, name.c_str());
 
-            std::cout << "Countable: " << name << ", group=" << g->name <<
-                  ", counter=" << d->assigned_counters[i] - 1 << "\n";
+      if (c) {
+         d->state[id].countable = c;
 
-            return;
-         }
+         /* Assign counters from high to low to reduce conflicts with UMD-owned
+          * slots. */
+         assert(d->assigned_counters[i] < g->num_counters);
+         unsigned counter_index =
+            (g->num_counters - 1) - d->assigned_counters[i]++;
+         d->state[id].counter = &g->counters[counter_index];
+
+         std::cout << "Countable: " << name << ", group=" << g->name
+                   << ", counter=" << counter_index << "\n";
+
+         return;
       }
    }
-   unreachable("no such countable!");
+   UNREACHABLE("no such countable!");
 }
 
 uint64_t
@@ -710,13 +596,26 @@ FreedrenoDriver::counter(std::string name, Counter::Units units,
 uint32_t
 FreedrenoDriver::gpu_clock_id() const
 {
-   return perfetto::protos::pbzero::BUILTIN_CLOCK_BOOTTIME;
+   static uint32_t gpu_clock_id;
+
+   if (!gpu_clock_id) {
+      /* Note: clock_id's below 128 are reserved.. for custom clock sources,
+       * using the hash of a namespaced string is the recommended approach.
+       * See: https://perfetto.dev/docs/concepts/clock-sync
+       */
+      gpu_clock_id =
+         _mesa_hash_string("org.freedesktop.pps.freedreno") | 0x80000000;
+   }
+
+   return gpu_clock_id;
 }
 
 uint64_t
 FreedrenoDriver::gpu_timestamp() const
 {
-   return perfetto::base::GetBootTimeNs().count();
+   uint64_t ts;
+   fd_pipe_get_param(pipe, FD_TIMESTAMP, &ts);
+   return ts;
 }
 
 bool

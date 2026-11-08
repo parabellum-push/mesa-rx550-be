@@ -222,7 +222,7 @@ lower_packed_varying_needs_lowering(nir_shader *shader, nir_variable *var,
       return false;
 
    const struct glsl_type *type = var->type;
-   if (nir_is_arrayed_io(var, shader->info.stage) || var->data.per_view) {
+   if (nir_is_arrayed_io(var, shader->info.stage)) {
       assert(glsl_type_is_array(type));
       type = glsl_get_array_element(type);
    }
@@ -270,8 +270,8 @@ create_or_update_packed_varying(struct lower_packed_varyings_state *state,
       assert(state->components[slot] != 0);
       assert(name);
 
-      nir_variable *packed_var = rzalloc(state->shader, nir_variable);
-      packed_var->name = ralloc_asprintf(packed_var, "packed:%s", name);
+      nir_variable *packed_var = nir_variable_create_zeroed(state->shader);
+      nir_variable_set_namef(state->shader, packed_var, "packed:%s", name);
       packed_var->data.mode = state->mode;
 
       bool is_interpolation_flat =
@@ -294,6 +294,7 @@ create_or_update_packed_varying(struct lower_packed_varyings_state *state,
       packed_var->data.centroid = unpacked_var->data.centroid;
       packed_var->data.sample = unpacked_var->data.sample;
       packed_var->data.patch = unpacked_var->data.patch;
+      packed_var->data.per_primitive = unpacked_var->data.per_primitive;
       packed_var->data.interpolation = is_interpolation_flat ?
          (unsigned) INTERP_MODE_FLAT : unpacked_var->data.interpolation;
       packed_var->data.location = location;
@@ -316,7 +317,7 @@ create_or_update_packed_varying(struct lower_packed_varyings_state *state,
        */
       if (state->gs_input_vertices == 0 || vertex_index == 0) {
          assert(name);
-         ralloc_asprintf_append((char **) &var->name, ",%s", name);
+         nir_variable_append_namef(state->shader, var, ",%s", name);
       }
    }
 }
@@ -410,7 +411,9 @@ bitwise_assign_pack(struct lower_packed_varyings_state *state,
 
             store_state->is_64bit = true;
             store_state->deref = packed_deref;
-            store_state->values[0] = nir_unpack_64_2x32(&state->b, swizzle);
+            store_state->values[0] =
+               nir_64_2x32_memory_order(&state->b,
+                                        nir_unpack_64_2x32(&state->b, swizzle));
             store_state->writemasks[0] = writemask;
 
             unsigned swiz_y = 1;
@@ -418,11 +421,14 @@ bitwise_assign_pack(struct lower_packed_varyings_state *state,
             swizzle = nir_swizzle(&state->b, value, &swiz_y, 1);
 
             store_state->deref = packed_deref;
-            store_state->values[1] = nir_unpack_64_2x32(&state->b, swizzle);
+            store_state->values[1] =
+               nir_64_2x32_memory_order(&state->b,
+                                        nir_unpack_64_2x32(&state->b, swizzle));
             store_state->writemasks[1] = writemask;
             return store_state;
          } else {
-            value = nir_unpack_64_2x32(&state->b, value);
+            value = nir_64_2x32_memory_order(&state->b,
+                                             nir_unpack_64_2x32(&state->b, value));
          }
          break;
       case GLSL_TYPE_SAMPLER:
@@ -487,7 +493,8 @@ bitwise_assign_unpack(struct lower_packed_varyings_state *state,
             store_state->deref = unpacked_deref;
             store_state->values[0] =
                nir_pack_64_2x32(&state->b,
-                                nir_swizzle(&state->b, value, swiz_xy, 2));
+                                nir_64_2x32_memory_order(&state->b,
+                                   nir_swizzle(&state->b, value, swiz_xy, 2)));
             store_state->writemasks[0] = writemask;
 
             unsigned swiz_zw[2] = {2, 3};
@@ -496,12 +503,14 @@ bitwise_assign_unpack(struct lower_packed_varyings_state *state,
             store_state->deref = unpacked_deref;
             store_state->values[1] =
                nir_pack_64_2x32(&state->b,
-                                nir_swizzle(&state->b, value, swiz_zw, 2));
+                                nir_64_2x32_memory_order(&state->b,
+                                   nir_swizzle(&state->b, value, swiz_zw, 2)));
             store_state->writemasks[1] = writemask;
 
             return store_state;
          } else {
-            value = nir_pack_64_2x32(&state->b, value);
+            value = nir_pack_64_2x32(&state->b,
+                                     nir_64_2x32_memory_order(&state->b, value));
          }
          break;
       case GLSL_TYPE_SAMPLER:
@@ -1028,9 +1037,9 @@ gl_nir_lower_packed_varyings(const struct gl_constants *consts,
                                            locations_used);
 
    /* Determine if the shader interface is exposed to api query */
-   struct gl_linked_shader *linked_shaders[MESA_SHADER_STAGES];
+   struct gl_linked_shader *linked_shaders[MESA_SHADER_MESH_STAGES];
    unsigned num_shaders = 0;
-   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+   for (unsigned i = 0; i < MESA_SHADER_MESH_STAGES; i++) {
       if (prog->_LinkedShaders[i])
          linked_shaders[num_shaders++] = prog->_LinkedShaders[i];
    }

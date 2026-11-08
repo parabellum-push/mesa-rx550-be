@@ -52,7 +52,7 @@ get_dxcore_factory()
    IDXCoreAdapterFactory *factory = NULL;
    HRESULT hr = DXCoreCreateAdapterFactory(IID_IDXCoreAdapterFactory, (void **)&factory);
    if (FAILED(hr)) {
-      debug_printf("D3D12: DXCoreCreateAdapterFactory failed: %08x\n", hr);
+      debug_printf("D3D12: DXCoreCreateAdapterFactory failed: %08x\n", (unsigned)hr);
       return NULL;
    }
 
@@ -74,7 +74,7 @@ choose_dxcore_adapter(IDXCoreAdapterFactory *factory, LUID *adapter_luid)
 
 #ifndef _WIN32
       // Pick the user selected adapter if any
-      char *adapter_name = getenv("MESA_D3D12_DEFAULT_ADAPTER_NAME");
+      const char *adapter_name = os_get_option("MESA_D3D12_DEFAULT_ADAPTER_NAME");
       if (adapter_name) {
          for (unsigned i=0; i<list->GetAdapterCount(); i++) {
             if (SUCCEEDED(list->GetAdapter(i, &adapter))) {
@@ -149,7 +149,12 @@ dxcore_get_memory_info(struct d3d12_screen *screen, struct d3d12_memory_info *ou
    DXCoreAdapterMemoryBudgetNodeSegmentGroup nonlocal_node_segment = { 0, DXCoreSegmentGroup::NonLocal };
    dxcore_screen->adapter->QueryState(DXCoreAdapterState::AdapterMemoryBudget, &local_node_segment, &local_info);
    dxcore_screen->adapter->QueryState(DXCoreAdapterState::AdapterMemoryBudget, &nonlocal_node_segment, &nonlocal_info);
+
+   output->budget_local = local_info.budget;
+   output->budget_nonlocal = nonlocal_info.budget;
    output->budget = local_info.budget + nonlocal_info.budget;
+   output->usage_local = local_info.currentUsage;
+   output->usage_nonlocal = nonlocal_info.currentUsage;
    output->usage = local_info.currentUsage + nonlocal_info.currentUsage;
 }
 
@@ -213,7 +218,8 @@ d3d12_init_dxcore_screen(struct d3d12_screen *dscreen)
    screen->base.device_id = hardware_ids.deviceID;
    screen->base.subsys_id = hardware_ids.subSysID;
    screen->base.revision = hardware_ids.revision;
-   screen->base.memory_size_megabytes = (dedicated_video_memory + dedicated_system_memory + shared_system_memory) >> 20;
+   screen->base.memory_device_size_megabytes = dedicated_video_memory >> 20;
+   screen->base.memory_system_size_megabytes = (dedicated_system_memory + shared_system_memory) >> 20;
    screen->base.base.get_name = dxcore_get_name;
    screen->base.get_memory_info = dxcore_get_memory_info;
 

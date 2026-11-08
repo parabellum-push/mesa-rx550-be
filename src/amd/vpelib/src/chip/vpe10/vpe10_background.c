@@ -23,7 +23,6 @@
  */
 
 #include "vpe10_background.h"
-#include "common.h"
 #include "vpe_priv.h"
 
 bool vpe10_split_bg_gap(struct vpe_rect *gaps, const struct vpe_rect *target_rect,
@@ -48,10 +47,15 @@ bool vpe10_split_bg_gap(struct vpe_rect *gaps, const struct vpe_rect *target_rec
         max_width = (uint16_t)((gap_width + gap_cnt - 1) / gap_cnt);
     }
 
+    // if gap width, after calculation < VPE_MIN_VIEWPORT_SIZE, do not further split
+    // need return true, not false, to prevent go to full BG flow
+    if ((gap_width < VPE_MIN_VIEWPORT_SIZE) || (max_width < VPE_MIN_VIEWPORT_SIZE))
+        return true;
+
     if (num_gaps_t + gap_cnt > max_gaps)
         return false;
 
-    for (gap_idx = prev_idx; gap_idx < num_gaps_t + gap_cnt; gap_idx++) {
+    for (gap_idx = prev_idx; gap_idx < (uint16_t)(num_gaps_t + gap_cnt); gap_idx++) {
         gaps[gap_idx].y      = gap_y;
         gaps[gap_idx].height = gap_height;
         gaps[gap_idx].x      = gap_x;

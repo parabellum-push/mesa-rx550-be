@@ -29,19 +29,13 @@
 #ifdef HAVE_SYS_SHM_H
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#ifdef __FreeBSD__
-/* sys/ipc.h -> sys/_types.h -> machine/param.h
- * - defines ALIGN which clashes with our ALIGN
- */
-#undef ALIGN
-#endif
 #endif
 
 #include "util/compiler.h"
 #include "util/format/u_formats.h"
 #include "util/detect_os.h"
 
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
 # include <sys/stat.h>
 # include <errno.h>
 # include <sys/mman.h>
@@ -114,15 +108,19 @@ alloc_shm(struct dri_sw_displaytarget *dri_sw_dt, unsigned size)
 
    /* 0600 = user read+write */
    dri_sw_dt->shmid = shmget(IPC_PRIVATE, size, IPC_CREAT | 0600);
-   if (dri_sw_dt->shmid < 0)
+   if (dri_sw_dt->shmid < 0) {
+      dri_sw_dt->shmid = -1;
       return NULL;
+   }
 
    addr = (char *) shmat(dri_sw_dt->shmid, NULL, 0);
    /* mark the segment immediately for deletion to avoid leaks */
    shmctl(dri_sw_dt->shmid, IPC_RMID, NULL);
 
-   if (addr == (char *) -1)
+   if (addr == (char *) -1) {
+      dri_sw_dt->shmid = -1;
       return NULL;
+   }
 
    return addr;
 }
@@ -186,11 +184,15 @@ dri_sw_displaytarget_create_mapped(struct sw_winsys *winsys,
                                    enum pipe_format format,
                                    unsigned width, unsigned height,
                                    unsigned stride,
-                                   void *data)
+                                   void *data,
+                                   struct winsys_handle *whandle)
 {
    UNUSED struct dri_sw_winsys *ws = dri_sw_winsys(winsys);
    struct dri_sw_displaytarget *dri_sw_dt;
-   unsigned nblocksy, size;
+
+   if (whandle->offset + util_format_get_2d_size(format, stride, height) >
+       whandle->size)
+      return NULL;
 
    dri_sw_dt = CALLOC_STRUCT(dri_sw_displaytarget);
    if(!dri_sw_dt)
@@ -202,9 +204,7 @@ dri_sw_displaytarget_create_mapped(struct sw_winsys *winsys,
 
    dri_sw_dt->stride = stride;
 
-   nblocksy = util_format_get_nblocksy(format, height);
-   size = dri_sw_dt->stride * nblocksy;
-   dri_sw_dt->size = size;
+   dri_sw_dt->size = whandle->size;
 
    dri_sw_dt->shmid = -1;
    dri_sw_dt->fd = -1;
@@ -248,7 +248,7 @@ dri_sw_displaytarget_map(struct sw_winsys *ws,
    dri_sw_dt->map_flags = flags;
    if (dri_sw_dt->unbacked)
       return dri_sw_dt->mapped;
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
    if (dri_sw_dt->fd > -1) {
       bool success = false;
       if (!success) {
@@ -297,7 +297,7 @@ dri_sw_displaytarget_unmap(struct sw_winsys *ws,
       dri_sw_dt->map_flags = 0;
       return;
    }
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
    if (dri_sw_dt->fd > -1) {
       munmap(dri_sw_dt->data, dri_sw_dt->size);
       dri_sw_dt->data = NULL;
@@ -317,7 +317,7 @@ dri_sw_displaytarget_from_handle(struct sw_winsys *winsys,
                                  struct winsys_handle *whandle,
                                  unsigned *stride)
 {
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
    int fd = os_dupfd_cloexec(whandle->handle);
    struct sw_displaytarget *sw = dri_sw_displaytarget_create(winsys, templ->usage, templ->format, templ->width0, templ->height0, 64, NULL, stride);
    struct dri_sw_displaytarget *dri_sw_dt = dri_sw_displaytarget(sw);

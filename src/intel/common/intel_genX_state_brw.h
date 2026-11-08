@@ -42,17 +42,31 @@ extern "C" {
 static inline void
 intel_set_ps_dispatch_state(struct GENX(3DSTATE_PS) *ps,
                             const struct intel_device_info *devinfo,
-                            const struct brw_wm_prog_data *prog_data,
+                            const struct brw_fs_prog_data *prog_data,
                             unsigned rasterization_samples,
-                            enum intel_msaa_flags msaa_flags)
+                            enum intel_fs_config fs_config)
 {
    assert(rasterization_samples != 0);
 
    bool enable_8  = prog_data->dispatch_8;
    bool enable_16 = prog_data->dispatch_16;
    bool enable_32 = prog_data->dispatch_32;
+   uint8_t dispatch_multi = prog_data->dispatch_multi;
 
-#if GFX_VER >= 9
+#if GFX_VER >= 20
+   if (ps->RenderTargetFastClearEnable) {
+      /* Bspec 57340 (r59562):
+       *
+       *   Clearing shader must use SIMD16 dispatch mode.
+       *
+       * The spec doesn't state if a fast-clear shader can be multi-poly. We
+       * just assume it can't.
+       */
+      assert(enable_16);
+      enable_32 = enable_8 = false;
+      dispatch_multi = 0;
+   }
+#elif GFX_VER >= 9
    /* SKL PRMs, Volume 2a: Command Reference: Instructions:
     *    3DSTATE_PS_BODY::8 Pixel Dispatch Enable:
     *
@@ -64,7 +78,7 @@ intel_set_ps_dispatch_state(struct GENX(3DSTATE_PS) *ps,
        ps->RenderTargetResolveType == RESOLVE_PARTIAL ||
        ps->RenderTargetResolveType == RESOLVE_FULL)
       enable_8 = false;
-#elif GFX_VER >= 8
+#elif GFX_VER == 8
    /* BDW has the same wording as SKL, except some of the fields mentioned
     * don't exist...
     */
@@ -73,16 +87,13 @@ intel_set_ps_dispatch_state(struct GENX(3DSTATE_PS) *ps,
       enable_8 = false;
 #endif
 
-   const bool is_persample_dispatch =
-      brw_wm_prog_data_is_persample(prog_data, msaa_flags);
-
-   if (is_persample_dispatch) {
+   if (prog_data->persample_dispatch) {
       /* TGL PRMs, Volume 2d: Command Reference: Structures:
        *    3DSTATE_PS_BODY::32 Pixel Dispatch Enable:
        *
        *    "Must not be enabled when dispatch rate is sample AND NUM_MULTISAMPLES > 1."
        */
-      if (GFX_VER >= 12 && rasterization_samples > 1)
+      if (GFX_VER >= 12 && GFX_VER < 20 && rasterization_samples > 1)
          enable_32 = false;
 
       /* Starting with SandyBridge (where we first get MSAA), the different
@@ -112,25 +123,22 @@ intel_set_ps_dispatch_state(struct GENX(3DSTATE_PS) *ps,
     *
     * 16x MSAA only exists on Gfx9+, so we can skip this on Gfx8.
     */
-   if (GFX_VER >= 9 && rasterization_samples == 16 && !is_persample_dispatch) {
+   if (GFX_VER >= 9 && GFX_VER < 20 && rasterization_samples == 16 && !prog_data->persample_dispatch) {
       assert(enable_8 || enable_16);
       enable_32 = false;
    }
 
    assert(enable_8 || enable_16 || enable_32 ||
-          (GFX_VER >= 12 && prog_data->dispatch_multi));
-   assert(!prog_data->dispatch_multi ||
-          (GFX_VER >= 12 && !enable_8));
+          (GFX_VER >= 12 && dispatch_multi));
+   assert(!dispatch_multi || (GFX_VER >= 12 && !enable_8));
 
 #if GFX_VER >= 20
-   if (prog_data->dispatch_multi) {
+   if (dispatch_multi) {
       ps->Kernel0Enable = true;
-      ps->Kernel0SIMDWidth = (prog_data->dispatch_multi == 32 ?
-                              PS_SIMD32 : PS_SIMD16);
+      ps->Kernel0SIMDWidth = (dispatch_multi == 32 ? PS_SIMD32 : PS_SIMD16);
       ps->Kernel0MaximumPolysperThread =
          prog_data->max_polygons - 1;
-      switch (prog_data->dispatch_multi /
-              prog_data->max_polygons) {
+      switch (dispatch_multi / prog_data->max_polygons) {
       case 8:
          ps->Kernel0PolyPackingPolicy = POLY_PACK8_FIXED;
          break;
@@ -138,9 +146,8 @@ intel_set_ps_dispatch_state(struct GENX(3DSTATE_PS) *ps,
          ps->Kernel0PolyPackingPolicy = POLY_PACK16_FIXED;
          break;
       default:
-         unreachable("Invalid polygon width");
+         UNREACHABLE("Invalid polygon width");
       }
-
    } else if (enable_16) {
       ps->Kernel0Enable = true;
       ps->Kernel0SIMDWidth = PS_SIMD16;
@@ -150,30 +157,15 @@ intel_set_ps_dispatch_state(struct GENX(3DSTATE_PS) *ps,
    if (enable_32) {
       ps->Kernel1Enable = true;
       ps->Kernel1SIMDWidth = PS_SIMD32;
-
-   } else if (enable_16 && prog_data->dispatch_multi == 16) {
+   } else if (enable_16 && dispatch_multi == 16) {
       ps->Kernel1Enable = true;
       ps->Kernel1SIMDWidth = PS_SIMD16;
    }
 #else
-   ps->_8PixelDispatchEnable = enable_8 ||
-      (GFX_VER == 12 && prog_data->dispatch_multi);
+   ps->_8PixelDispatchEnable = enable_8 || (GFX_VER == 12 && dispatch_multi);
    ps->_16PixelDispatchEnable = enable_16;
    ps->_32PixelDispatchEnable = enable_32;
 #endif
-}
-
-#endif
-
-#if GFX_VERx10 >= 125
-
-UNUSED static int
-preferred_slm_allocation_size(const struct intel_device_info *devinfo)
-{
-   if (devinfo->platform == INTEL_PLATFORM_LNL && devinfo->revision == 0)
-      return SLM_ENCODES_128K;
-
-   return 0;
 }
 
 #endif

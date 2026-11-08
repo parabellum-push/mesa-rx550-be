@@ -1,4 +1,4 @@
-/* Copyright 2022 Advanced Micro Devices, Inc.
+﻿/* Copyright 2022-2026 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -22,6 +22,20 @@
  *
  */
 
+/** @mainpage     VPELIB
+ *  @section intro_sec Introduction
+ *
+ *  VPE is a hardware pipeline that does baseline video processing from DRAM to DRAM.
+ *  The objective of VPE is to offload the graphic workload to VPE to save power.
+ *  The main functionality of VPE is to read video stream from memory, process the video stream and
+ *  write it back to memory. VPE is meant to augment the abilities of both the graphics (GFX) and
+ *  multi plane overlay (MPO) and deliver more power efficient use cases.
+ *
+ *
+ *  @brief        This is the file containing the main API for the VPE library.
+ *  @file         vpelib.h
+ */
+
 #pragma once
 
 #include "vpe_types.h"
@@ -31,7 +45,9 @@
 extern "C" {
 #endif
 
-/* @brief Create the VPE lib instance.
+/**
+ * @function vpe_create
+ * @brief Create the VPE lib instance.
  *
  * Caler provides the current asic info,
  * logging and system memory APIs.
@@ -47,7 +63,7 @@ extern "C" {
  */
 struct vpe *vpe_create(const struct vpe_init_data *params);
 
-/* @brief Destroy the VPE lib instance and resources
+/** @brief Destroy the VPE lib instance and resources
  *
  * @param[in] vpe   the vpe instance created by vpe_create
  */
@@ -87,6 +103,33 @@ enum vpe_status vpe_check_support(
 enum vpe_status vpe_build_noops(struct vpe *vpe, uint32_t num_dwords, uint32_t **ppcmd_space);
 
 /**
+ * @brief
+ * Build a NOP command descriptor with a firmware message signature
+ *
+ * This function writes a NOP command containing a firmware message signature that
+ * can be recognized by the VPE firmware pipeline. The signature format is:
+ * - High 16 bits: 0xBEEF (fixed signature)
+ * - Low 16 bits: fw_msg_type (message type from vpe_fw_msg_type enum)
+ *
+ * The command consists of VPE_FW_MSG_SIGNATURE_DW_COUNT dwords and is used
+ * to send various notifications to the VPE firmware pipeline.
+ *
+ * Common use cases:
+ * - VPE_FW_MSG_NEW_CONTEXT: Indicates a new context is being processed
+ *
+ * @param[in,out]  bufs         [in]  Pointer to vpe_build_bufs structure containing the command
+ * buffer. The cmd_buf.size must be sufficient for the signature dwords. [out] Updates
+ * cmd_buf.cpu_va, cmd_buf.gpu_va to the next write address and decrements cmd_buf.size by the
+ * written amount.
+ * @param[in]      fw_msg_type  Firmware message type (see enum vpe_fw_msg_type)
+ *                              Valid range: 0x0000 - 0xFFFF
+ * @return VPE_STATUS_OK if successful,
+ *         VPE_STATUS_BUFFER_OVERFLOW if buffer size is insufficient,
+ *         VPE_STATUS_ERROR if parameters are invalid
+ */
+enum vpe_status vpe_build_fw_msg(struct vpe_build_bufs *cur_bufs, uint16_t fw_msg_type);
+
+/**
  * build the command descriptors for the given param.
  * caller must call vpe_check_support() before this function,
  * unexpected result otherwise.
@@ -100,6 +143,55 @@ enum vpe_status vpe_build_noops(struct vpe *vpe, uint32_t num_dwords, uint32_t *
  */
 enum vpe_status vpe_build_commands(
     struct vpe *vpe, const struct vpe_build_param *param, struct vpe_build_bufs *bufs);
+
+/**
+ * get the optimal number of taps based on the scaling ratio.
+ * @param[in]  vpe      vpe instance created by vpe_create()
+ * @param[in,out]  scaling_info  [in] source and destination rectangles [out] calculated taps.
+ */
+void vpe_get_optimal_num_of_taps(struct vpe *vpe, struct vpe_scaling_info *scaling_info);
+
+/**
+ * @brief
+ *  Build the command descriptor for timestamp operation
+ *  gets global gpu timestamp and writes it to the given gpu address
+ *
+ * @param[in,out]  buf            [in]  memory allocated for the command buffer.
+ *                                If size is 0, it reports the required size for this checked
+ *                                operation. [out] the next write address and the filled sizes.
+ * @param[in]      dst_address    address where the data is written to
+ * @return status
+ */
+enum vpe_status vpe_build_timestamp(struct vpe_buf *buf, uint64_t dst_address);
+
+/**
+ * @brief
+ *  Build the command descriptor for resolve operation
+ *  copies the data from the read address to the write address to the number of dwords specified.
+ *
+ * @param[in,out]  buf            [in] memory allocated for the command buffer.
+ *                                If size is 0, it reports the required size for this checked
+ *                                operation. [out] the next write address and the filled sizes.
+ * @param[in]      read_addr      GPU virtual address where the data is read from
+ * @param[in]      write_addr     GPU virtual address where the data is written to
+ * @param[in]      dword_count    number of dwords to be copierd
+ * @return status
+ */
+enum vpe_status vpe_build_resolve_query(
+    struct vpe_buf *buf, uint64_t read_addr, uint64_t write_addr, uint32_t dword_count);
+
+/**
+ * @brief create the vpe engine instance.
+ * @param[in] param  provide the asic version.
+ * @return           vpe engine instance if valid. NULL otherwise
+ */
+struct vpe_engine *vpe_create_engine(struct vpe_init_data *param);
+
+/**
+ * destroy the vpe engine instance.
+ * @param[in] engine  vpe engine instance created by vpe_create_engine()
+ */
+void vpe_destroy_engine(struct vpe_engine **engine);
 
 #ifdef __cplusplus
 }

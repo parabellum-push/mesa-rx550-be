@@ -419,7 +419,7 @@ init_groups(struct gl_context *ctx)
                c->Type = GL_PERCENTAGE_AMD;
                break;
             default:
-               unreachable("Invalid driver query type!");
+               UNREACHABLE("Invalid driver query type!");
          }
 
          c->query_type = info.query_type;
@@ -467,8 +467,7 @@ new_performance_monitor(struct gl_context *ctx, GLuint index)
    for (i = 0; i < ctx->PerfMonitor.NumGroups; i++) {
       const struct gl_perf_monitor_group *g = &ctx->PerfMonitor.Groups[i];
 
-      m->ActiveCounters[i] = rzalloc_array(m->ActiveCounters, BITSET_WORD,
-                                           BITSET_WORDS(g->NumCounters));
+      m->ActiveCounters[i] = BITSET_RZALLOC(m->ActiveCounters, g->NumCounters);
       if (m->ActiveCounters[i] == NULL)
          goto fail;
    }
@@ -721,9 +720,6 @@ _mesa_GenPerfMonitorsAMD(GLsizei n, GLuint *monitors)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glGenPerfMonitorsAMD(%d)\n", n);
-
    init_groups(ctx);
 
    if (n < 0) {
@@ -756,9 +752,6 @@ _mesa_DeletePerfMonitorsAMD(GLsizei n, GLuint *monitors)
 {
    GLint i;
    GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDeletePerfMonitorsAMD(%d)\n", n);
 
    if (n < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glDeletePerfMonitorsAMD(n < 0)");
@@ -941,6 +934,15 @@ perf_monitor_result_size(const struct gl_context *ctx,
    unsigned group, counter;
    unsigned size = 0;
 
+   /**
+    * If no BeginPerfMonitorAMD has been issued for a monitor,
+    * or if SelectPerfMonitorCountersAMD is called on a monitor, then the result
+    * of querying for PERFMON_RESULT_SIZE will be 0.
+    * Using the same logic in is_perf_monitor_result_available().
+    */
+   if (!m->num_active_counters)
+      return 0;
+
    for (group = 0; group < ctx->PerfMonitor.NumGroups; group++) {
       const struct gl_perf_monitor_group *g = &ctx->PerfMonitor.Groups[group];
 
@@ -963,7 +965,6 @@ _mesa_GetPerfMonitorCounterDataAMD(GLuint monitor, GLenum pname,
    GET_CURRENT_CONTEXT(ctx);
 
    struct gl_perf_monitor_object *m = lookup_monitor(ctx, monitor);
-   bool result_available;
 
    if (m == NULL) {
       _mesa_error(ctx, GL_INVALID_VALUE,
@@ -985,12 +986,12 @@ _mesa_GetPerfMonitorCounterDataAMD(GLuint monitor, GLenum pname,
       return;
    }
 
-   /* If the monitor has never ended, there is no result. */
-   result_available = m->Ended &&
-      is_perf_monitor_result_available(ctx, m);
-
-   /* AMD appears to return 0 for all queries unless a result is available. */
-   if (!result_available) {
+   /**
+    * If no EndPerfMonitorAMD has been issued for a monitor
+    * then the result of querying for PERFMON_RESULT_AVAILABLE and
+    * PERFMON_RESULT_SIZE will be 0
+    */
+   if (!m->Ended) {
       *data = 0;
       if (bytesWritten != NULL)
          *bytesWritten = sizeof(GLuint);
@@ -999,7 +1000,10 @@ _mesa_GetPerfMonitorCounterDataAMD(GLuint monitor, GLenum pname,
 
    switch (pname) {
    case GL_PERFMON_RESULT_AVAILABLE_AMD:
-      *data = 1;
+      if (is_perf_monitor_result_available(ctx, m))
+         *data = 1;
+      else
+         *data = 0;
       if (bytesWritten != NULL)
          *bytesWritten = sizeof(GLuint);
       break;

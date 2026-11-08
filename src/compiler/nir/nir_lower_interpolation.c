@@ -49,10 +49,10 @@ nir_lower_interpolation_instr(nir_builder *b, nir_instr *instr, void *cb_data)
       return false;
 
    nir_intrinsic_instr *bary_intrinsic =
-      nir_instr_as_intrinsic(intr->src[0].ssa->parent_instr);
+      nir_def_as_intrinsic(intr->src[0].ssa);
 
    /* Leave VARYING_SLOT_POS alone */
-   if (nir_intrinsic_base(intr) == VARYING_SLOT_POS)
+   if (nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_POS)
       return false;
 
    const enum glsl_interp_mode interp_mode =
@@ -106,12 +106,12 @@ nir_lower_interpolation_instr(nir_builder *b, nir_instr *instr, void *cb_data)
       nir_def *bary = intr->src[0].ssa;
       nir_def *val;
 
-      val = nir_ffma(b, nir_channel(b, bary, 1),
-                     nir_channel(b, iid, 1),
-                     nir_channel(b, iid, 0));
-      val = nir_ffma(b, nir_channel(b, bary, 0),
-                     nir_channel(b, iid, 2),
-                     val);
+      val = nir_ffma_weak(b, nir_channel(b, bary, 1),
+                             nir_channel(b, iid, 1),
+                             nir_channel(b, iid, 0));
+      val = nir_ffma_weak(b, nir_channel(b, bary, 0),
+                             nir_channel(b, iid, 2),
+                             val);
 
       comps[i] = val;
    }
@@ -125,7 +125,6 @@ bool
 nir_lower_interpolation(nir_shader *shader, nir_lower_interpolation_options options)
 {
    return nir_shader_instructions_pass(shader, nir_lower_interpolation_instr,
-                                       nir_metadata_block_index |
-                                          nir_metadata_dominance,
+                                       nir_metadata_control_flow,
                                        &options);
 }

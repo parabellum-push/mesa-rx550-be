@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "aco_builder.h"
 #include "aco_ir.h"
 
 #include <vector>
@@ -42,8 +41,8 @@ setup_reduce_temp(Program* program)
       return;
 
    assert(maxSize == 1 || maxSize == 2);
-   Temp reduceTmp(0, RegClass(RegType::vgpr, maxSize).as_linear());
-   Temp vtmp(0, RegClass(RegType::vgpr, maxSize).as_linear());
+   Temp reduceTmp(0, lv1.resize(maxSize * 4));
+   Temp vtmp(0, lv1.resize(maxSize * 4));
    int inserted_at = -1;
    int vtmp_inserted_at = -1;
 
@@ -64,11 +63,9 @@ setup_reduce_temp(Program* program)
             aco_ptr<Instruction> end{create_instruction(
                aco_opcode::p_end_linear_vgpr, Format::PSEUDO, vtmp_inserted_at >= 0 ? 2 : 1, 0)};
             end->operands[0] = Operand(reduceTmp);
-            end->operands[0].setLateKill(true);
-            if (vtmp_inserted_at >= 0) {
+            if (vtmp_inserted_at >= 0)
                end->operands[1] = Operand(vtmp);
-               end->operands[1].setLateKill(true);
-            }
+
             /* insert after the phis of the block */
             std::vector<aco_ptr<Instruction>>::iterator it = block.instructions.begin();
             while ((*it)->opcode == aco_opcode::p_linear_phi || (*it)->opcode == aco_opcode::p_phi)
@@ -164,16 +161,12 @@ setup_reduce_temp(Program* program)
 
          if (instr->isReduction()) {
             instr->operands[1] = Operand(reduceTmp);
-            instr->operands[1].setLateKill(true);
-            if (need_vtmp) {
+            if (need_vtmp)
                instr->operands[2] = Operand(vtmp);
-               instr->operands[2].setLateKill(true);
-            }
          } else {
             assert(instr->opcode == aco_opcode::p_interp_gfx11 ||
                    instr->opcode == aco_opcode::p_bpermute_permlane);
             instr->operands[0] = Operand(reduceTmp);
-            instr->operands[0].setLateKill(true);
          }
       }
    }

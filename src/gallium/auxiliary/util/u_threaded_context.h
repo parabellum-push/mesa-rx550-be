@@ -70,8 +70,6 @@
  *       (e.g. LLVM target machine)
  *     - Only pipe_context's debug callback for shader dumps is guaranteed to
  *       be up to date, because set_debug_callback synchronizes execution.
- * - create_surface
- * - surface_destroy
  * - create_sampler_view
  * - sampler_view_destroy
  * - stream_output_target_destroy
@@ -152,6 +150,8 @@
  *    which must be managed by the driver; if a buffer is bound multiple times in
  *    the same binding point (e.g., vertex buffer slots 0,1,2), this will be counted
  *    as a single rebind.
+ *    A buffer which has had its backing storage replaced may have its backing storage
+ *    accessed through multiple pipe_resources.
  *
  *
  * Optional resource busy callbacks for better performance
@@ -217,6 +217,15 @@ struct tc_unflushed_batch_token;
 /* 0 = disabled, 1 = assertions, 2 = printfs, 3 = logging */
 #define TC_DEBUG 0
 
+/* disabling this (nonzero to enable) is technically out of spec, but:
+ * - it's conformant
+ * - doesn't cause any known issues
+ * - massively improves performance
+ *
+ * update 2026: chromium svg rendering requires this due to skia bugs
+ */
+#define TC_RESOLVE_STRICT 0
+
 /* This is an internal flag not sent to the driver. */
 #define TC_TRANSFER_MAP_UPLOAD_CPU_STORAGE   (1u << 28)
 /* These are map flags sent to drivers. */
@@ -273,13 +282,6 @@ struct tc_unflushed_batch_token;
  */
 #define TC_MAX_SUBDATA_BYTES        320
 
-enum tc_call_id {
-#define CALL(name) TC_CALL_##name,
-#include "u_threaded_context_calls.h"
-#undef CALL
-   TC_NUM_CALLS,
-};
-
 enum tc_binding_type {
    TC_BINDING_VERTEX_BUFFER,
    TC_BINDING_STREAMOUT_BUFFER,
@@ -289,33 +291,39 @@ enum tc_binding_type {
    TC_BINDING_UBO_TCS,
    TC_BINDING_UBO_TES,
    TC_BINDING_UBO_CS,
+   TC_BINDING_UBO_TASK,
+   TC_BINDING_UBO_MESH,
    TC_BINDING_SAMPLERVIEW_VS,
    TC_BINDING_SAMPLERVIEW_FS,
    TC_BINDING_SAMPLERVIEW_GS,
    TC_BINDING_SAMPLERVIEW_TCS,
    TC_BINDING_SAMPLERVIEW_TES,
    TC_BINDING_SAMPLERVIEW_CS,
+   TC_BINDING_SAMPLERVIEW_TASK,
+   TC_BINDING_SAMPLERVIEW_MESH,
    TC_BINDING_SSBO_VS,
    TC_BINDING_SSBO_FS,
    TC_BINDING_SSBO_GS,
    TC_BINDING_SSBO_TCS,
    TC_BINDING_SSBO_TES,
    TC_BINDING_SSBO_CS,
+   TC_BINDING_SSBO_TASK,
+   TC_BINDING_SSBO_MESH,
    TC_BINDING_IMAGE_VS,
    TC_BINDING_IMAGE_FS,
    TC_BINDING_IMAGE_GS,
    TC_BINDING_IMAGE_TCS,
    TC_BINDING_IMAGE_TES,
    TC_BINDING_IMAGE_CS,
+   TC_BINDING_IMAGE_TASK,
+   TC_BINDING_IMAGE_MESH,
 };
-
-typedef uint16_t (*tc_execute)(struct pipe_context *pipe, void *call);
 
 typedef void (*tc_replace_buffer_storage_func)(struct pipe_context *ctx,
                                                struct pipe_resource *dst,
                                                struct pipe_resource *src,
                                                unsigned minimum_num_rebinds,
-                                               uint32_t rebind_mask,
+                                               uint64_t rebind_mask,
                                                uint32_t delete_buffer_id);
 typedef struct pipe_fence_handle *(*tc_create_fence_func)(struct pipe_context *ctx,
                                                           struct tc_unflushed_batch_token *token);
@@ -361,8 +369,6 @@ struct threaded_resource {
 
    /* internal tag for tc indicating which batch last touched this resource */
    int8_t last_batch_usage;
-   /* for disambiguating last_batch_usage across batch cycles */
-   uint32_t batch_generation;
 
    /* Unique buffer ID. Drivers must set it to non-zero for buffers and it must
     * be unique. Textures must set 0. Low bits are used as a hash of the ID.
@@ -429,6 +435,9 @@ struct tc_unflushed_batch_token {
    struct threaded_context *tc;
 };
 
+/* to determine whether a draw/clear/invalidate/resolve has been triggered */
+#define TC_RENDERPASS_INFO_HAS_WORK(data32) (data32 & BITFIELD_MASK(30))
+
 struct tc_renderpass_info {
    union {
       struct {
@@ -448,11 +457,12 @@ struct tc_renderpass_info {
          bool zsbuf_invalidate : 1;
          /* whether a draw occurs */
          bool has_draw : 1;
-         /* whether a framebuffer resolve occurs on cbuf[0] */
+         /* whether a framebuffer resolve occurs on cbuf[0] or zsbuf */
          bool has_resolve : 1;
          /* whether queries are ended during this renderpass */
          bool has_query_ends : 1;
-         uint8_t pad : 1;
+         /* internal tc use; this renderpass has explicitly ended */
+         bool ended : 1;
          /* 32 bits offset */
          /* bitmask of color buffers using fbfetch */
          uint8_t cbuf_fbfetch;
@@ -472,9 +482,19 @@ struct tc_renderpass_info {
       uint32_t data32[2];
       /* cso info is in data16[2] */
       uint16_t data16[4];
-      /* zsbuf fb info is in data8[3] */
+      /* zsbuf fb info is in data8[3] & BITFIELD_MASK(4) */
       uint8_t data8[8];
    };
+   struct {
+      uint16_t x;
+      uint16_t y;
+      uint16_t z;
+      uint16_t width;
+      uint16_t height;
+      uint16_t depth;
+   } resolve_geometry;
+   /* only valid if has_resolve is true and the resolve member of pipe_framebuffer_state is NULL */
+   struct pipe_resource *resolve[2]; //[color, depth]
 };
 
 static inline bool
@@ -522,12 +542,16 @@ struct tc_batch {
    struct tc_call_base *last_mergeable_call;
 
    struct util_queue_fence fence;
-   /* whether the first set_framebuffer_state call has been seen by this batch */
-   bool first_set_fb;
-   uint8_t batch_idx;
+   /* whether the first set_framebuffer_state call will increment the rp info in batch_execute */
+   bool increment_rp_info_on_fb;
+   int8_t batch_idx;
    struct tc_unflushed_batch_token *token;
    uint64_t slots[TC_SLOTS_PER_BATCH];
    struct util_dynarray renderpass_infos;
+#if !defined(NDEBUG)
+   bool tc_set_vertex_elements_for_call_pending;
+   bool closed;
+#endif
 };
 
 struct tc_buffer_list {
@@ -592,6 +616,7 @@ struct threaded_context {
    bool use_forced_staging_uploads;
    bool add_all_gfx_bindings_to_buffer_list;
    bool add_all_compute_bindings_to_buffer_list;
+   bool add_all_mesh_bindings_to_buffer_list;
    uint8_t num_queries_active;
 
    /* Estimation of how much vram/gtt bytes are mmap'd in
@@ -599,6 +624,12 @@ struct threaded_context {
     */
    uint64_t bytes_mapped_estimate;
    uint64_t bytes_mapped_limit;
+
+   /* Estimation of how replacement buffer bytes are in
+    * the current tc_batch.
+    */
+   uint64_t bytes_replaced_estimate;
+   uint64_t bytes_replaced_limit;
 
    struct util_queue queue;
    struct util_queue_fence *fence;
@@ -615,6 +646,7 @@ struct threaded_context {
    bool seen_tcs;
    bool seen_tes;
    bool seen_gs;
+   bool seen_ts;
    /* whether the current renderpass has seen a set_framebuffer_state call */
    bool seen_fb_state;
    /* whether a renderpass is currently active */
@@ -625,11 +657,12 @@ struct threaded_context {
    bool flushing;
 
    bool seen_streamout_buffers;
-   bool seen_shader_buffers[PIPE_SHADER_TYPES];
-   bool seen_image_buffers[PIPE_SHADER_TYPES];
-   bool seen_sampler_buffers[PIPE_SHADER_TYPES];
+   bool seen_shader_buffers[MESA_SHADER_MESH_STAGES];
+   bool seen_image_buffers[MESA_SHADER_MESH_STAGES];
+   bool seen_sampler_buffers[MESA_SHADER_MESH_STAGES];
 
    int8_t last_completed;
+   int8_t batch_generation;
 
    uint8_t num_vertex_buffers;
    unsigned max_const_buffers;
@@ -637,8 +670,14 @@ struct threaded_context {
    unsigned max_images;
    unsigned max_samplers;
    unsigned nr_cbufs;
+   unsigned fb_layers;
 
-   unsigned last, next, next_buf_list, batch_generation;
+#if TC_RESOLVE_STRICT
+   unsigned fb_width;
+   unsigned fb_height;
+#endif
+
+   unsigned last, next, next_buf_list;
 
    /* The list fences that the driver should signal after the next flush.
     * If this is empty, all driver command buffers have been flushed.
@@ -651,12 +690,12 @@ struct threaded_context {
     */
    uint32_t vertex_buffers[PIPE_MAX_ATTRIBS];
    uint32_t streamout_buffers[PIPE_MAX_SO_BUFFERS];
-   uint32_t const_buffers[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
-   uint32_t shader_buffers[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
-   uint32_t image_buffers[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
-   uint32_t shader_buffers_writeable_mask[PIPE_SHADER_TYPES];
-   uint64_t image_buffers_writeable_mask[PIPE_SHADER_TYPES];
-   uint32_t sampler_buffers[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   uint32_t const_buffers[MESA_SHADER_MESH_STAGES][PIPE_MAX_CONSTANT_BUFFERS];
+   uint32_t shader_buffers[MESA_SHADER_MESH_STAGES][PIPE_MAX_SHADER_BUFFERS];
+   uint32_t image_buffers[MESA_SHADER_MESH_STAGES][PIPE_MAX_SHADER_IMAGES];
+   uint32_t shader_buffers_writeable_mask[MESA_SHADER_MESH_STAGES];
+   uint64_t image_buffers_writeable_mask[MESA_SHADER_MESH_STAGES];
+   uint32_t sampler_buffers[MESA_SHADER_MESH_STAGES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    struct tc_batch batch_slots[TC_MAX_BATCHES];
    struct tc_buffer_list buffer_lists[TC_MAX_BUFFER_LISTS];
@@ -667,9 +706,8 @@ struct threaded_context {
    struct tc_renderpass_info *renderpass_info_recording;
    /* accessed by driver thread */
    struct tc_renderpass_info *renderpass_info;
-
-   /* Callbacks that call pipe_context functions. */
-   tc_execute execute_func[TC_NUM_CALLS];
+   /* internal-only: if dsa/fs are bound between render passes */
+   void *pending_renderpass_dsa, *pending_renderpass_fs;
 };
 
 
@@ -712,6 +750,11 @@ tc_add_draw_single_call(struct pipe_context *_pipe,
                         struct pipe_resource *index_bo);
 struct pipe_vertex_buffer *
 tc_add_set_vertex_buffers_call(struct pipe_context *_pipe, unsigned count);
+
+struct pipe_vertex_buffer *
+tc_add_set_vertex_elements_and_buffers_call(struct pipe_context *_pipe,
+                                            unsigned count,
+                                            bool account_for_unmaps);
 
 void
 tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
@@ -835,6 +878,28 @@ tc_track_vertex_buffer(struct pipe_context *_pipe, unsigned index,
    }
 }
 
+/**
+ * "buffers" must be a result of tc_add_set_vertex_elements_and_buffers_call.
+ * This sets the vertex elements state for it. It will be bound before vertex
+ * buffers.
+ */
+static inline void
+tc_set_vertex_elements_for_call(struct pipe_context *_pipe,
+                                struct pipe_vertex_buffer *buffers,
+                                void *state)
+{
+#if !defined(NDEBUG)
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct tc_batch *next = &tc->batch_slots[tc->next];
+   assert(next->tc_set_vertex_elements_for_call_pending);
+   next->tc_set_vertex_elements_for_call_pending = false;
+#endif
+   void **ptr = (void**)buffers;
+   ptr[-1] = state;
+}
+
+bool
+threaded_context_is_buffer_on_busy_list(struct pipe_context *_pipe, struct pipe_resource *resource);
 #ifdef __cplusplus
 }
 #endif

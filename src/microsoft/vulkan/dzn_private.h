@@ -48,7 +48,7 @@
 #include "util/hash_table.h"
 #include "util/u_dynarray.h"
 #include "util/log.h"
-#include "util/xmlconfig.h"
+#include "dzn_drirc.h"
 
 #include "shader_enums.h"
 
@@ -59,21 +59,13 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
 
-#define D3D12_IGNORE_SDK_LAYERS
 #include <unknwn.h>
 #include <directx/d3d12.h>
 
 #include "spirv_to_dxil.h"
 #include "dzn_abi_helper.h"
 
-#define DZN_SWAP(t, a, b) \
-   do { \
-      t __tmp = a; \
-      a = b; \
-      b = __tmp; \
-   } while (0)
-
-#define dzn_stub() unreachable("Unsupported feature")
+#define dzn_stub() UNREACHABLE("Unsupported feature")
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR) || \
     defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
@@ -109,7 +101,7 @@ dzn_index_type_from_size(uint8_t index_size)
    case 0: return DZN_NO_INDEX;
    case 2: return DZN_INDEX_2B;
    case 4: return DZN_INDEX_4B;
-   default: unreachable("Invalid index size");
+   default: UNREACHABLE("Invalid index size");
    }
 }
 
@@ -122,7 +114,7 @@ dzn_index_type_from_dxgi_format(DXGI_FORMAT format, bool prim_restart)
       return prim_restart ? DZN_INDEX_2B_WITH_PRIM_RESTART : DZN_INDEX_2B;
    case DXGI_FORMAT_R32_UINT:
       return prim_restart ? DZN_INDEX_4B_WITH_PRIM_RESTART : DZN_INDEX_4B;
-   default: unreachable("Invalid index format");
+   default: UNREACHABLE("Invalid index format");
    }
 }
 
@@ -138,7 +130,7 @@ dzn_index_size(enum dzn_index_type type)
    case DZN_INDEX_4B_WITH_PRIM_RESTART:
    case DZN_INDEX_4B:
       return 4;
-   default: unreachable("Invalid index type");
+   default: UNREACHABLE("Invalid index type");
    }
 }
 
@@ -247,9 +239,6 @@ dzn_physical_device_get_mem_type_mask_for_resource(const struct dzn_physical_dev
 
 enum dxil_shader_model
 dzn_get_shader_model(const struct dzn_physical_device *pdev);
-
-#define dzn_debug_ignored_stype(sType) \
-   mesa_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
 
 PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE
 d3d12_get_serialize_root_sig(struct util_dl_library *d3d12_mod);
@@ -845,7 +834,7 @@ struct dzn_pipeline_layout {
       ID3D12RootSignature *sig;
    } root;
    struct {
-      uint8_t hash[SHA1_DIGEST_LENGTH];
+      uint8_t hash[BLAKE3_KEY_LEN];
    } stages[MESA_VULKAN_SHADER_STAGES];
 };
 
@@ -913,6 +902,7 @@ static_assert(sizeof(D3D12_RASTERIZER_DESC) >= sizeof(D3D12_RASTERIZER_DESC1) &&
 struct dzn_pipeline {
    struct vk_object_base base;
    VkPipelineBindPoint type;
+   VkPipelineCreateFlags2KHR flags;
    struct dzn_device *device;
    struct {
       uint32_t sets_param_count;
@@ -1068,7 +1058,6 @@ struct dzn_image {
    } linear;
    D3D12_RESOURCE_DESC desc;
    ID3D12Resource *res;
-   struct dzn_device_memory *mem;
    uint32_t castable_format_count;
    const DXGI_FORMAT *castable_formats;
 
@@ -1283,8 +1272,7 @@ struct dzn_instance {
 
    struct vk_sync_binary_type sync_binary_type;
 
-   struct driOptionCache dri_options;
-   struct driOptionCache available_dri_options;
+   struct dzn_drirc drirc;
 };
 
 struct dzn_event {

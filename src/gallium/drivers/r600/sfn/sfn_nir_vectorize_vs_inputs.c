@@ -107,7 +107,7 @@ r600_vec_instr_stack_create(void *mem_ctx)
 static void
 r600_vec_instr_stack_push(struct util_dynarray *stack, nir_instr *instr)
 {
-   util_dynarray_append(stack, nir_instr *, instr);
+   util_dynarray_append(stack, instr);
 }
 
 static unsigned
@@ -147,10 +147,7 @@ r600_create_new_load(nir_builder *b,
    for (unsigned i = 0; i < old_num_comps; ++i)
       channels[i] = comp - var->data.location_frac + i;
    nir_def *load = nir_swizzle(b, &new_intr->def, channels, old_num_comps);
-   nir_def_rewrite_uses(&intr->def, load);
-
-   /* Remove the old load intrinsic */
-   nir_instr_remove(&intr->instr);
+   nir_def_replace(&intr->def, load);
 }
 
 static bool
@@ -421,11 +418,7 @@ r600_vectorize_io_impl(nir_function_impl *impl)
    bool progress =
       r600_vectorize_block(&b, nir_start_block(impl), instr_set, updated_vars);
 
-   if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index | nir_metadata_dominance);
-   } else {
-      nir_metadata_preserve(impl, nir_metadata_all);
-   }
+   nir_progress(progress, impl, nir_metadata_control_flow);
 
    r600_vec_instr_set_destroy(instr_set);
    return false;

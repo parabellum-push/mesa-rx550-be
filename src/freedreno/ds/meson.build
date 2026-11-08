@@ -1,11 +1,17 @@
 # Copyright © 2021 Collabora, Ltd.
 # Copyright © 2021 Google, Inc
-#
 # SPDX-License-Identifier: MIT
+
+pps_freedreno_args = cpp.get_supported_arguments([
+  '-Wno-vla-cxx-extension',
+])
 
 pps_freedreno_lib = static_library(
   'freedreno-gpu',
   sources: [
+    'fd_pps_a6xx.cc',
+    'fd_pps_a7xx.cc',
+    'fd_pps_a8xx.cc',
     'fd_pps_driver.cc',
     'fd_pps_driver.h',
     freedreno_xml_header_files,
@@ -21,6 +27,7 @@ pps_freedreno_lib = static_library(
     dep_perfetto,
     dep_valgrind,
   ],
+  cpp_args: pps_freedreno_args,
 )
 
 pps_freedreno_dep = declare_dependency(

@@ -38,7 +38,7 @@ intel_engine_get_info(int fd, enum intel_kmd_type type)
    case INTEL_KMD_TYPE_XE:
       return xe_engine_get_info(fd);
    default:
-      unreachable("Missing");
+      UNREACHABLE("Missing");
       return NULL;
    }
 }
@@ -85,7 +85,7 @@ is_guc_semaphore_functional(int fd, const struct intel_device_info *info)
    case INTEL_KMD_TYPE_XE:
       return xe_engines_is_guc_semaphore_functional(fd, info);
    default:
-      unreachable("Missing");
+      UNREACHABLE("Missing");
       return false;
    }
 }
@@ -97,14 +97,9 @@ intel_engines_supported_count(int fd, const struct intel_device_info *info,
 {
    bool supported;
 
-   /* check if user set the force enabled engine with run-time parameter */
    switch (engine_class) {
    case INTEL_ENGINE_CLASS_COMPUTE:
-      supported = debug_get_bool_option("INTEL_ENGINE_CLASS_COMPUTE", false);
-      supported |= is_guc_semaphore_functional(fd, info);
-      break;
-   case INTEL_ENGINE_CLASS_COPY:
-      supported = debug_get_bool_option("INTEL_ENGINE_CLASS_COPY", true);
+      supported = is_guc_semaphore_functional(fd, info);
       break;
    default:
       /* There is no restrictions or parameters for other engines */

@@ -31,9 +31,11 @@
 #include "util/libdrm.h"
 
 #include "intel_device_info.h"
+#include "intel_hwconfig.h"
 #include "intel_wa.h"
 #include "i915/intel_device_info.h"
 #include "xe/intel_device_info.h"
+#include "virtio/intel_virtio.h"
 
 #include "common/intel_gem.h"
 #include "util/u_debug.h"
@@ -74,7 +76,18 @@ static const struct {
    { "dg2", 0x5690 },
    { "mtl", 0x7d60 },
    { "arl", 0x7d67 },
+   { "lnl", 0x64a0 },
+   { "bmg", 0xe202 },
+   { "ptl", 0xb080 },
+   { "nvl-u", 0xd740 },
+   { "nvl", 0xd750 },
 };
+
+const char *
+intel_platform_name_by_index(unsigned idx)
+{
+   return idx < ARRAY_SIZE(name_map) ? name_map[idx].name : NULL;
+}
 
 /**
  * Get the PCI ID for the device name.
@@ -100,17 +113,18 @@ static const struct intel_device_info intel_device_info_gfx3 = {
    .num_subslices = { 1, },
    .max_eus_per_subslice = 8,
    .num_thread_per_eu = 4,
+   .grf_size = 32,
    .timestamp_frequency = 12500000,
 };
 
 static const struct intel_device_info intel_device_info_i965 = {
    .ver = 4,
    .platform = INTEL_PLATFORM_I965,
-   .has_negative_rhw_bug = true,
    .num_slices = 1,
    .num_subslices = { 1, },
    .max_eus_per_subslice = 8,
    .num_thread_per_eu = 4,
+   .grf_size = 32,
    .max_vs_threads = 16,
    .max_gs_threads = 2,
    .max_wm_threads = 8 * 4,
@@ -125,13 +139,12 @@ static const struct intel_device_info intel_device_info_g4x = {
    .ver = 4,
    .verx10 = 45,
    .has_pln = true,
-   .has_compr4 = true,
-   .has_surface_tile_offset = true,
    .platform = INTEL_PLATFORM_G4X,
    .num_slices = 1,
    .num_subslices = { 1, },
    .max_eus_per_subslice = 10,
    .num_thread_per_eu = 5,
+   .grf_size = 32,
    .max_vs_threads = 32,
    .max_gs_threads = 2,
    .max_wm_threads = 10 * 5,
@@ -146,12 +159,11 @@ static const struct intel_device_info intel_device_info_ilk = {
    .ver = 5,
    .platform = INTEL_PLATFORM_ILK,
    .has_pln = true,
-   .has_compr4 = true,
-   .has_surface_tile_offset = true,
    .num_slices = 1,
    .num_subslices = { 1, },
    .max_eus_per_subslice = 12,
    .num_thread_per_eu = 6,
+   .grf_size = 32,
    .max_vs_threads = 72,
    .max_gs_threads = 32,
    .max_wm_threads = 12 * 6,
@@ -169,12 +181,11 @@ static const struct intel_device_info intel_device_info_snb_gt1 = {
    .has_hiz_and_separate_stencil = true,
    .has_llc = true,
    .has_pln = true,
-   .has_surface_tile_offset = true,
-   .needs_unlit_centroid_workaround = true,
    .num_slices = 1,
    .num_subslices = { 1, },
    .max_eus_per_subslice = 6,
    .num_thread_per_eu = 6, /* Not confirmed */
+   .grf_size = 32,
    .max_vs_threads = 24,
    .max_gs_threads = 21, /* conservative; 24 if rendering disabled. */
    .max_wm_threads = 40,
@@ -199,12 +210,11 @@ static const struct intel_device_info intel_device_info_snb_gt2 = {
    .has_hiz_and_separate_stencil = true,
    .has_llc = true,
    .has_pln = true,
-   .has_surface_tile_offset = true,
-   .needs_unlit_centroid_workaround = true,
    .num_slices = 1,
    .num_subslices = { 1, },
    .max_eus_per_subslice = 12,
    .num_thread_per_eu = 6, /* Not confirmed */
+   .grf_size = 32,
    .max_vs_threads = 60,
    .max_gs_threads = 60,
    .max_wm_threads = 80,
@@ -225,11 +235,10 @@ static const struct intel_device_info intel_device_info_snb_gt2 = {
 #define GFX7_FEATURES                               \
    .ver = 7,                                        \
    .has_hiz_and_separate_stencil = true,            \
-   .must_use_separate_stencil = true,               \
    .has_llc = true,                                 \
    .has_pln = true,                                 \
    .has_64bit_float = true,                         \
-   .has_surface_tile_offset = true,                 \
+   .grf_size = 32,                                  \
    .timestamp_frequency = 12500000,                 \
    .max_constant_urb_size_kb = 16
 
@@ -416,7 +425,6 @@ static const struct intel_device_info intel_device_info_hsw_gt3 = {
 #define GFX8_FEATURES                               \
    .ver = 8,                                        \
    .has_hiz_and_separate_stencil = true,            \
-   .must_use_separate_stencil = true,               \
    .has_llc = true,                                 \
    .has_sample_with_hiz = false,                    \
    .has_pln = true,                                 \
@@ -424,85 +432,72 @@ static const struct intel_device_info intel_device_info_hsw_gt3 = {
    .has_64bit_float = true,                         \
    .has_64bit_int = true,                           \
    .supports_simd16_3src = true,                    \
-   .has_surface_tile_offset = true,                 \
    .num_thread_per_eu = 7,                          \
+   .grf_size = 32,                                  \
+   .timestamp_frequency = 12500000,                 \
+   .max_constant_urb_size_kb = 32
+
+#define GFX8_MAX_THREADS                            \
    .max_vs_threads = 504,                           \
    .max_tcs_threads = 504,                          \
    .max_tes_threads = 504,                          \
    .max_gs_threads = 504,                           \
    .max_wm_threads = 384,                           \
-   .max_threads_per_psd = 64,                       \
-   .timestamp_frequency = 12500000,                 \
-   .max_constant_urb_size_kb = 32
+   .max_threads_per_psd = 64
+
+/* We always use SIMD8 geometry shaders on GFX8+.  The Broadwell
+ * 3DSTATE_GS docs include a note:
+ *
+ *   "At least 8 URB entries must be allocated in order to use
+ *    SIMD8 DispatchMode."
+ */
+#define GFX8_URB_MIN_MAX_ENTRIES                      \
+   .urb = {                                           \
+      .min_entries = {                                \
+         [MESA_SHADER_VERTEX]    = 64,                \
+         [MESA_SHADER_TESS_EVAL] = 34,                \
+         [MESA_SHADER_GEOMETRY]  = 8,                 \
+      },                                              \
+      .max_entries = {                                \
+         [MESA_SHADER_VERTEX]    = 2560,              \
+         [MESA_SHADER_TESS_CTRL] = 504,               \
+         [MESA_SHADER_TESS_EVAL] = 1536,              \
+         [MESA_SHADER_GEOMETRY]  = 960,               \
+      },                                              \
+   }
+
+#define BDW_CONFIG                                            \
+   GFX8_FEATURES, GFX8_MAX_THREADS, GFX8_URB_MIN_MAX_ENTRIES, \
+   .platform = INTEL_PLATFORM_BDW,                            \
+   .simulator_id = 11
 
 static const struct intel_device_info intel_device_info_bdw_gt1 = {
-   GFX8_FEATURES, .gt = 1,
-   .platform = INTEL_PLATFORM_BDW,
+   BDW_CONFIG, .gt = 1,
    .num_slices = 1,
    .num_subslices = { 2, },
    .max_eus_per_subslice = 6,
    .l3_banks = 2,
    .max_cs_threads = 42,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2560,
-         [MESA_SHADER_TESS_CTRL] = 504,
-         [MESA_SHADER_TESS_EVAL] = 1536,
-         /* Reduced from 960, seems to be similar to the bug on Gfx9 GT1. */
-         [MESA_SHADER_GEOMETRY]  = 690,
-      },
-   },
-   .simulator_id = 11,
+   /* Reduced from 960, seems to be similar to the bug on Gfx9 GT1. */
+   .urb.max_entries[MESA_SHADER_GEOMETRY] = 690,
 };
 
 static const struct intel_device_info intel_device_info_bdw_gt2 = {
-   GFX8_FEATURES, .gt = 2,
-   .platform = INTEL_PLATFORM_BDW,
+   BDW_CONFIG, .gt = 2,
    .num_slices = 1,
    .num_subslices = { 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 4,
    .max_cs_threads = 56,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2560,
-         [MESA_SHADER_TESS_CTRL] = 504,
-         [MESA_SHADER_TESS_EVAL] = 1536,
-         [MESA_SHADER_GEOMETRY]  = 960,
-      },
-   },
-   .simulator_id = 11,
 };
 
 static const struct intel_device_info intel_device_info_bdw_gt3 = {
-   GFX8_FEATURES, .gt = 3,
-   .platform = INTEL_PLATFORM_BDW,
+   BDW_CONFIG, .gt = 3,
    .num_slices = 2,
    .num_subslices = { 3, 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 8,
    .max_cs_threads = 56,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2560,
-         [MESA_SHADER_TESS_CTRL] = 504,
-         [MESA_SHADER_TESS_EVAL] = 1536,
-         [MESA_SHADER_GEOMETRY]  = 960,
-      },
-   },
-   .simulator_id = 11,
 };
 
 static const struct intel_device_info intel_device_info_chv = {
@@ -519,6 +514,7 @@ static const struct intel_device_info intel_device_info_chv = {
    .max_gs_threads = 80,
    .max_wm_threads = 128,
    .max_cs_threads = 6 * 7,
+   .max_threads_per_psd = 64,
    .urb = {
       .min_entries = {
          [MESA_SHADER_VERTEX]    = 34,
@@ -534,19 +530,36 @@ static const struct intel_device_info intel_device_info_chv = {
    .simulator_id = 13,
 };
 
-#define GFX9_HW_INFO                                \
+#define GFX9_FEATURES                               \
+   GFX8_FEATURES,                                   \
    .ver = 9,                                        \
+   .has_sample_with_hiz = true,                     \
+   .timestamp_frequency = 12000000
+
+#define GFX9_MAX_THREADS                            \
    .max_vs_threads = 336,                           \
    .max_gs_threads = 336,                           \
    .max_tcs_threads = 336,                          \
    .max_tes_threads = 336,                          \
+   .max_wm_threads = 0,                             \
    .max_threads_per_psd = 64,                       \
-   .max_cs_threads = 56,                            \
-   .timestamp_frequency = 12000000,                 \
+   .max_cs_threads = 56                             \
+
+/* On Skylake through Xe, the 3DSTATE_GS_BODY docs include a note:
+ *
+ *   "The driver must send pipe control with a cs stall after a
+ *    3dstate_gs state change and the Dispatch Mode is simd8 and
+ *    the number of handles allocated to gs is less than 16."
+ *
+ * We don't implement this PIPE_CONTROL, so instead we always allocate
+ * at least 16 URB handles for GS when it's enabled.
+ */
+#define GFX9_URB_MIN_MAX_ENTRIES                    \
    .urb = {                                         \
       .min_entries = {                              \
          [MESA_SHADER_VERTEX]    = 64,              \
          [MESA_SHADER_TESS_EVAL] = 34,              \
+         [MESA_SHADER_GEOMETRY]  = 16,              \
       },                                            \
       .max_entries = {                              \
          [MESA_SHADER_VERTEX]    = 1856,            \
@@ -556,22 +569,27 @@ static const struct intel_device_info intel_device_info_chv = {
       },                                            \
    }
 
-#define GFX9_LP_FEATURES                           \
+#define GFX9_LP_CONFIG_BASE                        \
    GFX8_FEATURES,                                  \
-   GFX9_HW_INFO,                                   \
-   .has_integer_dword_mul = false,                 \
+   .ver = 9,                                       \
    .gt = 1,                                        \
+   .has_integer_dword_mul = false,                 \
    .has_llc = false,                               \
    .has_sample_with_hiz = true,                    \
-   .has_illegal_ccs_values = true,                 \
    .num_slices = 1,                                \
    .num_thread_per_eu = 6,                         \
+   .max_eus_per_subslice = 6,                      \
+   .max_threads_per_psd = 64,                      \
+   .timestamp_frequency = 19200000
+
+#define GFX9_LP_CONFIG_3X6                         \
+   GFX9_LP_CONFIG_BASE,                            \
+   .num_subslices = { 3, },                        \
    .max_vs_threads = 112,                          \
    .max_tcs_threads = 112,                         \
    .max_tes_threads = 112,                         \
    .max_gs_threads = 112,                          \
    .max_cs_threads = 6 * 6,                        \
-   .timestamp_frequency = 19200000,                \
    .urb = {                                        \
       .min_entries = {                             \
          [MESA_SHADER_VERTEX]    = 34,             \
@@ -585,15 +603,9 @@ static const struct intel_device_info intel_device_info_chv = {
       },                                           \
    }
 
-#define GFX9_LP_FEATURES_3X6                       \
-   GFX9_LP_FEATURES,                               \
-   .num_subslices = { 3, },                        \
-   .max_eus_per_subslice = 6
-
-#define GFX9_LP_FEATURES_2X6                       \
-   GFX9_LP_FEATURES,                               \
+#define GFX9_LP_CONFIG_2X6                         \
+   GFX9_LP_CONFIG_BASE,                            \
    .num_subslices = { 2, },                        \
-   .max_eus_per_subslice = 6,                       \
    .max_vs_threads = 56,                           \
    .max_tcs_threads = 56,                          \
    .max_tes_threads = 56,                          \
@@ -612,21 +624,13 @@ static const struct intel_device_info intel_device_info_chv = {
       },                                           \
    }
 
-#define GFX9_FEATURES                               \
-   GFX8_FEATURES,                                   \
-   GFX9_HW_INFO,                                    \
-   .has_sample_with_hiz = true,                     \
-   .has_illegal_ccs_values = true,                                    \
-   .cooperative_matrix_configurations = {                             \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT32, INTEL_CMAT_FLOAT32 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_SINT8, INTEL_CMAT_SINT8, INTEL_CMAT_SINT32, INTEL_CMAT_SINT32 },       \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_UINT8, INTEL_CMAT_UINT8, INTEL_CMAT_UINT32, INTEL_CMAT_UINT32 },       \
-   }
+#define SKL_CONFIG                                            \
+   GFX9_FEATURES, GFX9_MAX_THREADS, GFX9_URB_MIN_MAX_ENTRIES, \
+   .platform = INTEL_PLATFORM_SKL,                            \
+   .simulator_id = 12
 
 static const struct intel_device_info intel_device_info_skl_gt1 = {
-   GFX9_FEATURES, .gt = 1,
-   .platform = INTEL_PLATFORM_SKL,
+   SKL_CONFIG, .gt = 1,
    .num_slices = 1,
    .num_subslices = { 2, },
    .max_eus_per_subslice = 6,
@@ -639,28 +643,23 @@ static const struct intel_device_info intel_device_info_skl_gt1 = {
 };
 
 static const struct intel_device_info intel_device_info_skl_gt2 = {
-   GFX9_FEATURES, .gt = 2,
-   .platform = INTEL_PLATFORM_SKL,
+   SKL_CONFIG, .gt = 2,
    .num_slices = 1,
    .num_subslices = { 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 4,
-   .simulator_id = 12,
 };
 
 static const struct intel_device_info intel_device_info_skl_gt3 = {
-   GFX9_FEATURES, .gt = 3,
-   .platform = INTEL_PLATFORM_SKL,
+   SKL_CONFIG, .gt = 3,
    .num_slices = 2,
    .num_subslices = { 3, 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 8,
-   .simulator_id = 12,
 };
 
 static const struct intel_device_info intel_device_info_skl_gt4 = {
-   GFX9_FEATURES, .gt = 4,
-   .platform = INTEL_PLATFORM_SKL,
+   SKL_CONFIG, .gt = 4,
    .num_slices = 3,
    .num_subslices = { 3, 3, 3, },
    .max_eus_per_subslice = 8,
@@ -673,32 +672,29 @@ static const struct intel_device_info intel_device_info_skl_gt4 = {
     * allocation of the L3 data array to provide 3*384KB=1152KB for URB, but
     * only 1008KB of this will be used."
     */
-   .simulator_id = 12,
 };
 
 static const struct intel_device_info intel_device_info_bxt = {
-   GFX9_LP_FEATURES_3X6,
+   GFX9_LP_CONFIG_3X6,
    .platform = INTEL_PLATFORM_BXT,
    .l3_banks = 2,
    .simulator_id = 14,
 };
 
 static const struct intel_device_info intel_device_info_bxt_2x6 = {
-   GFX9_LP_FEATURES_2X6,
+   GFX9_LP_CONFIG_2X6,
    .platform = INTEL_PLATFORM_BXT,
    .l3_banks = 1,
    .simulator_id = 14,
 };
-/*
- * Note: for all KBL SKUs, the PRM says SKL for GS entries, not SKL+.
- * There's no KBL entry. Using the default SKL (GFX9) GS entries value.
- */
+
+#define KBL_CONFIG                                            \
+   GFX9_FEATURES, GFX9_MAX_THREADS, GFX9_URB_MIN_MAX_ENTRIES, \
+   .platform = INTEL_PLATFORM_KBL,                            \
+   .simulator_id = 16
 
 static const struct intel_device_info intel_device_info_kbl_gt1 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_KBL,
-   .gt = 1,
-
+   KBL_CONFIG, .gt = 1,
    .max_cs_threads = 7 * 6,
    .num_slices = 1,
    .num_subslices = { 2, },
@@ -709,50 +705,35 @@ static const struct intel_device_info intel_device_info_kbl_gt1 = {
     */
    .urb.max_entries[MESA_SHADER_VERTEX] = 928,
    .urb.max_entries[MESA_SHADER_GEOMETRY] = 256,
-   .simulator_id = 16,
 };
 
 static const struct intel_device_info intel_device_info_kbl_gt1_5 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_KBL,
-   .gt = 1,
-
+   KBL_CONFIG, .gt = 1,
    .max_cs_threads = 7 * 6,
    .num_slices = 1,
    .num_subslices = { 3, },
    .max_eus_per_subslice = 6,
    .l3_banks = 4,
-   .simulator_id = 16,
 };
 
 static const struct intel_device_info intel_device_info_kbl_gt2 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_KBL,
-   .gt = 2,
-
+   KBL_CONFIG, .gt = 2,
    .num_slices = 1,
    .num_subslices = { 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 4,
-   .simulator_id = 16,
 };
 
 static const struct intel_device_info intel_device_info_kbl_gt3 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_KBL,
-   .gt = 3,
-
+   KBL_CONFIG, .gt = 3,
    .num_slices = 2,
    .num_subslices = { 3, 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 8,
-   .simulator_id = 16,
 };
 
 static const struct intel_device_info intel_device_info_kbl_gt4 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_KBL,
-   .gt = 4,
+   KBL_CONFIG, .gt = 4,
 
    /*
     * From the "L3 Allocation and Programming" documentation:
@@ -768,27 +749,29 @@ static const struct intel_device_info intel_device_info_kbl_gt4 = {
    .num_subslices = { 3, 3, 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 12,
-   .simulator_id = 16,
 };
 
 static const struct intel_device_info intel_device_info_glk = {
-   GFX9_LP_FEATURES_3X6,
+   GFX9_LP_CONFIG_3X6,
    .platform = INTEL_PLATFORM_GLK,
    .l3_banks = 2,
    .simulator_id = 17,
 };
 
 static const struct intel_device_info intel_device_info_glk_2x6 = {
-   GFX9_LP_FEATURES_2X6,
+   GFX9_LP_CONFIG_2X6,
    .platform = INTEL_PLATFORM_GLK,
    .l3_banks = 2,
    .simulator_id = 17,
 };
 
+#define CFL_CONFIG                                            \
+   GFX9_FEATURES, GFX9_MAX_THREADS, GFX9_URB_MIN_MAX_ENTRIES, \
+   .platform = INTEL_PLATFORM_CFL,                            \
+   .simulator_id = 24
+
 static const struct intel_device_info intel_device_info_cfl_gt1 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_CFL,
-   .gt = 1,
+   CFL_CONFIG, .gt = 1,
 
    .num_slices = 1,
    .num_subslices = { 2, },
@@ -799,165 +782,140 @@ static const struct intel_device_info intel_device_info_cfl_gt1 = {
     */
    .urb.max_entries[MESA_SHADER_VERTEX] = 928,
    .urb.max_entries[MESA_SHADER_GEOMETRY] = 256,
-   .simulator_id = 24,
 };
+
 static const struct intel_device_info intel_device_info_cfl_gt2 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_CFL,
-   .gt = 2,
+   CFL_CONFIG, .gt = 2,
 
    .num_slices = 1,
    .num_subslices = { 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 4,
-   .simulator_id = 24,
 };
 
 static const struct intel_device_info intel_device_info_cfl_gt3 = {
-   GFX9_FEATURES,
-   .platform = INTEL_PLATFORM_CFL,
-   .gt = 3,
+   CFL_CONFIG, .gt = 3,
 
    .num_slices = 2,
    .num_subslices = { 3, 3, },
    .max_eus_per_subslice = 8,
    .l3_banks = 8,
-   .simulator_id = 24,
 };
 
 #define subslices(args...) { args, }
 
-#define GFX11_HW_INFO                               \
+#define GFX11_FEATURES                              \
+   GFX9_FEATURES,                                   \
    .ver = 11,                                       \
    .has_pln = false,                                \
+   .has_64bit_float = false,                        \
+   .has_64bit_int = false,                          \
+   .has_integer_dword_mul = false,                  \
+   .has_sample_with_hiz = false,                    \
+   .timestamp_frequency = 12500000
+
+#define GFX11_MAX_THREADS                           \
    .max_vs_threads = 364,                           \
    .max_gs_threads = 224,                           \
    .max_tcs_threads = 224,                          \
    .max_tes_threads = 364,                          \
+   .max_wm_threads = 0,                             \
    .max_threads_per_psd = 64,                       \
    .max_cs_threads = 56
 
-#define GFX11_FEATURES(_gt, _slices, _subslices, _l3, _platform)  \
-   GFX8_FEATURES,                                     \
-   GFX11_HW_INFO,                                     \
-   .platform = _platform,                             \
-   .has_64bit_float = false,                          \
-   .has_64bit_int = false,                            \
-   .has_integer_dword_mul = false,                    \
-   .has_sample_with_hiz = false,                      \
-   .has_illegal_ccs_values = true,                    \
-   .gt = _gt, .num_slices = _slices, .l3_banks = _l3, \
-   .num_subslices = _subslices,                       \
-   .max_eus_per_subslice = 8,                                         \
-   .cooperative_matrix_configurations = {                             \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT32, INTEL_CMAT_FLOAT32 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_SINT8, INTEL_CMAT_SINT8, INTEL_CMAT_SINT32, INTEL_CMAT_SINT32 },       \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_UINT8, INTEL_CMAT_UINT8, INTEL_CMAT_UINT32, INTEL_CMAT_UINT32 },       \
+/* See GFX9_URB_MIN_MAX_ENTRIES comment */
+#define GFX11_URB_MIN_MAX_ENTRIES                   \
+   .urb = {                                         \
+      .min_entries = {                              \
+         [MESA_SHADER_VERTEX]    = 64,              \
+         [MESA_SHADER_TESS_EVAL] = 34,              \
+         [MESA_SHADER_GEOMETRY]  = 16,              \
+      },                                            \
+      .max_entries = {                              \
+         [MESA_SHADER_VERTEX]    = 2384,            \
+         [MESA_SHADER_TESS_CTRL] = 1032,            \
+         [MESA_SHADER_TESS_EVAL] = 2384,            \
+         [MESA_SHADER_GEOMETRY]  = 1032,            \
+      },                                            \
    }
 
-#define GFX11_URB_MIN_MAX_ENTRIES                     \
-   .min_entries = {                                   \
-      [MESA_SHADER_VERTEX]    = 64,                   \
-      [MESA_SHADER_TESS_EVAL] = 34,                   \
-   },                                                 \
-   .max_entries = {                                   \
-      [MESA_SHADER_VERTEX]    = 2384,                 \
-      [MESA_SHADER_TESS_CTRL] = 1032,                 \
-      [MESA_SHADER_TESS_EVAL] = 2384,                 \
-      [MESA_SHADER_GEOMETRY]  = 1032,                 \
-   }
+#define ICL_CONFIG(_gt, _slices, _subslices, _l3)                \
+   GFX11_FEATURES, GFX11_MAX_THREADS, GFX11_URB_MIN_MAX_ENTRIES, \
+   .platform = INTEL_PLATFORM_ICL,                               \
+   .gt = _gt, .num_slices = _slices, .l3_banks = _l3,            \
+   .num_subslices = _subslices,                                  \
+   .max_eus_per_subslice = 8,                                    \
+   .simulator_id = 19
 
 static const struct intel_device_info intel_device_info_icl_gt2 = {
-   GFX11_FEATURES(2, 1, subslices(8), 8, INTEL_PLATFORM_ICL),
-   .urb = {
-      GFX11_URB_MIN_MAX_ENTRIES,
-   },
-   .simulator_id = 19,
+   ICL_CONFIG(2, 1, subslices(8), 8),
 };
 
 static const struct intel_device_info intel_device_info_icl_gt1_5 = {
-   GFX11_FEATURES(1, 1, subslices(6), 6, INTEL_PLATFORM_ICL),
-   .urb = {
-      GFX11_URB_MIN_MAX_ENTRIES,
-   },
-   .simulator_id = 19,
+   ICL_CONFIG(1, 1, subslices(6), 6),
 };
 
 static const struct intel_device_info intel_device_info_icl_gt1 = {
-   GFX11_FEATURES(1, 1, subslices(4), 6, INTEL_PLATFORM_ICL),
-   .urb = {
-      GFX11_URB_MIN_MAX_ENTRIES,
-   },
-   .simulator_id = 19,
+   ICL_CONFIG(1, 1, subslices(4), 6),
 };
 
 static const struct intel_device_info intel_device_info_icl_gt0_5 = {
-   GFX11_FEATURES(1, 1, subslices(1), 6, INTEL_PLATFORM_ICL),
-   .urb = {
-      GFX11_URB_MIN_MAX_ENTRIES,
-   },
-   .simulator_id = 19,
+   ICL_CONFIG(1, 1, subslices(1), 6),
 };
 
-#define GFX11_LP_FEATURES                           \
-   .urb = {                                         \
-      GFX11_URB_MIN_MAX_ENTRIES,                    \
-   },                                               \
+#define EHL_CONFIG(nr_subslices, max_eus_per_sub)   \
+   ICL_CONFIG(1, 1, subslices(nr_subslices), 4),    \
+   .platform = INTEL_PLATFORM_EHL,                  \
+   .max_eus_per_subslice = max_eus_per_sub,         \
    .disable_ccs_repack = true,                      \
-   .has_illegal_ccs_values = true,                  \
    .simulator_id = 28
 
 static const struct intel_device_info intel_device_info_ehl_4x8 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
-   GFX11_LP_FEATURES,
+   EHL_CONFIG(4, 8),
 };
 
 static const struct intel_device_info intel_device_info_ehl_4x6 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
-   GFX11_LP_FEATURES,
-   .max_eus_per_subslice = 6,
+   EHL_CONFIG(4, 6),
 };
 
 static const struct intel_device_info intel_device_info_ehl_4x5 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
-   GFX11_LP_FEATURES,
-   .max_eus_per_subslice = 5,
+   EHL_CONFIG(4, 5),
 };
 
 static const struct intel_device_info intel_device_info_ehl_4x4 = {
-   GFX11_FEATURES(1, 1, subslices(4), 4, INTEL_PLATFORM_EHL),
-   GFX11_LP_FEATURES,
-   .max_eus_per_subslice = 4,
+   EHL_CONFIG(4, 4),
 };
 
 static const struct intel_device_info intel_device_info_ehl_2x8 = {
-   GFX11_FEATURES(1, 1, subslices(2), 4, INTEL_PLATFORM_EHL),
-   GFX11_LP_FEATURES,
+   EHL_CONFIG(2, 8),
 };
 
 static const struct intel_device_info intel_device_info_ehl_2x4 = {
-   GFX11_FEATURES(1, 1, subslices(2), 4, INTEL_PLATFORM_EHL),
-   GFX11_LP_FEATURES,
-   .max_eus_per_subslice = 4,
+   EHL_CONFIG(2, 4),
 };
 
-#define GFX12_HW_INFO                               \
+#define GFX12_FEATURES                              \
+   GFX11_FEATURES,                                  \
    .ver = 12,                                       \
-   .has_pln = false,                                \
-   .has_sample_with_hiz = false,                    \
-   .has_aux_map = true,                             \
+   .has_aux_map = true
+
+#define GFX12_MAX_THREADS                           \
    .max_vs_threads = 546,                           \
    .max_gs_threads = 336,                           \
    .max_tcs_threads = 336,                          \
    .max_tes_threads = 546,                          \
+   .max_wm_threads = 0,                             \
    .max_threads_per_psd = 64,                       \
-   .max_cs_threads = 112, /* threads per DSS */     \
+   .max_cs_threads = 112 /* threads per DSS */
+
+/* See GFX9_URB_MIN_MAX_ENTRIES comment */
+#define GFX12_URB_MIN_MAX_ENTRIES                   \
    .urb = {                                         \
       .size = 512, /* For intel_stub_gpu */         \
       .min_entries = {                              \
          [MESA_SHADER_VERTEX]    = 64,              \
          [MESA_SHADER_TESS_EVAL] = 34,              \
+         [MESA_SHADER_GEOMETRY]  = 16,              \
       },                                            \
       .max_entries = {                              \
          [MESA_SHADER_VERTEX]    = 3576,            \
@@ -967,240 +925,356 @@ static const struct intel_device_info intel_device_info_ehl_2x4 = {
       },                                            \
    }
 
-#define GFX12_FEATURES(_gt, _slices, _l3)                       \
-   GFX8_FEATURES,                                               \
-   GFX12_HW_INFO,                                               \
-   .has_64bit_float = false,                                    \
-   .has_64bit_int = false,                                      \
-   .has_integer_dword_mul = false,                              \
-   .gt = _gt, .num_slices = _slices, .l3_banks = _l3,           \
-   .simulator_id = 22,                                          \
-   .max_eus_per_subslice = 16,                                  \
+#define GFX12_PAT_ENTRIES                                       \
+   /* BSpec 45101 (r51017) */                                   \
    .pat = {                                                     \
-         .cached_coherent = PAT_ENTRY(0, WB, 2WAY),             \
-         .scanout = PAT_ENTRY(1, WC, NONE),                     \
-         .writeback_incoherent = PAT_ENTRY(0, WB, 2WAY),        \
-         .writecombining = PAT_ENTRY(1, WC, NONE),              \
-   },                                                           \
-   .cooperative_matrix_configurations = {                       \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT32, INTEL_CMAT_FLOAT32 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_SINT8, INTEL_CMAT_SINT8, INTEL_CMAT_SINT32, INTEL_CMAT_SINT32 },       \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_UINT8, INTEL_CMAT_UINT8, INTEL_CMAT_UINT32, INTEL_CMAT_UINT32 },       \
+         /* CPU: WB, GPU: PAT 0 => WB, 2WAY */                  \
+         .cached_coherent = PAT_ENTRY(0, WB),                   \
+         /* CPU: WC, GPU: PAT 1 => WC */                        \
+         .scanout = PAT_ENTRY(1, WC),                           \
+         /* CPU: WB, GPU: PAT 0 => WB, 2WAY */                  \
+         .writeback_incoherent = PAT_ENTRY(0, WB),              \
+         /* CPU: WC, GPU: PAT 1 => WC */                        \
+         .writecombining = PAT_ENTRY(1, WC),                    \
    }
+
+#define GFX12_CONFIG(_gt, _slices, _l3)                         \
+   GFX12_FEATURES, GFX12_MAX_THREADS,                           \
+   GFX12_URB_MIN_MAX_ENTRIES, GFX12_PAT_ENTRIES,                \
+   .gt = _gt, .num_slices = _slices, .l3_banks = _l3,           \
+   .max_eus_per_subslice = 16,                                  \
+   .simulator_id = 22
 
 #define dual_subslices(args...) { args, }
 
-#define GFX12_GT05_FEATURES                                     \
-   GFX12_FEATURES(1, 1, 4),                                     \
+#define GFX12_GT05_CONFIG                                     \
+   GFX12_CONFIG(1, 1, 4),                                     \
    .num_subslices = dual_subslices(1)
 
-#define GFX12_GT_FEATURES(_gt)                                  \
-   GFX12_FEATURES(_gt, 1, _gt == 1 ? 4 : 8),                    \
+#define GFX12_GT_CONFIG(_gt)                                  \
+   GFX12_CONFIG(_gt, 1, _gt == 1 ? 4 : 8),                    \
    .num_subslices = dual_subslices(_gt == 1 ? 2 : 6)
 
 static const struct intel_device_info intel_device_info_tgl_gt1 = {
-   GFX12_GT_FEATURES(1),
+   GFX12_GT_CONFIG(1),
    .platform = INTEL_PLATFORM_TGL,
 };
 
 static const struct intel_device_info intel_device_info_tgl_gt2 = {
-   GFX12_GT_FEATURES(2),
+   GFX12_GT_CONFIG(2),
    .platform = INTEL_PLATFORM_TGL,
 };
 
 static const struct intel_device_info intel_device_info_rkl_gt05 = {
-   GFX12_GT05_FEATURES,
+   GFX12_GT05_CONFIG,
    .platform = INTEL_PLATFORM_RKL,
 };
 
 static const struct intel_device_info intel_device_info_rkl_gt1 = {
-   GFX12_GT_FEATURES(1),
+   GFX12_GT_CONFIG(1),
    .platform = INTEL_PLATFORM_RKL,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt05 = {
-   GFX12_GT05_FEATURES,
+   GFX12_GT05_CONFIG,
    .platform = INTEL_PLATFORM_ADL,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt1 = {
-   GFX12_GT_FEATURES(1),
+   GFX12_GT_CONFIG(1),
    .platform = INTEL_PLATFORM_ADL,
-};
-
-static const struct intel_device_info intel_device_info_adl_n = {
-   GFX12_GT_FEATURES(1),
-   .platform = INTEL_PLATFORM_ADL,
-   .is_adl_n = true,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt2 = {
-   GFX12_GT_FEATURES(2),
+   GFX12_GT_CONFIG(2),
    .platform = INTEL_PLATFORM_ADL,
 };
 
 static const struct intel_device_info intel_device_info_rpl = {
-   GFX12_FEATURES(1, 1, 4),
+   GFX12_CONFIG(1, 1, 4),
    .num_subslices = dual_subslices(2),
    .platform = INTEL_PLATFORM_RPL,
 };
 
 static const struct intel_device_info intel_device_info_rpl_p = {
-   GFX12_GT_FEATURES(2),
+   GFX12_GT_CONFIG(2),
    .platform = INTEL_PLATFORM_RPL,
 };
 
-#define GFX12_DG1_SG1_FEATURES                           \
-   GFX12_GT_FEATURES(2),                                 \
+#define DG1_SG1_CONFIG                                   \
+   GFX12_GT_CONFIG(2),                                   \
    .platform = INTEL_PLATFORM_DG1,                       \
    .has_llc = false,                                     \
    .has_local_mem = true,                                \
    .urb.size = 768,                                      \
-   .simulator_id = 30,                                   \
-   /* There is no PAT table for DG1, using TGL one */    \
-   .pat = {                                              \
-         .cached_coherent = PAT_ENTRY(0, WB, 2WAY),      \
-         .scanout = PAT_ENTRY(1, WC, NONE),              \
-         .writeback_incoherent = PAT_ENTRY(0, WB, 2WAY), \
-         .writecombining = PAT_ENTRY(1, WC, NONE),       \
-   }
+   .simulator_id = 30
 
 static const struct intel_device_info intel_device_info_dg1 = {
-   GFX12_DG1_SG1_FEATURES,
+   DG1_SG1_CONFIG,
 };
 
 static const struct intel_device_info intel_device_info_sg1 = {
-   GFX12_DG1_SG1_FEATURES,
+   DG1_SG1_CONFIG,
 };
 
-#define XEHP_URB_MIN_MAX_ENTRIES                        \
-   .min_entries = {                                     \
-      [MESA_SHADER_VERTEX]    = 64,                     \
-      [MESA_SHADER_TESS_EVAL] = 34,                     \
-   },                                                   \
-   .max_entries = {                                     \
-      [MESA_SHADER_VERTEX]    = 3832, /* BSpec 47138 */ \
-      [MESA_SHADER_TESS_CTRL] = 1548, /* BSpec 47137 */ \
-      [MESA_SHADER_TESS_EVAL] = 3576, /* BSpec 47135 */ \
-      [MESA_SHADER_GEOMETRY]  = 1548, /* BSpec 47136 */ \
+#define XEHP_URB_MIN_MAX_ENTRIES                           \
+   .urb = {                                                \
+      .size = 768, /* For intel_stub_gpu */                \
+      .min_entries = {                                     \
+         [MESA_SHADER_VERTEX]    = 64,                     \
+         [MESA_SHADER_TESS_CTRL] = 0,                      \
+         [MESA_SHADER_TESS_EVAL] = 34,                     \
+         [MESA_SHADER_GEOMETRY]  = 2,                      \
+         [MESA_SHADER_TASK]      = 0,                      \
+         [MESA_SHADER_MESH]      = 0,                      \
+      },                                                   \
+      .max_entries = {                                     \
+         [MESA_SHADER_VERTEX]    = 3832, /* BSpec 47138 */ \
+         [MESA_SHADER_TESS_CTRL] = 1548, /* BSpec 47137 */ \
+         [MESA_SHADER_TESS_EVAL] = 3576, /* BSpec 47135 */ \
+         [MESA_SHADER_GEOMETRY]  = 1548, /* BSpec 47136 */ \
+         [MESA_SHADER_TASK]      = 1548, /* BSpec 47133 */ \
+         [MESA_SHADER_MESH]      = 1548, /* Bspec 47132 */ \
+      }                                                    \
    }
 
-#define XEHP_FEATURES(_gt, _slices, _l3)                        \
-   GFX8_FEATURES,                                               \
+#define XEHP_FEATURES                                           \
+   GFX12_FEATURES,                                              \
+   .verx10 = 125,                                               \
+   .has_lsc = true,                                             \
+   .has_llc = false,                                            \
+   .has_ray_tracing = true,                                     \
+   .has_mesh_shading = true,                                    \
+   .has_bfloat16 = true,                                        \
+   .has_systolic = true,                                        \
+   .has_coarse_pixel_primitive_and_cb = true,                   \
    .needs_null_push_constant_tbimr_workaround = true,           \
-   .has_64bit_float = false,                                    \
-   .has_64bit_int = false,                                      \
-   .has_integer_dword_mul = false,                              \
-   .gt = _gt, .num_slices = _slices, .l3_banks = _l3,           \
-   .num_subslices = dual_subslices(1), /* updated by topology */\
-   .ver = 12,                                                   \
-   .has_pln = false,                                            \
-   .has_sample_with_hiz = false,                                \
+   .simulator_id = 29
+
+/* (Sub)slice info, thread counts, and URB come from hwconfig tables */
+#define XEHP_PLACEHOLDER_THREADS_AND_URB                        \
+   .gt = 0, .num_slices = 1, .l3_banks = 0,                     \
+   .num_subslices = dual_subslices(1),                          \
    .max_vs_threads = 546,  /* BSpec 46312 */                    \
    .max_gs_threads = 336,  /* BSpec 46299 */                    \
    .max_tcs_threads = 336, /* BSpec 46300 */                    \
    .max_tes_threads = 546, /* BSpec 46298 */                    \
+   .max_wm_threads = 0,                                         \
    .max_threads_per_psd = 64,                                   \
    .max_cs_threads = 112, /* threads per DSS */                 \
-   .urb = {                                                     \
-      .size = 768, /* For intel_stub_gpu */                     \
-      XEHP_URB_MIN_MAX_ENTRIES,                                 \
-   },                                                           \
    .num_thread_per_eu = 8 /* BSpec 44472 */,                    \
    .max_eus_per_subslice = 16,                                  \
-   .verx10 = 125,                                               \
-   .has_llc = false,                                            \
-   .has_lsc = true,                                             \
-   .has_local_mem = true,                                       \
-   .has_aux_map = false,                                        \
-   .simulator_id = 29,                                          \
-   .cooperative_matrix_configurations = {                       \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT16, INTEL_CMAT_FLOAT32, INTEL_CMAT_FLOAT32 }, \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_SINT8, INTEL_CMAT_SINT8, INTEL_CMAT_SINT32, INTEL_CMAT_SINT32 },       \
-    { INTEL_CMAT_SCOPE_SUBGROUP, 8, 8, 32, INTEL_CMAT_UINT8, INTEL_CMAT_UINT8, INTEL_CMAT_UINT32, INTEL_CMAT_UINT32 },       \
-   }
+   XEHP_URB_MIN_MAX_ENTRIES
 
-#define DG2_FEATURES                                            \
-   /* (Sub)slice info comes from the kernel topology info */    \
-   XEHP_FEATURES(0, 1, 0),                                      \
+#define DG2_CONFIG(platform_suffix)                             \
+   XEHP_FEATURES, XEHP_PLACEHOLDER_THREADS_AND_URB,             \
+   .platform = INTEL_PLATFORM_ ## platform_suffix,              \
    .revision = 4, /* For offline compiler */                    \
-   .apply_hwconfig = true,                                      \
-   .has_coarse_pixel_primitive_and_cb = true,                   \
-   .has_mesh_shading = true,                                    \
-   .has_ray_tracing = true,                                     \
    .has_flat_ccs = true,                                        \
+   .has_aux_map = false,                                        \
+   .has_local_mem = true,                                       \
    /* There is no PAT table for DG2, using TGL ones */          \
+   /* BSpec 45101 (r51017) */                                   \
    .pat = {                                                     \
-         .cached_coherent = PAT_ENTRY(0, WB, 1WAY),             \
-         .scanout = PAT_ENTRY(1, WC, NONE),                     \
-         .writeback_incoherent = PAT_ENTRY(0, WB, 2WAY),        \
-         .writecombining = PAT_ENTRY(1, WC, NONE),              \
+         /* CPU: WB, GPU: PAT 0 => WB, 2WAY */                  \
+         .cached_coherent = PAT_ENTRY(0, WB),                   \
+         /* CPU: WC, GPU: PAT 1 => WC */                        \
+         .scanout = PAT_ENTRY(1, WC),                           \
+         /* CPU: WB, GPU: PAT 0 => WB, 2WAY */                  \
+         .writeback_incoherent = PAT_ENTRY(0, WB),              \
+         /* CPU: WC, GPU: PAT 1 => WC */                        \
+         .writecombining = PAT_ENTRY(1, WC),                    \
    }
 
 static const struct intel_device_info intel_device_info_dg2_g10 = {
-   DG2_FEATURES,
-   .platform = INTEL_PLATFORM_DG2_G10,
+   DG2_CONFIG(DG2_G10),
 };
 
 static const struct intel_device_info intel_device_info_dg2_g11 = {
-   DG2_FEATURES,
-   .platform = INTEL_PLATFORM_DG2_G11,
+   DG2_CONFIG(DG2_G11),
 };
 
 static const struct intel_device_info intel_device_info_dg2_g12 = {
-   DG2_FEATURES,
-   .platform = INTEL_PLATFORM_DG2_G12,
+   DG2_CONFIG(DG2_G12),
 };
 
 static const struct intel_device_info intel_device_info_atsm_g10 = {
-   DG2_FEATURES,
-   .platform = INTEL_PLATFORM_ATSM_G10,
+   DG2_CONFIG(ATSM_G10),
 };
 
 static const struct intel_device_info intel_device_info_atsm_g11 = {
-   DG2_FEATURES,
-   .platform = INTEL_PLATFORM_ATSM_G11,
+   DG2_CONFIG(ATSM_G11),
 };
 
-#define MTL_FEATURES                                            \
-   /* (Sub)slice info comes from the kernel topology info */    \
-   XEHP_FEATURES(0, 1, 0),                                      \
-   .has_local_mem = false,                                      \
-   .has_aux_map = true,                                         \
-   .apply_hwconfig = true,                                      \
+#define MTL_CONFIG(platform_suffix)                             \
+   XEHP_FEATURES, XEHP_PLACEHOLDER_THREADS_AND_URB,             \
+   .platform = INTEL_PLATFORM_ ## platform_suffix,              \
    .has_64bit_float = true,                                     \
    .has_64bit_float_via_math_pipe = true,                       \
-   .has_integer_dword_mul = false,                              \
-   .has_coarse_pixel_primitive_and_cb = true,                   \
-   .has_mesh_shading = true,                                    \
-   .has_ray_tracing = true,                                     \
+   .has_bfloat16 = false,                                       \
+   /* BSpec 55414 (r53716). */                                  \
+   .has_systolic = false,                                       \
+   /* BSpec 45101 (r51017) */                                   \
    .pat = {                                                     \
-         .cached_coherent = PAT_ENTRY(3, WB, 1WAY),             \
-         .scanout = PAT_ENTRY(1, WC, NONE),                     \
-         .writeback_incoherent = PAT_ENTRY(0, WB, NONE),        \
-         .writecombining = PAT_ENTRY(1, WC, NONE),              \
+         /* CPU: WB, GPU: PAT 3 => WB, 1WAY */                  \
+         .cached_coherent = PAT_ENTRY(3, WB),                   \
+         /* CPU: WC, GPU: PAT 1 => WC */                        \
+         .scanout = PAT_ENTRY(1, WC),                           \
+         /* CPU: WB, GPU: PAT 0 => WB, 0WAY */                  \
+         .writeback_incoherent = PAT_ENTRY(0, WB),              \
+         /* CPU: WC, GPU: PAT 1 => WC */                        \
+         .writecombining = PAT_ENTRY(1, WC),                    \
    }
 
 static const struct intel_device_info intel_device_info_mtl_u = {
-   MTL_FEATURES,
-   .platform = INTEL_PLATFORM_MTL_U,
+   MTL_CONFIG(MTL_U),
 };
 
 static const struct intel_device_info intel_device_info_mtl_h = {
-   MTL_FEATURES,
-   .platform = INTEL_PLATFORM_MTL_H,
+   MTL_CONFIG(MTL_H),
 };
 
 static const struct intel_device_info intel_device_info_arl_u = {
-   MTL_FEATURES,
-   .platform = INTEL_PLATFORM_ARL_U,
+   MTL_CONFIG(ARL_U),
 };
 
 static const struct intel_device_info intel_device_info_arl_h = {
-   MTL_FEATURES,
-   .platform = INTEL_PLATFORM_ARL_H,
+   MTL_CONFIG(ARL_H),
+   .has_bfloat16 = true,
+   .has_indirect_unroll = true,
+   /* BSpec 55414 (r53716). */
+   .has_systolic = true,
+};
+
+#define XE2_FEATURES                                            \
+   XEHP_FEATURES,                                               \
+   .ver = 20,                                                   \
+   .verx10 = 200,                                               \
+   .grf_size = 64,                                              \
+   .needs_null_push_constant_tbimr_workaround = false,          \
+   .has_64bit_float = true,                                     \
+   .has_64bit_int = true,                                       \
+   .has_indirect_unroll = true,                                 \
+   .has_aux_map = false,                                        \
+   .has_flat_ccs = true
+
+/* Note, do not enable PAT 10 or 12 on BMG, according to
+ * Wa_18038669374 we should not not use any MOCS/PAT settings
+ * that has "Compressible UC policy"
+ *
+ * (both 10 and 12 map to different compressed L3UC entries)
+ */
+#define XE2_PAT_ENTRIES                                              \
+   /* BSpec 71582 (r59285) */                                        \
+   .pat = {                                                          \
+      /* CPU: WB, GPU: PAT 1 => WB, 1WAY */                          \
+      .cached_coherent = PAT_ENTRY(1, WB),                           \
+      /* CPU: WC, GPU: PAT 6 => WB+display transient */              \
+      .scanout = PAT_ENTRY(6, WC),                                   \
+      /* CPU: WC, GPU: PAT 0 => WB */                                \
+      .writecombining = PAT_ENTRY(0, WC),                            \
+      /* CPU: WC, GPU: PAT 11 => WB+display transient+compressed */  \
+      .compressed_scanout = PAT_ENTRY(11, INVALID),                  \
+      /* CPU: WC, GPU: PAT 9 => WB+compressed */                     \
+      .compressed = PAT_ENTRY(9, INVALID)                            \
+   }
+
+#define XE2_URB_MIN_MAX_ENTRIES  \
+   .urb = {                                                \
+      .size = 768, /* For intel_stub_gpu */                \
+      .min_entries = {                                     \
+         [MESA_SHADER_VERTEX]    = 64,                     \
+         [MESA_SHADER_TESS_CTRL] = 0,                      \
+         [MESA_SHADER_TESS_EVAL] = 50,                     \
+         [MESA_SHADER_GEOMETRY]  = 2,                      \
+         [MESA_SHADER_TASK]      = 0,                      \
+         [MESA_SHADER_MESH]      = 1,                      \
+      },                                                   \
+      .max_entries = {                                     \
+         [MESA_SHADER_VERTEX]    = 4800, /* BSpec 56268 */ \
+         [MESA_SHADER_TESS_CTRL] = 1548, /* BSpec 56265 */ \
+         [MESA_SHADER_TESS_EVAL] = 4480, /* BSpec 56263 */ \
+         [MESA_SHADER_GEOMETRY]  = 1952, /* BSpec 56264 */ \
+         [MESA_SHADER_TASK]      = 1548, /* BSpec 56267 */ \
+         [MESA_SHADER_MESH]      = 1952, /* BSpec 56266 */ \
+      }                                                    \
+   }
+
+#define XE2_CONFIG(platform_suffix)                             \
+   XE2_FEATURES, XE2_PAT_ENTRIES,                               \
+   XEHP_PLACEHOLDER_THREADS_AND_URB,                            \
+   XE2_URB_MIN_MAX_ENTRIES,                                     \
+   .platform = INTEL_PLATFORM_ ## platform_suffix
+
+static const struct intel_device_info intel_device_info_bmg = {
+   XE2_CONFIG(BMG),
+   .has_local_mem = true,
+};
+
+static const struct intel_device_info intel_device_info_lnl = {
+   XE2_CONFIG(LNL),
+   .has_local_mem = false,
+};
+
+#define XE3_FEATURES                                            \
+   XE2_FEATURES,                                                \
+   .ver = 30,                                                   \
+   .verx10 = 300
+
+#define XE3_URB_MIN_MAX_ENTRIES                                 \
+   XE2_URB_MIN_MAX_ENTRIES
+
+#define XE3_PLACEHOLDER_THREADS_AND_URB                         \
+   XEHP_PLACEHOLDER_THREADS_AND_URB,                            \
+   XE3_URB_MIN_MAX_ENTRIES
+
+#define XE3_CONFIG(platform_suffix)                             \
+   XE3_FEATURES, XE2_PAT_ENTRIES,                               \
+   XE3_PLACEHOLDER_THREADS_AND_URB,                             \
+   .platform = INTEL_PLATFORM_ ## platform_suffix
+
+
+static const struct intel_device_info intel_device_info_ptl = {
+   XE3_CONFIG(PTL),
+   .has_local_mem = false,
+};
+
+static const struct intel_device_info intel_device_info_wcl = {
+   XE3_CONFIG(WCL),
+   .has_local_mem = false,
+   .has_ray_tracing = false,
+};
+
+static const struct intel_device_info intel_device_info_nvl_s_hx_ul = {
+   XE3_CONFIG(NVL_U),
+   .has_local_mem = false,
+   .has_ray_tracing = false,
+};
+
+static const struct intel_device_info intel_device_info_nvl_u_h = {
+   XE3_CONFIG(NVL_U),
+   .has_local_mem = false,
+};
+
+#define XE3P_PLACEHOLDER_THREADS_AND_URB                        \
+   XE3_PLACEHOLDER_THREADS_AND_URB,                             \
+   .num_thread_per_eu = 8 /* BSpec 74198 */,                    \
+   .urb.min_entries[MESA_SHADER_TASK] = 2,                      \
+   .urb.min_entries[MESA_SHADER_MESH] = 2
+
+#define XE3P_FEATURES                                           \
+   XE3_FEATURES,                                                \
+   .ver = 35,                                                   \
+   .verx10 = 350
+
+#define XE3P_CONFIG(platform_suffix)                            \
+   XE3P_FEATURES, XE2_PAT_ENTRIES,                              \
+   XE3P_PLACEHOLDER_THREADS_AND_URB,                            \
+   .platform = INTEL_PLATFORM_ ## platform_suffix
+
+static const struct intel_device_info intel_device_info_nvl_p = {
+   XE3P_CONFIG(NVL_P),
+   .has_local_mem = false,
 };
 
 void
@@ -1302,6 +1376,37 @@ intel_device_info_update_l3_banks(struct intel_device_info *devinfo)
    }
 }
 
+/* Returns the number of EUs of the first subslice enabled */
+uint32_t
+intel_device_info_get_eu_count_first_subslice(const struct intel_device_info *devinfo)
+{
+   uint32_t first_subslice, first_slice, offset, i;
+   uint32_t eu_count = 0;
+
+   first_slice = ffs(devinfo->slice_masks);
+   first_slice--;
+   offset = first_slice * devinfo->subslice_slice_stride;
+
+   for (i = 0; i < DIV_ROUND_UP(devinfo->max_subslices_per_slice, 8); i++) {
+      first_subslice = ffs(devinfo->subslice_masks[offset + i]);
+
+      if (first_subslice == 0)
+         continue;
+
+      break;
+   }
+
+   assert(first_subslice > 0);
+   first_subslice--;
+   offset = first_slice * devinfo->eu_slice_stride +
+            first_subslice * devinfo->eu_subslice_stride;
+   for (i = 0; i < DIV_ROUND_UP(devinfo->max_eus_per_subslice, 8); i++)
+      eu_count += __builtin_popcount(devinfo->eu_masks[offset + i]);
+
+   assert(eu_count > 0);
+   return eu_count;
+}
+
 /* Generate mask from the device data. */
 static void
 fill_masks(struct intel_device_info *devinfo)
@@ -1322,26 +1427,114 @@ fill_masks(struct intel_device_info *devinfo)
 void
 intel_device_info_update_cs_workgroup_threads(struct intel_device_info *devinfo)
 {
-   /* GPGPU_WALKER::ThreadWidthCounterMaximum is U6-1 so the most threads we
-    * can program is 64 without going up to a rectangular group. This only
-    * impacts Haswell and TGL which have higher thread counts.
-    *
-    * INTERFACE_DESCRIPTOR_DATA::NumberofThreadsinGPGPUThreadGroup on Xe-HP+
-    * is 10 bits so we have no such restrictions.
-    */
-   devinfo->max_cs_workgroup_threads =
-      devinfo->verx10 >= 125 ? devinfo->max_cs_threads :
-                               MIN2(devinfo->max_cs_threads, 64);
+   if (devinfo->verx10 >= 300) {
+      /* BSpec 56590 (r65834)
+       * PTL+ introduces compute workgroup limits that depend on SIMD
+       * width and GRF usage. Conservatively limit the workgroup thread
+       * count to 32 so brw_simd_should_compile() rejects SIMD16 variants
+       * that would require more than 32 hardware threads and selects
+       * SIMD32 instead.
+       */
+      devinfo->max_cs_workgroup_threads = MIN2(devinfo->max_cs_threads, 32);
+   } else if (devinfo->verx10 >= 125) {
+      /* INTERFACE_DESCRIPTOR_DATA::NumberofThreadsinGPGPUThreadGroup on Xe-HP+
+       * is 10 bits so we have no such restrictions.
+       */
+      devinfo->max_cs_workgroup_threads = devinfo->max_cs_threads;
+   } else {
+      /* GPGPU_WALKER::ThreadWidthCounterMaximum is U6-1 so the most threads we
+       * can program is 64 without going up to a rectangular group. This only
+       * impacts Haswell and TGL which have higher thread counts.
+       */
+      devinfo->max_cs_workgroup_threads = MIN2(devinfo->max_cs_threads, 64);
+   }
 }
 
 static bool
-intel_device_info_init_common(int pci_id,
+parse_force_probe_entry(int pci_id, const char *entry, bool *force_on,
+                        bool *force_off)
+{
+   const char *cp = entry;
+
+   bool negated = *cp == '!';
+   if (negated)
+      cp++;
+
+   if (*cp == '\0')
+      return false;
+
+   bool wildcard = *cp == '*';
+   long val = 0;
+
+   if (wildcard) {
+      cp++;
+   } else {
+      char *end;
+      val = strtol(cp, &end, 16);
+      if (end == cp)
+         return false;
+      cp = end;
+   }
+
+   if (*cp != '\0')
+      return false;
+
+   bool matched = wildcard || (long)pci_id == val;
+   if (matched) {
+      *force_on = !negated;
+      *force_off = negated;
+   }
+
+   return matched;
+}
+
+static void
+scan_for_force_probe(int pci_id, bool *force_on, bool *force_off)
+{
+   *force_on = false;
+   *force_off = false;
+
+   const char *env = os_get_option("INTEL_FORCE_PROBE");
+   if (env == NULL)
+      return;
+
+   size_t len = strlen(env);
+   if (len == 0)
+      return;
+
+   char *dup = strndup(env, len);
+   if (dup == NULL)
+      return;
+
+   for (char *entry = strtok(dup, ","); entry; entry = strtok(NULL, ","))
+      parse_force_probe_entry(pci_id, entry, force_on, force_off);
+
+   free(dup);
+   assert(!*force_on || !*force_off);
+}
+
+struct device_init_config {
+   bool require_force_probe;
+};
+
+/* Example PCI ID entry using FORCE_PROBE:
+ *
+ * CHIPSET(0x1234, foo, "FOO", "Intel(R) Graphics", FORCE_PROBE)
+ */
+#define FORCE_PROBE .require_force_probe = true
+
+static bool
+intel_device_info_init_common(int pci_id, bool building,
                               struct intel_device_info *devinfo)
 {
+   struct device_init_config device_config = { 0 };
    switch (pci_id) {
 #undef CHIPSET
-#define CHIPSET(id, family, fam_str, name) \
-      case id: *devinfo = intel_device_info_##family; break;
+#define CHIPSET(id, family, fam_str, name, ...)                         \
+      case id:                                                          \
+         *devinfo = intel_device_info_##family;                         \
+         device_config = *&(struct device_init_config) { __VA_ARGS__ }; \
+         break;
 #include "pci_ids/crocus_pci_ids.h"
 #include "pci_ids/iris_pci_ids.h"
 
@@ -1357,7 +1550,7 @@ intel_device_info_init_common(int pci_id,
 
    switch (pci_id) {
 #undef CHIPSET
-#define CHIPSET(_id, _family, _fam_str, _name) \
+#define CHIPSET(_id, _family, _fam_str, _name, ...) \
    case _id: \
       /* sizeof(str_literal) includes the null */ \
       STATIC_ASSERT(sizeof(_name) + sizeof(_fam_str) + 2 <= \
@@ -1368,6 +1561,29 @@ intel_device_info_init_common(int pci_id,
 #include "pci_ids/iris_pci_ids.h"
    default:
       strncpy(devinfo->name, "Intel Unknown", sizeof(devinfo->name));
+   }
+
+   bool force_on = false;
+   bool force_off = false;
+   if (building)
+      force_on = true;
+   else
+      scan_for_force_probe(pci_id, &force_on, &force_off);
+   devinfo->probe_forced = force_on;
+   if (force_off) {
+      mesa_logw("%s (0x%x) disabled with INTEL_FORCE_PROBE", devinfo->name,
+                pci_id);
+      return false;
+   } else if (device_config.require_force_probe) {
+      if (force_on) {
+         if (!building)
+            mesa_logw("Forcing probe of unsupported: %s (0x%x)", devinfo->name,
+                      pci_id);
+      } else {
+         mesa_loge("%s (0x%x) requires INTEL_FORCE_PROBE", devinfo->name,
+                   pci_id);
+         return false;
+      }
    }
 
    devinfo->pci_device_id = pci_id;
@@ -1397,6 +1613,8 @@ intel_device_info_init_common(int pci_id,
    case 11:
    case 12:
    case 20:
+   case 30:
+   case 35:
       devinfo->max_wm_threads = 128 /* threads-per-PSD */
                               * devinfo->num_slices
                               * 8; /* subslices per slice */
@@ -1428,6 +1646,20 @@ intel_device_info_init_common(int pci_id,
             devinfo->max_constant_urb_size_kb / 2;
    }
 
+   /*
+    * Gfx 12.5 moved scratch to a surface and SURFTYPE_SCRATCH has this pitch
+    * restriction:
+    *
+    * BSpec 43862 (r52666)
+    * RENDER_SURFACE_STATE::Surface Pitch
+    *    For surfaces of type SURFTYPE_SCRATCH, valid range of pitch is:
+    *    [63,262143] -> [64B, 256KB]
+    *
+    * The pitch of the surface is the scratch size per thread and the surface
+    * should be large enough to accommodate every physical thread.
+    */
+   devinfo->max_scratch_size_per_thread = devinfo->verx10 >= 125 ?
+                                          (256 * 1024) : (2 * 1024 * 1024);
    intel_device_info_update_cs_workgroup_threads(devinfo);
 
    return true;
@@ -1439,6 +1671,17 @@ intel_device_info_apply_workarounds(struct intel_device_info *devinfo)
    if (intel_needs_workaround(devinfo, 18012660806))
       devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1536;
 
+   if (intel_needs_workaround(devinfo, 18040209780))
+      devinfo->max_gs_threads = 312;
+
+   /* Wa_16025326720 */
+   if (intel_needs_workaround(devinfo, 16025326720)) {
+      devinfo->urb.max_entries[MESA_SHADER_TESS_CTRL] = 1408;
+      devinfo->urb.max_entries[MESA_SHADER_TASK] = 1408;
+      devinfo->urb.max_entries[MESA_SHADER_MESH] = 1792;
+      devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1792;
+   }
+
    /* Fixes issues with:
     * dEQP-GLES31.functional.geometry_shading.layered.render_with_default_layer_cubemap
     * when running on GFX12 platforms with small EU count.
@@ -1448,11 +1691,11 @@ intel_device_info_apply_workarounds(struct intel_device_info *devinfo)
       devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1024;
 }
 
-bool
-intel_get_device_info_from_pci_id(int pci_id,
-                                  struct intel_device_info *devinfo)
+static bool
+intel_get_device_info_from_pci_id_common(int pci_id, bool building,
+                                         struct intel_device_info *devinfo)
 {
-   intel_device_info_init_common(pci_id, devinfo);
+   intel_device_info_init_common(pci_id, building, devinfo);
 
    /* This is a placeholder until a proper value is set. */
    devinfo->kmd_type = INTEL_KMD_TYPE_I915;
@@ -1461,6 +1704,20 @@ intel_get_device_info_from_pci_id(int pci_id,
    intel_device_info_apply_workarounds(devinfo);
 
    return true;
+}
+
+bool
+intel_get_device_info_from_pci_id(int pci_id,
+                                  struct intel_device_info *devinfo)
+{
+   return intel_get_device_info_from_pci_id_common(pci_id, false, devinfo);
+}
+
+bool
+intel_get_device_info_for_build(int pci_id,
+                                struct intel_device_info *devinfo)
+{
+   return intel_get_device_info_from_pci_id_common(pci_id, true, devinfo);
 }
 
 bool
@@ -1494,37 +1751,10 @@ intel_device_info_adjust_memory(struct intel_device_info *devinfo)
 static void
 init_max_scratch_ids(struct intel_device_info *devinfo)
 {
-   /* Determine the max number of subslices that potentially might be used in
+   /* Determine the max subslice that potentially might be used in
     * scratch space ids.
-    *
-    * For, Gfx11+, scratch space allocation is based on the number of threads
-    * in the base configuration.
-    *
-    * For Gfx9, devinfo->subslice_total is the TOTAL number of subslices and
-    * we wish to view that there are 4 subslices per slice instead of the
-    * actual number of subslices per slice. The documentation for 3DSTATE_PS
-    * "Scratch Space Base Pointer" says:
-    *
-    *    "Scratch Space per slice is computed based on 4 sub-slices.  SW
-    *     must allocate scratch space enough so that each slice has 4
-    *     slices allowed."
-    *
-    * According to the other driver team, this applies to compute shaders
-    * as well.  This is not currently documented at all.
-    *
-    * For Gfx8 and older we user devinfo->subslice_total.
     */
-   unsigned subslices;
-   if (devinfo->verx10 == 125)
-      subslices = 32;
-   else if (devinfo->ver == 12)
-      subslices = (devinfo->platform == INTEL_PLATFORM_DG1 || devinfo->gt == 2 ? 6 : 2);
-   else if (devinfo->ver == 11)
-      subslices = 8;
-   else if (devinfo->ver >= 9 && devinfo->ver < 11)
-      subslices = 4 * devinfo->num_slices;
-   else
-      subslices = devinfo->subslice_total;
+   unsigned subslices = intel_device_info_dual_subslice_id_bound(devinfo);
    assert(subslices >= devinfo->subslice_total);
 
    unsigned scratch_ids_per_subslice;
@@ -1629,10 +1859,43 @@ intel_device_info_calc_engine_prefetch(const struct intel_device_info *devinfo,
    return 512;
 }
 
+static void
+intel_device_info_update_after_hwconfig(struct intel_device_info *devinfo)
+{
+   /* After applying hwconfig values, some items need to be recalculated. */
+   devinfo->max_cs_threads =
+      devinfo->max_eus_per_subslice * devinfo->num_thread_per_eu;
+
+   intel_device_info_update_cs_workgroup_threads(devinfo);
+
+   /* On Skylake through Xe, the 3DSTATE_GS_BODY docs include a note:
+    *
+    *   "The driver must send pipe control with a cs stall after a
+    *    3dstate_gs state change and the Dispatch Mode is simd8 and
+    *    the number of handles allocated to gs is less than 16."
+    *
+    * We don't implement such a PIPE_CONTROL, so instead we set the minimum
+    * number of GS URB entries to 16.  The Xe2+ docs don't have such a note,
+    * but considering they use SIMD16 GS threads, retaining 16 as the minimum
+    * likely makes sense there as well.
+    *
+    * Assuming we did implement that flush, the 3DSTATE_GS docs also note:
+    *
+    *   "At least 8 URB entries must be allocated in order to use SIMD8
+    *    DispatchMode."
+    *
+    * The hardware config tables instead have the limit set as 2, which is
+    * likely an older limit from the SIMD4x2 dual-object/instance era which
+    * is no longer accurate.
+    */
+   devinfo->urb.min_entries[MESA_SHADER_GEOMETRY] =
+      MAX2(16, devinfo->urb.min_entries[MESA_SHADER_GEOMETRY]);
+}
+
 bool
 intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo, int min_ver, int max_ver)
 {
-   if (NULL != getenv("INTEL_STUB_GPU_JSON")) {
+   if (NULL != os_get_option("INTEL_STUB_GPU_JSON")) {
       /* This call will succeed when shim-drm has been initialized with a
        * serialized intel_device_info structure.
        */
@@ -1656,29 +1919,39 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo, int min
     * rely on an ioctl to get PCI device id for the next step when skipping
     * this drm query.
     */
-   drmDevicePtr drmdev = NULL;
-   if (drmGetDevice2(fd, DRM_DEVICE_GET_PCI_REVISION, &drmdev)) {
-      mesa_loge("Failed to query drm device.");
-      return false;
-   }
-   if (!intel_device_info_init_common(
-          drmdev->deviceinfo.pci->device_id, devinfo)) {
+   if (is_intel_virtio_fd(fd)) {
+      if (!intel_virtio_get_pci_device_info(fd, devinfo))
+         return false;
+
+      if (!intel_device_info_init_common(devinfo->pci_device_id,
+                                         false, devinfo))
+         return false;
+
+      devinfo->is_virtio = true;
+   } else {
+      drmDevicePtr drmdev = NULL;
+      if (drmGetDevice2(fd, DRM_DEVICE_GET_PCI_REVISION, &drmdev)) {
+         mesa_loge("Failed to query drm device.");
+         return false;
+      }
+      if (!intel_device_info_init_common(drmdev->deviceinfo.pci->device_id,
+                                         false, devinfo)) {
+         drmFreeDevice(&drmdev);
+         return false;
+      }
+
+      devinfo->pci_domain = drmdev->businfo.pci->domain;
+      devinfo->pci_bus = drmdev->businfo.pci->bus;
+      devinfo->pci_dev = drmdev->businfo.pci->dev;
+      devinfo->pci_func = drmdev->businfo.pci->func;
+      devinfo->pci_device_id = drmdev->deviceinfo.pci->device_id;
+      devinfo->pci_revision_id = drmdev->deviceinfo.pci->revision_id;
       drmFreeDevice(&drmdev);
-      return false;
-   }
-   
-   if ((min_ver > 0 && devinfo->ver < min_ver) || (max_ver > 0 && devinfo->ver > max_ver)) {
-      drmFreeDevice(&drmdev);
-      return false;
    }
 
-   devinfo->pci_domain = drmdev->businfo.pci->domain;
-   devinfo->pci_bus = drmdev->businfo.pci->bus;
-   devinfo->pci_dev = drmdev->businfo.pci->dev;
-   devinfo->pci_func = drmdev->businfo.pci->func;
-   devinfo->pci_device_id = drmdev->deviceinfo.pci->device_id;
-   devinfo->pci_revision_id = drmdev->deviceinfo.pci->revision_id;
-   drmFreeDevice(&drmdev);
+   if ((min_ver > 0 && devinfo->ver < min_ver) || (max_ver > 0 && devinfo->ver > max_ver))
+      return false;
+
    devinfo->no_hw = debug_get_bool_option("INTEL_NO_HW", false);
 
    devinfo->kmd_type = intel_get_kmd_type(fd);
@@ -1703,12 +1976,14 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo, int min
       break;
    case INTEL_KMD_TYPE_XE:
       ret = intel_device_info_xe_get_info_from_fd(fd, devinfo);
-      if (devinfo->verx10 < 200)
-         mesa_logw("Support for this platform is experimental with Xe KMD, bug reports may be ignored.");
+      if (devinfo->verx10 < 200) {
+         if (!debug_get_bool_option("INTEL_XE_IGNORE_EXPERIMENTAL_WARNING", false))
+            mesa_logw("Support for this platform is experimental with Xe KMD, bug reports may be ignored.");
+      }
       break;
    default:
       ret = false;
-      unreachable("Missing");
+      UNREACHABLE("Missing");
    }
    if (!ret) {
       mesa_logw("Could not get intel_device_info.");
@@ -1721,6 +1996,8 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo, int min
       return false;
    }
 
+   if (intel_hwconfig_is_required(devinfo))
+      intel_device_info_update_after_hwconfig(devinfo);
    intel_device_info_adjust_memory(devinfo);
 
    /* Gfx7 and older do not support EU/Subslice info */
@@ -1760,16 +2037,6 @@ bool intel_device_info_update_memory_info(struct intel_device_info *devinfo, int
    return ret;
 }
 
-void
-intel_device_info_update_after_hwconfig(struct intel_device_info *devinfo)
-{
-   /* After applying hwconfig values, some items need to be recalculated. */
-   devinfo->max_cs_threads =
-      devinfo->max_eus_per_subslice * devinfo->num_thread_per_eu;
-
-   intel_device_info_update_cs_workgroup_threads(devinfo);
-}
-
 enum intel_wa_steppings
 intel_device_info_wa_stepping(struct intel_device_info *devinfo)
 {
@@ -1781,7 +2048,38 @@ intel_device_info_wa_stepping(struct intel_device_info *devinfo)
     * 'compiler_field' in intel_device_info.py
     */
 
-   if (devinfo->platform == INTEL_PLATFORM_TGL) {
+   if (devinfo->platform == INTEL_PLATFORM_PTL) {
+      switch (devinfo->revision) {
+      case 0:
+         return INTEL_STEPPING_A0;
+      case 4:
+         return INTEL_STEPPING_B0;
+      default:
+         return INTEL_STEPPING_RELEASE;
+      }
+   } else if (devinfo->platform == INTEL_PLATFORM_BMG) {
+      switch (devinfo->revision) {
+      case 0:
+         return INTEL_STEPPING_A0;
+      case 1:
+         return INTEL_STEPPING_A1;
+      case 4:
+         return INTEL_STEPPING_B0;
+      default:
+         return INTEL_STEPPING_RELEASE;
+      }
+   } else if (devinfo->platform == INTEL_PLATFORM_LNL) {
+      switch (devinfo->revision) {
+      case 0:
+         return INTEL_STEPPING_A0;
+      case 1:
+         return INTEL_STEPPING_A1;
+      case 4:
+         return INTEL_STEPPING_B0;
+      default:
+         return INTEL_STEPPING_RELEASE;
+      }
+   } else if (devinfo->platform == INTEL_PLATFORM_TGL) {
       /* TGL production steppings: B0 and C0 */
       switch (devinfo->revision) {
       case 1:
@@ -1797,3 +2095,37 @@ intel_device_info_wa_stepping(struct intel_device_info *devinfo)
    return INTEL_STEPPING_RELEASE;
 }
 
+uint32_t
+intel_device_info_get_max_slm_size(const struct intel_device_info *devinfo)
+{
+   uint32_t bytes = 0;
+
+   if (devinfo->verx10 >= 300) {
+      bytes = 128 * 1024;
+   } else if (devinfo->verx10 >= 200) {
+      bytes = intel_device_info_get_max_preferred_slm_size(devinfo);
+   } else {
+      bytes = 64 * 1024;
+   }
+
+   return bytes;
+}
+
+uint32_t
+intel_device_info_get_max_preferred_slm_size(const struct intel_device_info *devinfo)
+{
+   uint32_t k_bytes = 0;
+
+   if (devinfo->verx10 >= 300) {
+      k_bytes = 192;
+   } else if (devinfo->verx10 >= 200) {
+      if (intel_needs_workaround(devinfo, 16018610683))
+         k_bytes = 128;
+      else
+         k_bytes = 160;
+   } else {
+      k_bytes = 128;
+   }
+
+   return k_bytes * 1024;
+}

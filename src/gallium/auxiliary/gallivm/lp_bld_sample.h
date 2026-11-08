@@ -38,8 +38,6 @@
 
 #include "pipe/p_state.h"
 #include "util/format/u_formats.h"
-#include "util/u_debug.h"
-#include "gallivm/lp_bld.h"
 #include "gallivm/lp_bld_type.h"
 #include "gallivm/lp_bld_swizzle.h"
 
@@ -98,6 +96,10 @@ enum lp_sampler_op_type {
 #define LP_SAMPLER_GATHER_COMP_SHIFT        8
 #define LP_SAMPLER_GATHER_COMP_MASK   (3 << 8)
 #define LP_SAMPLER_FETCH_MS          (1 << 10)
+#define LP_SAMPLER_RESIDENCY         (1 << 11)
+#define LP_SAMPLER_MIN_LOD           (1 << 12)
+#define LP_SAMPLER_HAS_LAYER         (1 << 13)
+#define LP_SAMPLE_KEY_COUNT          (1 << 14)
 
 
 /* Parameters used to handle TEX instructions */
@@ -116,13 +118,14 @@ struct lp_sampler_params
    const LLVMValueRef *offsets;
    LLVMValueRef ms_index;
    LLVMValueRef lod;
-   LLVMValueRef aniso_filter_table;
+   LLVMValueRef min_lod;
    const struct lp_derivatives *derivs;
    LLVMValueRef *texel;
 
    LLVMValueRef texture_resource;
    LLVMValueRef sampler_resource;
    LLVMValueRef exec_mask;
+   bool exec_mask_nz;
 };
 
 /* Parameters used to handle sampler_size instructions */
@@ -143,14 +146,28 @@ struct lp_sampler_size_query_params
 
    LLVMValueRef resource;
    LLVMValueRef exec_mask;
+   bool exec_mask_nz;
    enum pipe_format format;
 };
 
 #define LP_IMG_LOAD 0
-#define LP_IMG_STORE 1
-#define LP_IMG_ATOMIC 2
-#define LP_IMG_ATOMIC_CAS 3
-#define LP_IMG_OP_COUNT 4
+#define LP_IMG_LOAD_SPARSE 1
+#define LP_IMG_STORE 2
+#define LP_IMG_ATOMIC 3
+#define LP_IMG_ATOMIC_CAS 4
+#define LP_IMG_OP_COUNT 5
+
+#if LLVM_VERSION_MAJOR >= 15
+#define LP_IMAGE_OP_COUNT (LP_IMG_OP_COUNT + LLVMAtomicRMWBinOpFMin)
+#else
+#define LP_IMAGE_OP_COUNT (LP_IMG_OP_COUNT + 14)
+#endif
+
+#define LP_IMAGE_OP_MS 1
+#define LP_IMAGE_OP_64 2
+#define LP_IMAGE_OP_HAS_LAYER 4
+
+#define LP_TOTAL_IMAGE_OP_COUNT (LP_IMAGE_OP_COUNT * 8)
 
 struct lp_img_params
 {
@@ -159,8 +176,11 @@ struct lp_img_params
    LLVMValueRef image_index_offset;
    unsigned img_op;
    unsigned target;
+   unsigned packed_op;
+   bool instr_has_layer_coord;
    LLVMAtomicRMWBinOp op;
    LLVMValueRef exec_mask;
+   bool exec_mask_nz;
    LLVMTypeRef resources_type;
    LLVMValueRef resources_ptr;
    LLVMTypeRef thread_data_type;
@@ -194,10 +214,15 @@ struct lp_static_texture_state
 
    /* pipe_texture's state */
    enum pipe_texture_target target:5;        /**< PIPE_TEXTURE_* */
+   enum pipe_texture_target res_target:5;
    unsigned pot_width:1;     /**< is the width a power of two? */
    unsigned pot_height:1;
    unsigned pot_depth:1;
    unsigned level_zero_only:1;
+   unsigned tiled:1;
+   unsigned tiled_samples:5;
+   /**< view min lod clamp (VK_EXT_image_view_min_lod): apply lod = max(lod, view_min_lod) */
+   unsigned apply_view_min_lod:1;
 };
 
 
@@ -225,7 +250,7 @@ struct lp_static_sampler_state
    unsigned apply_min_lod:1;  /**< min_lod > 0 ? */
    unsigned apply_max_lod:1;  /**< max_lod < last_level ? */
    unsigned seamless_cube_map:1;
-   unsigned aniso:1;
+   unsigned aniso:5;
    unsigned reduction_mode:2;
 };
 
@@ -354,12 +379,12 @@ struct lp_sampler_dynamic_state
                    LLVMValueRef resources_ptr,
                    unsigned sampler_unit);
 
-   /** Obtain maximum anisotropy */
+   /* Obtain the per-view min-lod clamp (returns float, relative to first_level) */
    LLVMValueRef
-   (*max_aniso)(struct gallivm_state *gallivm,
-                LLVMTypeRef resources_type,
-                LLVMValueRef resources_ptr,
-                unsigned sampler_unit);
+   (*view_min_lod)(struct gallivm_state *gallivm,
+                   LLVMTypeRef resources_type,
+                   LLVMValueRef resources_ptr,
+                   unsigned texture_unit, LLVMValueRef texture_unit_offset);
 
    /**
     * Obtain texture cache (returns ptr to lp_build_format_cache).
@@ -371,6 +396,20 @@ struct lp_sampler_dynamic_state
                 LLVMTypeRef thread_data_type,
                 LLVMValueRef thread_data_ptr,
                 unsigned unit);
+
+   /** Obtain pointer to a bitset of resident tiles. */
+   LLVMValueRef
+   (*residency)(struct gallivm_state *gallivm,
+                      LLVMTypeRef resources_type,
+                      LLVMValueRef resources_ptr,
+                      unsigned texture_unit, LLVMValueRef texture_unit_offset);
+
+   /** Obtain the offset of base_ptr into the referenced resource. */
+   LLVMValueRef
+   (*base_offset)(struct gallivm_state *gallivm,
+                  LLVMTypeRef resources_type,
+                  LLVMValueRef resources_ptr,
+                  unsigned texture_unit, LLVMValueRef texture_unit_offset);
 };
 
 
@@ -414,6 +453,8 @@ struct lp_build_sample_context
    bool no_brilinear;
    bool no_rho_approx;
    bool fetch_ms;
+   bool residency;
+   bool instr_has_layer_coord;
 
    /** regular scalar float type */
    struct lp_type float_type;
@@ -470,6 +511,14 @@ struct lp_build_sample_context
    struct lp_type lodi_type;
    struct lp_build_context lodi_bld;
 
+   /** Aniso filtering direction type */
+   struct lp_type aniso_rate_type;
+   struct lp_build_context aniso_rate_bld;
+
+   /** Aniso filtering rate type */
+   struct lp_type aniso_direction_type;
+   struct lp_build_context aniso_direction_bld;
+
    /* Common dynamic state values */
    LLVMTypeRef row_stride_type;
    LLVMValueRef row_stride_array;
@@ -491,7 +540,7 @@ struct lp_build_sample_context
    LLVMTypeRef resources_type;
    LLVMValueRef resources_ptr;
 
-   LLVMValueRef aniso_filter_table;
+   LLVMValueRef resident;
 };
 
 /*
@@ -516,6 +565,11 @@ struct lp_build_img_op_array_switch {
    LLVMValueRef switch_ref;
    LLVMBasicBlockRef merge_ref;
    LLVMValueRef phi[4];
+};
+
+struct lp_aniso_values {
+   LLVMValueRef rate;
+   LLVMValueRef direction; /* true: X, false: Y */
 };
 
 
@@ -625,12 +679,13 @@ lp_build_lod_selector(struct lp_build_sample_context *bld,
                       const struct lp_derivatives *derivs,
                       LLVMValueRef lod_bias, /* optional */
                       LLVMValueRef explicit_lod, /* optional */
+                      LLVMValueRef min_lod, /* optional */
                       enum pipe_tex_mipfilter mip_filter,
-                      LLVMValueRef max_aniso,
                       LLVMValueRef *out_lod,
                       LLVMValueRef *out_lod_ipart,
                       LLVMValueRef *out_lod_fpart,
-                      LLVMValueRef *out_lod_positive);
+                      LLVMValueRef *out_lod_positive,
+                      struct lp_aniso_values *out_aniso);
 
 void
 lp_build_nearest_mip_level(struct lp_build_sample_context *bld,
@@ -739,6 +794,21 @@ lp_build_sample_offset(struct lp_build_context *bld,
 
 
 void
+lp_build_tiled_sample_offset(struct lp_build_context *bld,
+                             enum pipe_format format,
+                             const struct lp_static_texture_state *static_texture_state,
+                             LLVMValueRef x,
+                             LLVMValueRef y,
+                             LLVMValueRef z,
+                             LLVMValueRef width,
+                             LLVMValueRef height,
+                             LLVMValueRef z_stride,
+                             LLVMValueRef *out_offset,
+                             LLVMValueRef *out_i,
+                             LLVMValueRef *out_j);
+
+
+void
 lp_build_sample_soa_code(struct gallivm_state *gallivm,
                          const struct lp_static_texture_state *static_texture_state,
                          const struct lp_static_sampler_state *static_sampler_state,
@@ -755,9 +825,9 @@ lp_build_sample_soa_code(struct gallivm_state *gallivm,
                          const LLVMValueRef *offsets,
                          const struct lp_derivatives *derivs, /* optional */
                          LLVMValueRef lod, /* optional */
+                         LLVMValueRef min_lod, /* optional */
                          LLVMValueRef ms_index, /* optional */
-                         LLVMValueRef aniso_filter_table,
-                         LLVMValueRef texel_out[4]);
+                         LLVMValueRef *texel_out);
 
 
 void
@@ -801,7 +871,8 @@ lp_build_img_op_soa(const struct lp_static_texture_state *static_texture_state,
                     struct lp_sampler_dynamic_state *dynamic_state,
                     struct gallivm_state *gallivm,
                     const struct lp_img_params *params,
-                    LLVMValueRef outdata[4]);
+                    bool is64,
+                    LLVMValueRef *outdata);
 
 void
 lp_build_sample_array_init_soa(struct lp_build_sample_array_switch *switch_info,
@@ -831,7 +902,8 @@ void
 lp_build_image_op_array_case(struct lp_build_img_op_array_switch *switch_info,
                              int idx,
                              const struct lp_static_texture_state *static_texture_state,
-                             struct lp_sampler_dynamic_state *dynamic_state);
+                             struct lp_sampler_dynamic_state *dynamic_state,
+                             bool is64);
 
 void
 lp_build_image_op_array_fini_soa(struct lp_build_img_op_array_switch *switch_info);
@@ -885,7 +957,6 @@ LLVMValueRef lp_sample_load_mip_value(struct gallivm_state *gallivm,
                                       LLVMValueRef offsets,
                                       LLVMValueRef index1);
 
-const float *lp_build_sample_aniso_filter_table(void);
 #ifdef __cplusplus
 }
 #endif

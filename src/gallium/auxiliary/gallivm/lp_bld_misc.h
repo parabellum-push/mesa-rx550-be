@@ -29,8 +29,8 @@
 #ifndef LP_BLD_MISC_H
 #define LP_BLD_MISC_H
 
+#include <stdbool.h>
 
-#include "lp_bld.h"
 #include <llvm/Config/llvm-config.h>
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
@@ -64,6 +64,8 @@ gallivm_dispose_target_library_info(LLVMTargetLibraryInfoRef library_info);
 extern void
 lp_set_target_options(void);
 
+extern void
+lp_bld_init_native_targets();
 
 extern int
 lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
@@ -95,6 +97,13 @@ lp_free_objcache(void *objcache);
 void
 lp_set_module_stack_alignment_override(LLVMModuleRef M, unsigned align);
 #ifdef __cplusplus
+
+void
+lp_build_fill_mattrs(std::vector<std::string> &MAttrs);
+
+void
+lp_build_dump_mattrs(std::vector<std::string> &MAttrs);
+
 }
 #endif
 

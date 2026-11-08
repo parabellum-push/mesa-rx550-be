@@ -65,6 +65,10 @@ struct vn_graphics_pipeline_info_self {
 
          /** VkPipelineMultisampleStateCreateInfo::pSampleMask */
          bool multisample_state_sample_mask : 1;
+         /** VkPipelineMultisampleStateCreateInfo::pNext
+          *  VkPipelineSampleLocationsStateCreateInfoEXT::sampleLocationsInfo
+          */
+         bool multisample_state_sample_locations : 1;
       };
    };
 };
@@ -158,6 +162,10 @@ struct vn_graphics_dynamic_state {
          bool scissor_with_count : 1;
          /** VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE */
          bool rasterizer_discard_enable : 1;
+         /** VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT */
+         bool sample_locations : 1;
+         /** VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT */
+         bool sample_locations_enable : 1;
       };
    };
 };
@@ -216,24 +224,27 @@ struct vn_graphics_pipeline {
 struct vn_graphics_pipeline_fix_tmp {
    VkGraphicsPipelineCreateInfo *infos;
    VkPipelineMultisampleStateCreateInfo *multisample_state_infos;
+   VkPipelineSampleLocationsStateCreateInfoEXT *sl_infos;
    VkPipelineViewportStateCreateInfo *viewport_state_infos;
 
    /* Fixing the pNext chain
     *
-    * TODO: extend when below or more extensions are supported:
-    * - VK_KHR_maintenance5
-    * - VK_EXT_pipeline_robustness
+    * Extend when more extensions are supported.
     */
    VkGraphicsPipelineLibraryCreateInfoEXT *gpl_infos;
+   VkPipelineCreateFlags2CreateInfo *flags2_infos;
    VkPipelineCreationFeedbackCreateInfo *feedback_infos;
    VkPipelineFragmentShadingRateStateCreateInfoKHR *fsr_infos;
    VkPipelineLibraryCreateInfoKHR *library_infos;
    VkPipelineRenderingCreateInfo *rendering_infos;
+   VkPipelineRobustnessCreateInfo *robustness_infos;
+   VkRenderingAttachmentLocationInfo *ral_infos;
+   VkRenderingInputAttachmentIndexInfo *riai_infos;
 };
 
 /* shader module commands */
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_CreateShaderModule(VkDevice device,
                       const VkShaderModuleCreateInfo *pCreateInfo,
                       const VkAllocationCallbacks *pAllocator,
@@ -241,7 +252,7 @@ vn_CreateShaderModule(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
 
    struct vn_shader_module *mod =
       vk_zalloc(alloc, sizeof(*mod), VN_DEFAULT_ALIGN,
@@ -260,7 +271,7 @@ vn_CreateShaderModule(VkDevice device,
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 vn_DestroyShaderModule(VkDevice device,
                        VkShaderModule shaderModule,
                        const VkAllocationCallbacks *pAllocator)
@@ -268,7 +279,7 @@ vn_DestroyShaderModule(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_shader_module *mod = vn_shader_module_from_handle(shaderModule);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
 
    if (!mod)
       return;
@@ -286,7 +297,7 @@ static void
 vn_pipeline_layout_destroy(struct vn_device *dev,
                            struct vn_pipeline_layout *pipeline_layout)
 {
-   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+   const VkAllocationCallbacks *alloc = &dev->base.vk.alloc;
    if (pipeline_layout->push_descriptor_set_layout) {
       vn_descriptor_set_layout_unref(
          dev, pipeline_layout->push_descriptor_set_layout);
@@ -315,7 +326,7 @@ vn_pipeline_layout_unref(struct vn_device *dev,
       vn_pipeline_layout_destroy(dev, pipeline_layout);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_CreatePipelineLayout(VkDevice device,
                         const VkPipelineLayoutCreateInfo *pCreateInfo,
                         const VkAllocationCallbacks *pAllocator,
@@ -323,7 +334,7 @@ vn_CreatePipelineLayout(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    /* ignore pAllocator as the pipeline layout is reference-counted */
-   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+   const VkAllocationCallbacks *alloc = &dev->base.vk.alloc;
 
    struct vn_pipeline_layout *layout =
       vk_zalloc(alloc, sizeof(*layout), VN_DEFAULT_ALIGN,
@@ -367,7 +378,7 @@ vn_CreatePipelineLayout(VkDevice device,
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 vn_DestroyPipelineLayout(VkDevice device,
                          VkPipelineLayout pipelineLayout,
                          const VkAllocationCallbacks *pAllocator)
@@ -384,7 +395,7 @@ vn_DestroyPipelineLayout(VkDevice device,
 
 /* pipeline cache commands */
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_CreatePipelineCache(VkDevice device,
                        const VkPipelineCacheCreateInfo *pCreateInfo,
                        const VkAllocationCallbacks *pAllocator,
@@ -392,7 +403,7 @@ vn_CreatePipelineCache(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
 
    struct vn_pipeline_cache *cache =
       vk_zalloc(alloc, sizeof(*cache), VN_DEFAULT_ALIGN,
@@ -423,7 +434,7 @@ vn_CreatePipelineCache(VkDevice device,
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 vn_DestroyPipelineCache(VkDevice device,
                         VkPipelineCache pipelineCache,
                         const VkAllocationCallbacks *pAllocator)
@@ -432,7 +443,7 @@ vn_DestroyPipelineCache(VkDevice device,
    struct vn_pipeline_cache *cache =
       vn_pipeline_cache_from_handle(pipelineCache);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
 
    if (!cache)
       return;
@@ -469,7 +480,7 @@ vn_get_target_ring(struct vn_device *dev)
    return ring;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_GetPipelineCacheData(VkDevice device,
                         VkPipelineCache pipelineCache,
                         size_t *pDataSize,
@@ -478,6 +489,8 @@ vn_GetPipelineCacheData(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_physical_device *physical_dev = dev->physical_device;
    struct vn_ring *target_ring = vn_get_target_ring(dev);
+   if (!target_ring)
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    struct vk_pipeline_cache_header *header = pData;
    VkResult result;
@@ -496,8 +509,7 @@ vn_GetPipelineCacheData(VkDevice device,
       return VK_INCOMPLETE;
    }
 
-   const VkPhysicalDeviceProperties *props =
-      &physical_dev->properties.vulkan_1_0;
+   const struct vk_properties *props = &physical_dev->base.vk.properties;
    header->header_size = sizeof(*header);
    header->header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE;
    header->vendor_id = props->vendorID;
@@ -516,7 +528,7 @@ vn_GetPipelineCacheData(VkDevice device,
    return result;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_MergePipelineCaches(VkDevice device,
                        VkPipelineCache dstCache,
                        uint32_t srcCacheCount,
@@ -554,6 +566,7 @@ vn_create_pipeline_handles(struct vn_device *dev,
       pipeline_size = sizeof(struct vn_graphics_pipeline);
       break;
    case VN_PIPELINE_TYPE_COMPUTE:
+   case VN_PIPELINE_TYPE_RAY_TRACING:
       pipeline_size = sizeof(struct vn_pipeline);
       break;
    }
@@ -627,8 +640,8 @@ vn_destroy_failed_pipeline_handles(struct vn_device *dev,
 }
 
 #define VN_PIPELINE_CREATE_SYNC_MASK                                         \
-   (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT |               \
-    VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT)
+   (VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT |             \
+    VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT)
 
 static struct vn_graphics_pipeline_fix_tmp *
 vn_graphics_pipeline_fix_tmp_alloc(const VkAllocationCallbacks *alloc,
@@ -638,31 +651,44 @@ vn_graphics_pipeline_fix_tmp_alloc(const VkAllocationCallbacks *alloc,
    struct vn_graphics_pipeline_fix_tmp *tmp;
    VkGraphicsPipelineCreateInfo *infos;
    VkPipelineMultisampleStateCreateInfo *multisample_state_infos;
+   VkPipelineSampleLocationsStateCreateInfoEXT *sl_infos;
    VkPipelineViewportStateCreateInfo *viewport_state_infos;
 
    /* for pNext */
    VkGraphicsPipelineLibraryCreateInfoEXT *gpl_infos;
+   VkPipelineCreateFlags2CreateInfo *flags2_infos;
    VkPipelineCreationFeedbackCreateInfo *feedback_infos;
    VkPipelineFragmentShadingRateStateCreateInfoKHR *fsr_infos;
    VkPipelineLibraryCreateInfoKHR *library_infos;
    VkPipelineRenderingCreateInfo *rendering_infos;
+   VkPipelineRobustnessCreateInfo *robustness_infos;
+   VkRenderingAttachmentLocationInfo *ral_infos;
+   VkRenderingInputAttachmentIndexInfo *riai_infos;
 
    VK_MULTIALLOC(ma);
    vk_multialloc_add(&ma, &tmp, __typeof__(*tmp), 1);
    vk_multialloc_add(&ma, &infos, __typeof__(*infos), info_count);
    vk_multialloc_add(&ma, &multisample_state_infos,
                      __typeof__(*multisample_state_infos), info_count);
+   vk_multialloc_add(&ma, &sl_infos, __typeof__(*sl_infos), info_count);
    vk_multialloc_add(&ma, &viewport_state_infos,
                      __typeof__(*viewport_state_infos), info_count);
 
    if (alloc_pnext) {
       vk_multialloc_add(&ma, &gpl_infos, __typeof__(*gpl_infos), info_count);
+      vk_multialloc_add(&ma, &flags2_infos, __typeof__(*flags2_infos),
+                        info_count);
       vk_multialloc_add(&ma, &feedback_infos, __typeof__(*feedback_infos),
                         info_count);
       vk_multialloc_add(&ma, &fsr_infos, __typeof__(*fsr_infos), info_count);
       vk_multialloc_add(&ma, &library_infos, __typeof__(*library_infos),
                         info_count);
       vk_multialloc_add(&ma, &rendering_infos, __typeof__(*rendering_infos),
+                        info_count);
+      vk_multialloc_add(&ma, &robustness_infos, __typeof__(*robustness_infos),
+                        info_count);
+      vk_multialloc_add(&ma, &ral_infos, __typeof__(*ral_infos), info_count);
+      vk_multialloc_add(&ma, &riai_infos, __typeof__(*riai_infos),
                         info_count);
    }
 
@@ -671,14 +697,19 @@ vn_graphics_pipeline_fix_tmp_alloc(const VkAllocationCallbacks *alloc,
 
    tmp->infos = infos;
    tmp->multisample_state_infos = multisample_state_infos;
+   tmp->sl_infos = sl_infos;
    tmp->viewport_state_infos = viewport_state_infos;
 
    if (alloc_pnext) {
       tmp->gpl_infos = gpl_infos;
+      tmp->flags2_infos = flags2_infos;
       tmp->feedback_infos = feedback_infos;
       tmp->fsr_infos = fsr_infos;
       tmp->library_infos = library_infos;
       tmp->rendering_infos = rendering_infos;
+      tmp->robustness_infos = robustness_infos;
+      tmp->ral_infos = ral_infos;
+      tmp->riai_infos = riai_infos;
    }
 
    return tmp;
@@ -703,6 +734,7 @@ vn_graphics_pipeline_fix_tmp_alloc(const VkAllocationCallbacks *alloc,
 static void
 vn_graphics_pipeline_library_state_update(
    const VkGraphicsPipelineCreateInfo *info,
+   VkPipelineCreateFlags2 flags2,
    struct vn_graphics_pipeline_library_state *restrict gpl)
 {
    const VkGraphicsPipelineLibraryCreateInfoEXT *gpl_info =
@@ -714,7 +746,7 @@ vn_graphics_pipeline_library_state_update(
 
    if (gpl_info) {
       gpl->mask |= gpl_info->flags;
-   } else if ((info->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) ||
+   } else if ((flags2 & VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR) ||
               lib_count > 0) {
       gpl->mask |= 0;
    } else {
@@ -768,6 +800,12 @@ vn_graphics_dynamic_state_update(
       case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
          raw.rasterizer_discard_enable = true;
          break;
+      case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
+         raw.sample_locations = true;
+         break;
+      case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT:
+         raw.sample_locations_enable = true;
+         break;
       default:
          break;
       }
@@ -802,9 +840,13 @@ vn_graphics_dynamic_state_update(
    }
    if (direct_gpl.fragment_shader) {
       dynamic->sample_mask |= raw.sample_mask;
+      dynamic->sample_locations |= raw.sample_locations;
+      dynamic->sample_locations_enable |= raw.sample_locations_enable;
    }
    if (direct_gpl.fragment_output) {
       dynamic->sample_mask |= raw.sample_mask;
+      dynamic->sample_locations |= raw.sample_locations;
+      dynamic->sample_locations_enable |= raw.sample_locations_enable;
    }
 }
 
@@ -1020,6 +1062,7 @@ vn_graphics_pipeline_state_merge(
 static void
 vn_graphics_pipeline_state_fill(
    const VkGraphicsPipelineCreateInfo *info,
+   VkPipelineCreateFlags2 flags2,
    struct vn_graphics_pipeline_state *restrict state,
    struct vn_graphics_pipeline_fix_desc *out_fix_desc)
 {
@@ -1034,6 +1077,8 @@ vn_graphics_pipeline_state_fill(
    const VkPipelineLibraryCreateInfoKHR *lib_info =
       vk_find_struct_const(info->pNext, PIPELINE_LIBRARY_CREATE_INFO_KHR);
    const uint32_t lib_count = lib_info ? lib_info->libraryCount : 0;
+
+   const VkPipelineSampleLocationsStateCreateInfoEXT *sl_info = NULL;
 
    /* This tracks which fields have valid values in the
     * VkGraphicsPipelineCreateInfo pNext chain.
@@ -1067,7 +1112,7 @@ vn_graphics_pipeline_state_fill(
     * directly (without linking).
     */
    struct vn_graphics_pipeline_library_state direct_gpl = { 0 };
-   vn_graphics_pipeline_library_state_update(info, &direct_gpl);
+   vn_graphics_pipeline_library_state_update(info, flags2, &direct_gpl);
 
    /* From the Vulkan 1.3.251 spec:
     *    VUID-VkGraphicsPipelineCreateInfo-pLibraries-06611
@@ -1166,8 +1211,10 @@ vn_graphics_pipeline_state_fill(
       !state->dynamic.rasterizer_discard_enable &&
       state->rasterizer_discard_enable;
 
-   /* Collect remaining fragment shader state. */
-   if (direct_gpl.fragment_shader) {
+   /* Collect remaining states shared by fragment shader and fragment output
+    * interface, just to avoid duplicate codes.
+    */
+   if (direct_gpl.fragment_shader || direct_gpl.fragment_output) {
       if (!is_raster_statically_disabled) {
          /* Validity of pMultisampleState is easy here.
           *
@@ -1176,18 +1223,54 @@ vn_graphics_pipeline_state_fill(
           *    If the pipeline requires fragment shader state
           *    pMultisampleState must be NULL or a valid pointer to a valid
           *    VkPipelineMultisampleStateCreateInfo structure
+          *
+          *    VUID-VkGraphicsPipelineCreateInfo-rasterizerDiscardEnable-00751
+          *
+          *    If the pipeline requires fragment output interface state,
+          *    pMultisampleState must be a valid pointer to a valid
+          *    VkPipelineMultisampleStateCreateInfo structure
           */
          valid.self.multisample_state = true;
 
          valid.self.multisample_state_sample_mask =
             !state->dynamic.sample_mask;
 
-         if ((state->render_pass.attachment_aspects &
-              (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+         /* If VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT is used, the static
+          * sampleLocationsInfo is ignored. Whether custom sample locations
+          * have been enabled depends on if
+          * VkPipelineSampleLocationsStateCreateInfoEXT has been chained and if
+          * VkPipelineSampleLocationsStateCreateInfoEXT::sampleLocationsEnable
+          * is VK_TRUE.
+          *
+          * If VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT is not used, the static
+          * sampleLocationsInfo validity depends on whether
+          * VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT dynamic state is used
+          * or the static sampleLocationsEnable is true.
+          */
+         if (info->pMultisampleState) {
+            sl_info = vk_find_struct_const(
+               info->pMultisampleState->pNext,
+               PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT);
+         }
+         if (!state->dynamic.sample_locations) {
+            if (state->dynamic.sample_locations_enable)
+               valid.self.multisample_state_sample_locations = true;
+            else if (sl_info && sl_info->sampleLocationsEnable == VK_TRUE)
+               valid.self.multisample_state_sample_locations = true;
+         }
+
+         if (state->render_pass.attachment_aspects &
+             (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
             valid.self.depth_stencil_state = true;
-         } else if (state->render_pass.attachment_aspects ==
-                       VK_IMAGE_ASPECT_METADATA_BIT &&
-                    (info->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR)) {
+      }
+   }
+
+   /* Collect remaining fragment shader state. */
+   if (direct_gpl.fragment_shader) {
+      if (!is_raster_statically_disabled) {
+         if (state->render_pass.attachment_aspects ==
+                VK_IMAGE_ASPECT_METADATA_BIT &&
+             (flags2 & VK_PIPELINE_CREATE_2_LIBRARY_BIT_KHR)) {
             /* The app has not yet provided render pass info, neither directly
              * in this VkGraphicsPipelineCreateInfo nor in any linked pipeline
              * libraries. Therefore we do not know if the final complete
@@ -1210,25 +1293,9 @@ vn_graphics_pipeline_state_fill(
    /* Collect remaining fragment output interface state. */
    if (direct_gpl.fragment_output) {
       if (!is_raster_statically_disabled) {
-         /* Validity of pMultisampleState is easy here.
-          *
-          *    VUID-VkGraphicsPipelineCreateInfo-rasterizerDiscardEnable-00751
-          *
-          *    If the pipeline requires fragment output interface state,
-          *    pMultisampleState must be a valid pointer to a valid
-          *    VkPipelineMultisampleStateCreateInfo structure
-          */
-         valid.self.multisample_state = true;
-
-         valid.self.multisample_state_sample_mask =
-            !state->dynamic.sample_mask;
-
-         valid.self.color_blend_state |=
-            (bool)(state->render_pass.attachment_aspects &
-                   VK_IMAGE_ASPECT_COLOR_BIT);
-         valid.self.depth_stencil_state |=
-            (bool)(state->render_pass.attachment_aspects &
-                   (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT));
+         if (state->render_pass.attachment_aspects &
+             VK_IMAGE_ASPECT_COLOR_BIT)
+            valid.self.color_blend_state = true;
       }
 
       /* Defer setting the flag until all its state is filled. */
@@ -1256,7 +1323,7 @@ vn_graphics_pipeline_state_fill(
     *    basePipelineIndex is -1, basePipelineHandle must be a valid graphics
     *    VkPipeline handle
     */
-   if ((info->flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT) &&
+   if ((flags2 & VK_PIPELINE_CREATE_2_DERIVATIVE_BIT) &&
        info->basePipelineIndex == -1)
       valid.self.base_pipeline_handle = true;
 
@@ -1301,6 +1368,10 @@ vn_graphics_pipeline_state_fill(
             valid.self.multisample_state &&
             info->pMultisampleState &&
             info->pMultisampleState->pSampleMask,
+         .multisample_state_sample_locations =
+            !valid.self.multisample_state_sample_locations &&
+            valid.self.multisample_state &&
+            sl_info && sl_info->sampleLocationsInfo.sampleLocationsCount,
          .depth_stencil_state =
             !valid.self.depth_stencil_state &&
             info->pDepthStencilState,
@@ -1328,6 +1399,37 @@ vn_graphics_pipeline_state_fill(
          /* clang-format on */
       },
    };
+}
+
+static void
+vn_multisample_info_pnext_init(
+   const VkPipelineMultisampleStateCreateInfo *info,
+   struct vn_graphics_pipeline_fix_tmp *fix_tmp,
+   uint32_t index)
+{
+   VkPipelineSampleLocationsStateCreateInfoEXT *sl =
+      &fix_tmp->sl_infos[index];
+
+   VkBaseOutStructure *cur = (void *)fix_tmp->infos[index].pMultisampleState;
+
+   vk_foreach_struct_const(src, info->pNext) {
+      void *next = NULL;
+      switch (src->sType) {
+      case VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT:
+         memcpy(sl, src, sizeof(*sl));
+         next = sl;
+         break;
+      default:
+         break;
+      }
+
+      if (next) {
+         cur->pNext = next;
+         cur = next;
+      }
+   }
+
+   cur->pNext = NULL;
 }
 
 static void
@@ -1360,17 +1462,28 @@ vn_fix_graphics_pipeline_create_info_self(
       fix_tmp->infos[index].pColorBlendState = NULL;
    if (ignore->pipeline_layout)
       fix_tmp->infos[index].layout = VK_NULL_HANDLE;
+   if (ignore->render_pass)
+      fix_tmp->infos[index].renderPass = VK_NULL_HANDLE;
    if (ignore->base_pipeline_handle)
       fix_tmp->infos[index].basePipelineHandle = VK_NULL_HANDLE;
 
    /* VkPipelineMultisampleStateCreateInfo */
-   if (ignore->multisample_state_sample_mask) {
+   if (ignore->multisample_state_sample_mask ||
+       ignore->multisample_state_sample_locations) {
       /* Swap original pMultisampleState with temporary state. */
       fix_tmp->multisample_state_infos[index] = *info->pMultisampleState;
       fix_tmp->infos[index].pMultisampleState =
          &fix_tmp->multisample_state_infos[index];
 
-      fix_tmp->multisample_state_infos[index].pSampleMask = NULL;
+      if (ignore->multisample_state_sample_mask)
+         fix_tmp->multisample_state_infos[index].pSampleMask = NULL;
+      if (ignore->multisample_state_sample_locations) {
+         /* initialize pNext chain with allocated tmp storage */
+         vn_multisample_info_pnext_init(info->pMultisampleState, fix_tmp,
+                                        index);
+         fix_tmp->sl_infos[index].sampleLocationsInfo.sampleLocationsCount =
+            0;
+      }
    }
 
    /* VkPipelineViewportStateCreateInfo */
@@ -1394,6 +1507,7 @@ vn_graphics_pipeline_create_info_pnext_init(
    uint32_t index)
 {
    VkGraphicsPipelineLibraryCreateInfoEXT *gpl = &fix_tmp->gpl_infos[index];
+   VkPipelineCreateFlags2CreateInfo *flags2 = &fix_tmp->flags2_infos[index];
    VkPipelineCreationFeedbackCreateInfo *feedback =
       &fix_tmp->feedback_infos[index];
    VkPipelineFragmentShadingRateStateCreateInfoKHR *fsr =
@@ -1401,6 +1515,10 @@ vn_graphics_pipeline_create_info_pnext_init(
    VkPipelineLibraryCreateInfoKHR *library = &fix_tmp->library_infos[index];
    VkPipelineRenderingCreateInfo *rendering =
       &fix_tmp->rendering_infos[index];
+   VkPipelineRobustnessCreateInfo *robustness =
+      &fix_tmp->robustness_infos[index];
+   VkRenderingAttachmentLocationInfo *ral = &fix_tmp->ral_infos[index];
+   VkRenderingInputAttachmentIndexInfo *riai = &fix_tmp->riai_infos[index];
 
    VkBaseOutStructure *cur = (void *)&fix_tmp->infos[index];
 
@@ -1410,6 +1528,10 @@ vn_graphics_pipeline_create_info_pnext_init(
       case VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT:
          memcpy(gpl, src, sizeof(*gpl));
          next = gpl;
+         break;
+      case VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO:
+         memcpy(flags2, src, sizeof(*flags2));
+         next = flags2;
          break;
       case VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO:
          memcpy(feedback, src, sizeof(*feedback));
@@ -1426,6 +1548,18 @@ vn_graphics_pipeline_create_info_pnext_init(
       case VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO:
          memcpy(rendering, src, sizeof(*rendering));
          next = rendering;
+         break;
+      case VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO:
+         memcpy(robustness, src, sizeof(*robustness));
+         next = robustness;
+         break;
+      case VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO:
+         memcpy(ral, src, sizeof(*ral));
+         next = ral;
+         break;
+      case VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO:
+         memcpy(riai, src, sizeof(*riai));
+         next = riai;
          break;
       default:
          break;
@@ -1529,7 +1663,15 @@ vn_invalidate_pipeline_creation_feedback(const VkBaseInStructure *chain)
       feedback_info->pPipelineStageCreationFeedbacks[i].flags = 0;
 }
 
-VkResult
+static inline VkPipelineCreateFlags2
+vn_pipeline_create_flags2(const void *pnext, VkPipelineCreateFlags flags)
+{
+   const VkPipelineCreateFlags2CreateInfo *flags2 =
+      vk_find_struct_const(pnext, PIPELINE_CREATE_FLAGS_2_CREATE_INFO);
+   return flags2 ? flags2->flags : flags;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_CreateGraphicsPipelines(VkDevice device,
                            VkPipelineCache pipelineCache,
                            uint32_t createInfoCount,
@@ -1539,9 +1681,13 @@ vn_CreateGraphicsPipelines(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
    bool want_sync = false;
    VkResult result;
+
+   /* silence -Wmaybe-uninitialized false alarm on release build with gcc */
+   if (!createInfoCount)
+      return VK_SUCCESS;
 
    memset(pPipelines, 0, sizeof(*pPipelines) * createInfoCount);
 
@@ -1555,8 +1701,14 @@ vn_CreateGraphicsPipelines(VkDevice device,
    for (uint32_t i = 0; i < createInfoCount; i++) {
       struct vn_graphics_pipeline *pipeline =
          vn_graphics_pipeline_from_handle(pPipelines[i]);
-      vn_graphics_pipeline_state_fill(&pCreateInfos[i], &pipeline->state,
-                                      &fix_descs[i]);
+
+      const VkPipelineCreateFlags2 flags2 = vn_pipeline_create_flags2(
+         pCreateInfos[i].pNext, pCreateInfos[i].flags);
+      if (flags2 & VN_PIPELINE_CREATE_SYNC_MASK)
+         want_sync = true;
+
+      vn_graphics_pipeline_state_fill(&pCreateInfos[i], flags2,
+                                      &pipeline->state, &fix_descs[i]);
    }
 
    struct vn_graphics_pipeline_fix_tmp *fix_tmp = NULL;
@@ -1576,9 +1728,6 @@ vn_CreateGraphicsPipelines(VkDevice device,
                      layout->has_push_constant_ranges)) {
          pipeline->layout = vn_pipeline_layout_ref(dev, layout);
       }
-
-      if ((pCreateInfos[i].flags & VN_PIPELINE_CREATE_SYNC_MASK))
-         want_sync = true;
 
       vn_invalidate_pipeline_creation_feedback(
          (const VkBaseInStructure *)pCreateInfos[i].pNext);
@@ -1615,7 +1764,7 @@ vn_CreateGraphicsPipelines(VkDevice device,
    return vn_result(dev->instance, result);
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 vn_CreateComputePipelines(VkDevice device,
                           VkPipelineCache pipelineCache,
                           uint32_t createInfoCount,
@@ -1625,7 +1774,7 @@ vn_CreateComputePipelines(VkDevice device,
 {
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
    bool want_sync = false;
    VkResult result;
 
@@ -1639,11 +1788,14 @@ vn_CreateComputePipelines(VkDevice device,
       struct vn_pipeline *pipeline = vn_pipeline_from_handle(pPipelines[i]);
       struct vn_pipeline_layout *layout =
          vn_pipeline_layout_from_handle(pCreateInfos[i].layout);
-      if (layout->push_descriptor_set_layout ||
-          layout->has_push_constant_ranges) {
+      if (layout && (layout->push_descriptor_set_layout ||
+                     layout->has_push_constant_ranges)) {
          pipeline->layout = vn_pipeline_layout_ref(dev, layout);
       }
-      if ((pCreateInfos[i].flags & VN_PIPELINE_CREATE_SYNC_MASK))
+
+      if (vn_pipeline_create_flags2(pCreateInfos[i].pNext,
+                                    pCreateInfos[i].flags) &
+          VN_PIPELINE_CREATE_SYNC_MASK)
          want_sync = true;
 
       vn_invalidate_pipeline_creation_feedback(
@@ -1673,7 +1825,7 @@ vn_CreateComputePipelines(VkDevice device,
    return vn_result(dev->instance, result);
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 vn_DestroyPipeline(VkDevice device,
                    VkPipeline _pipeline,
                    const VkAllocationCallbacks *pAllocator)
@@ -1681,7 +1833,7 @@ vn_DestroyPipeline(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_pipeline *pipeline = vn_pipeline_from_handle(_pipeline);
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
 
    if (!pipeline)
       return;
@@ -1694,4 +1846,117 @@ vn_DestroyPipeline(VkDevice device,
 
    vn_object_base_fini(&pipeline->base);
    vk_free(alloc, pipeline);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+vn_CreateRayTracingPipelinesKHR(
+   VkDevice device,
+   VkDeferredOperationKHR deferredOperation,
+   VkPipelineCache pipelineCache,
+   uint32_t createInfoCount,
+   const VkRayTracingPipelineCreateInfoKHR *pCreateInfos,
+   const VkAllocationCallbacks *pAllocator,
+   VkPipeline *pPipelines)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->base.vk.alloc;
+   bool want_sync = false;
+   VkResult result = VK_SUCCESS;
+
+   memset(pPipelines, 0, sizeof(*pPipelines) * createInfoCount);
+
+   if (!vn_create_pipeline_handles(dev, VN_PIPELINE_TYPE_RAY_TRACING,
+                                   createInfoCount, pPipelines, alloc))
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   for (uint32_t i = 0; i < createInfoCount; i++) {
+      struct vn_pipeline *pipeline = vn_pipeline_from_handle(pPipelines[i]);
+      struct vn_pipeline_layout *layout =
+         vn_pipeline_layout_from_handle(pCreateInfos[i].layout);
+      if (layout && (layout->push_descriptor_set_layout ||
+                     layout->has_push_constant_ranges)) {
+         pipeline->layout = vn_pipeline_layout_ref(dev, layout);
+      }
+
+      if (vn_pipeline_create_flags2(pCreateInfos[i].pNext,
+                                    pCreateInfos[i].flags) &
+          VN_PIPELINE_CREATE_SYNC_MASK)
+         want_sync = true;
+
+      vn_invalidate_pipeline_creation_feedback(
+         (const VkBaseInStructure *)pCreateInfos[i].pNext);
+   }
+
+   /* TODO take deferredOperation into consideration */
+   struct vn_ring *target_ring = vn_get_target_ring(dev);
+   if (!target_ring) {
+      vn_destroy_pipeline_handles(dev, createInfoCount, pPipelines, alloc);
+      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   /* The VUID-VkRayTracingPipelineCreateInfoKHR-* set of VUs have well
+    * validated the create info here. Nothing needs to be done.
+    */
+   if (want_sync || target_ring != dev->primary_ring) {
+      result = vn_call_vkCreateRayTracingPipelinesKHR(
+         target_ring, device, VK_NULL_HANDLE, pipelineCache, createInfoCount,
+         pCreateInfos, NULL, pPipelines);
+      if (result != VK_SUCCESS)
+         vn_destroy_failed_pipeline_handles(dev, createInfoCount, pPipelines,
+                                            alloc);
+   } else {
+      vn_async_vkCreateRayTracingPipelinesKHR(
+         target_ring, device, VK_NULL_HANDLE, pipelineCache, createInfoCount,
+         pCreateInfos, NULL, pPipelines);
+      result = VK_SUCCESS;
+   }
+
+   if (deferredOperation != VK_NULL_HANDLE)
+      return VK_OPERATION_DEFERRED_KHR;
+
+   return vn_result(dev->instance, result);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+vn_GetRayTracingCaptureReplayShaderGroupHandlesKHR(VkDevice device,
+                                                   VkPipeline pipeline,
+                                                   uint32_t firstGroup,
+                                                   uint32_t groupCount,
+                                                   size_t dataSize,
+                                                   void *pData)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   return vn_call_vkGetRayTracingCaptureReplayShaderGroupHandlesKHR(
+      dev->primary_ring, device, pipeline, firstGroup, groupCount, dataSize,
+      pData);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+vn_GetRayTracingShaderGroupHandlesKHR(VkDevice device,
+                                      VkPipeline pipeline,
+                                      uint32_t firstGroup,
+                                      uint32_t groupCount,
+                                      size_t dataSize,
+                                      void *pData)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   return vn_call_vkGetRayTracingShaderGroupHandlesKHR(
+      dev->primary_ring, device, pipeline, firstGroup, groupCount, dataSize,
+      pData);
+}
+
+VKAPI_ATTR VkDeviceSize VKAPI_CALL
+vn_GetRayTracingShaderGroupStackSizeKHR(VkDevice device,
+                                        VkPipeline pipeline,
+                                        uint32_t group,
+                                        VkShaderGroupShaderKHR groupShader)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+
+   /* TODO per background/deferred rt pipeline cache for its shader groups */
+   return vn_call_vkGetRayTracingShaderGroupStackSizeKHR(
+      dev->primary_ring, device, pipeline, group, groupShader);
 }

@@ -8,7 +8,9 @@ use crate::tiling::Tiling;
 use crate::Minify;
 
 use nil_rs_bindings::*;
-use nvidia_headers::classes::{cl9097, clc597};
+use nvidia_headers::classes::{cl9097, cla097, clb197, clc597, clcd97};
+
+use std::panic;
 
 pub const MAX_LEVELS: usize = 16;
 
@@ -16,6 +18,8 @@ pub type ImageUsageFlags = u8;
 pub const IMAGE_USAGE_2D_VIEW_BIT: ImageUsageFlags = 1 << 0;
 pub const IMAGE_USAGE_LINEAR_BIT: ImageUsageFlags = 1 << 1;
 pub const IMAGE_USAGE_SPARSE_RESIDENCY_BIT: ImageUsageFlags = 1 << 2;
+pub const IMAGE_USAGE_VIDEO_BIT: ImageUsageFlags = 1 << 3;
+pub const IMAGE_USAGE_UNCOMPRESSED_BIT: ImageUsageFlags = 1 << 4;
 
 #[derive(Clone, Debug, Copy, PartialEq, Default)]
 #[repr(u8)]
@@ -29,13 +33,21 @@ pub enum ImageDim {
 #[derive(Clone, Debug, Copy, PartialEq, Default)]
 #[repr(u8)]
 pub enum SampleLayout {
-    _1x1 = 0,
-    _2x1 = 1,
-    _2x2 = 2,
-    _4x2 = 3,
-    _4x4 = 4,
+    _1x1,
+    _2x1,
+    _2x1D3d,
+    _2x2,
+    _4x2,
+    _4x2D3d,
+    _4x4,
     #[default]
-    Invalid = 5,
+    Invalid,
+}
+
+#[repr(C)]
+pub struct SampleOffset {
+    pub x: u8,
+    pub y: u8,
 }
 
 impl SampleLayout {
@@ -47,20 +59,40 @@ impl SampleLayout {
     pub fn choose_sample_layout(samples: u32) -> SampleLayout {
         match samples {
             1 => SampleLayout::_1x1,
-            2 => SampleLayout::_2x1,
+            2 => SampleLayout::_2x1D3d,
             4 => SampleLayout::_2x2,
-            8 => SampleLayout::_4x2,
+            8 => SampleLayout::_4x2D3d,
             16 => SampleLayout::_4x4,
             _ => SampleLayout::Invalid,
         }
+    }
+
+    pub fn samples(&self) -> u32 {
+        match self {
+            SampleLayout::_1x1 => 1,
+            SampleLayout::_2x1 => 2,
+            SampleLayout::_2x1D3d => 2,
+            SampleLayout::_2x2 => 4,
+            SampleLayout::_4x2 => 8,
+            SampleLayout::_4x2D3d => 8,
+            SampleLayout::_4x4 => 16,
+            SampleLayout::Invalid => panic!("Invalid sample layout"),
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn nil_sample_layout_samples(self) -> u32 {
+        self.samples()
     }
 
     pub fn px_extent_sa(&self) -> Extent4D<units::Samples> {
         match self {
             SampleLayout::_1x1 => Extent4D::new(1, 1, 1, 1),
             SampleLayout::_2x1 => Extent4D::new(2, 1, 1, 1),
+            SampleLayout::_2x1D3d => Extent4D::new(2, 1, 1, 1),
             SampleLayout::_2x2 => Extent4D::new(2, 2, 1, 1),
             SampleLayout::_4x2 => Extent4D::new(4, 2, 1, 1),
+            SampleLayout::_4x2D3d => Extent4D::new(4, 2, 1, 1),
             SampleLayout::_4x4 => Extent4D::new(4, 4, 1, 1),
             SampleLayout::Invalid => panic!("Invalid sample layout"),
         }
@@ -69,6 +101,48 @@ impl SampleLayout {
     #[no_mangle]
     pub extern "C" fn nil_px_extent_sa(self) -> Extent4D<units::Samples> {
         self.px_extent_sa()
+    }
+
+    pub fn sa_offset(&self, s: u8) -> SampleOffset {
+        let (x, y) = match self {
+            SampleLayout::_1x1 => (0, 0),
+            SampleLayout::_2x1 => {
+                debug_assert!(s < 2);
+                (s, 0)
+            }
+            SampleLayout::_2x1D3d => {
+                debug_assert!(s < 2);
+                (1 - s, 0)
+            }
+            SampleLayout::_2x2 => {
+                debug_assert!(s < 4);
+                (s & 1, s >> 1)
+            }
+            SampleLayout::_4x2 => {
+                debug_assert!(s < 8);
+                (s & 3, s >> 2)
+            }
+            SampleLayout::_4x2D3d => match s {
+                0 => (2, 0),
+                1 => (1, 1),
+                2 => (3, 1),
+                3 => (1, 0),
+                4 => (0, 1),
+                5 => (0, 0),
+                6 => (2, 1),
+                7 => (3, 0),
+                _ => panic!("Invalid sample"),
+            },
+            SampleLayout::_4x4 => todo!("Figure out the layout of 4x4"),
+            SampleLayout::Invalid => panic!("Invalid sample layout"),
+        };
+
+        SampleOffset { x, y }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn nil_sample_offset(self, s: u8) -> SampleOffset {
+        self.sa_offset(s)
     }
 }
 
@@ -82,6 +156,8 @@ pub struct ImageInitInfo {
     pub samples: u32,
     pub usage: ImageUsageFlags,
     pub modifier: u64,
+    pub explicit_row_stride_B: u32,
+    pub max_alignment_B: u32,
 }
 
 /// Represents the data layout of a single slice (level + lod) of an image.
@@ -106,66 +182,181 @@ pub struct Image {
     pub array_stride_B: u64,
     pub align_B: u32,
     pub size_B: u64,
-    pub compressed: bool,
     pub tile_mode: u16,
     pub pte_kind: u8,
+    pub compressed_pte_kind: u8,
 }
 
 impl Image {
     #[no_mangle]
-    pub extern "C" fn nil_image_new(
+    pub extern "C" fn nil_image_init(
         dev: &nil_rs_bindings::nv_device_info,
+        image_out: *mut Self,
         info: &ImageInitInfo,
-    ) -> Self {
-        Self::new(dev, info)
+    ) -> bool {
+        panic::catch_unwind(|| {
+            let image = Self::new(dev, std::slice::from_ref(info), 0);
+            unsafe {
+                assert!(!image_out.is_null());
+                image_out.write(image);
+            }
+        })
+        .is_ok()
     }
 
-    pub fn new(
+    #[no_mangle]
+    pub extern "C" fn nil_image_init_planar(
+        dev: &nil_rs_bindings::nv_device_info,
+        image_out: *mut Self,
+        info: *const ImageInitInfo,
+        plane: usize,
+        plane_count: usize,
+    ) -> bool {
+        panic::catch_unwind(|| {
+            assert!(plane < plane_count);
+            let infos =
+                unsafe { std::slice::from_raw_parts(info, plane_count) };
+            let image = Self::new(dev, infos, plane);
+            unsafe {
+                assert!(!image_out.is_null());
+                image_out.write(image);
+            }
+        })
+        .is_ok()
+    }
+
+    fn new_linear(
         dev: &nil_rs_bindings::nv_device_info,
         info: &ImageInitInfo,
     ) -> Self {
-        match info.dim {
-            ImageDim::_1D => {
-                assert!(info.extent_px.height == 1);
-                assert!(info.extent_px.depth == 1);
-                assert!(info.samples == 1);
-            }
-            ImageDim::_2D => {
-                assert!(info.extent_px.depth == 1);
-            }
-            ImageDim::_3D => {
-                assert!(info.extent_px.array_len == 1);
-                assert!(info.samples == 1);
-            }
+        // Linear images need to be 2D
+        assert!(info.dim == ImageDim::_2D);
+        // Linear images can't be arrays
+        assert!(info.extent_px.array_len == 1);
+        // NVIDIA can't do linear and mipmapping
+        assert!(info.levels == 1);
+        // NVIDIA can't do linear and multisampling
+        assert!(info.samples == 1);
+        let sample_layout = SampleLayout::_1x1;
+
+        let mut align_B = if info.explicit_row_stride_B > 0 {
+            // If we're importing an image, allow smaller stride and offset
+            // alignments.  The texture headers can handle as low as 32B-aligned
+            // and NVK has workarounds for rendering if needed.
+            assert!(info.modifier == DRM_FORMAT_MOD_LINEAR);
+            debug_assert!(info.explicit_row_stride_B % 32 == 0);
+            32
+        } else {
+            // If we get to pick the alignment, require 128B so that we can
+            // render to the image without workarounds.
+            128
+        };
+
+        // Kepler image storage needs 256B-aligned addresses.
+        if dev.cls_eng3d >= cla097::KEPLER_A
+            && dev.cls_eng3d < clb197::MAXWELL_B
+        {
+            align_B = align_B.max(256);
         }
 
+        let extent_B = info.extent_px.to_B(info.format, sample_layout);
+        let row_stride_B = if info.explicit_row_stride_B > 0 {
+            debug_assert!(info.explicit_row_stride_B % align_B == 0);
+            info.explicit_row_stride_B
+        } else {
+            extent_B.width.next_multiple_of(align_B)
+        };
+        let level0 = ImageLevel {
+            offset_B: 0,
+            tiling: Tiling::default(),
+            row_stride_B,
+        };
+        let size_B = u64::from(row_stride_B) * u64::from(extent_B.height);
+
+        let mut image = Self {
+            dim: info.dim,
+            format: info.format,
+            extent_px: info.extent_px,
+            sample_layout,
+            num_levels: info.levels,
+            levels: [ImageLevel::default(); MAX_LEVELS],
+            array_stride_B: 0,
+            align_B,
+            size_B,
+            tile_mode: 0,
+            pte_kind: 0,
+            compressed_pte_kind: 0,
+            mip_tail_first_lod: 0,
+        };
+        image.levels[0] = level0;
+        image
+    }
+
+    fn new_tiled(
+        dev: &nil_rs_bindings::nv_device_info,
+        infos: &[ImageInitInfo],
+        plane: usize,
+    ) -> Self {
+        let info = &infos[plane];
         let sample_layout = SampleLayout::choose_sample_layout(info.samples);
 
         let tiling = if info.modifier != DRM_FORMAT_MOD_INVALID {
             assert!((info.usage & IMAGE_USAGE_SPARSE_RESIDENCY_BIT) == 0);
             assert!(info.dim == ImageDim::_2D);
             assert!(sample_layout == SampleLayout::_1x1);
-            if info.modifier == DRM_FORMAT_MOD_LINEAR {
-                Tiling::default()
-            } else {
-                let bl_mod =
-                    BlockLinearModifier::try_from(info.modifier).unwrap();
 
-                // We don't support compression yet
-                assert!(bl_mod.compression_type() == CompressionType::None);
+            // This should be handled by new_linear()
+            assert!(info.modifier != DRM_FORMAT_MOD_LINEAR);
 
-                bl_mod
-                    .tiling()
-                    .clamp(info.extent_px.to_B(info.format, sample_layout))
-            }
+            let bl_mod = BlockLinearModifier::try_from(info.modifier).unwrap();
+
+            // We don't support compression yet
+            assert!(bl_mod.compression_type() == CompressionType::None);
+
+            bl_mod
+                .tiling()
+                .clamp(info.extent_px.to_B(info.format, sample_layout))
         } else if (info.usage & IMAGE_USAGE_SPARSE_RESIDENCY_BIT) != 0 {
-            Tiling::sparse(info.format, info.dim)
-        } else {
-            Tiling::choose(
+            assert!((info.usage & IMAGE_USAGE_VIDEO_BIT) == 0);
+            Tiling::sparse(dev, info.format, info.dim)
+        } else if (info.usage & IMAGE_USAGE_VIDEO_BIT) != 0 {
+            assert!((info.usage & IMAGE_USAGE_SPARSE_RESIDENCY_BIT) == 0);
+            let mut min_tiling = Tiling::choose(
+                dev,
+                info.dim,
                 info.extent_px,
                 info.format,
                 sample_layout,
                 info.usage,
+                info.max_alignment_B,
+            );
+            for p in 0..infos.len() {
+                let plane_tiling = Tiling::choose(
+                    dev,
+                    infos[p].dim,
+                    infos[p].extent_px,
+                    infos[p].format,
+                    sample_layout,
+                    infos[p].usage,
+                    info.max_alignment_B,
+                );
+                min_tiling.x_log2 =
+                    std::cmp::min(min_tiling.x_log2, plane_tiling.x_log2);
+                min_tiling.y_log2 =
+                    std::cmp::min(min_tiling.y_log2, plane_tiling.y_log2);
+                min_tiling.z_log2 =
+                    std::cmp::min(min_tiling.z_log2, plane_tiling.z_log2);
+            }
+            min_tiling
+        } else {
+            Tiling::choose(
+                dev,
+                info.dim,
+                info.extent_px,
+                info.format,
+                sample_layout,
+                info.usage,
+                info.max_alignment_B,
             )
         };
 
@@ -175,13 +366,13 @@ impl Image {
             extent_px: info.extent_px,
             sample_layout,
             num_levels: info.levels,
-            levels: [ImageLevel::default(); MAX_LEVELS as usize],
+            levels: [ImageLevel::default(); MAX_LEVELS],
             array_stride_B: 0,
             align_B: 0,
             size_B: 0,
-            compressed: false,
             tile_mode: 0,
             pte_kind: 0,
+            compressed_pte_kind: 0,
             mip_tail_first_lod: 0,
         };
 
@@ -192,41 +383,34 @@ impl Image {
         let mut layer_size_B = 0;
         for level in 0..info.levels {
             let mut lvl_ext_B = image.level_extent_B(level);
-            if tiling.is_tiled {
-                let lvl_tiling = tiling.clamp(lvl_ext_B);
 
-                if tiling != lvl_tiling {
-                    image.mip_tail_first_lod =
-                        std::cmp::min(image.mip_tail_first_lod, level);
-                }
+            // NVIDIA images are layed out as an array of 1/2/3D images, each of
+            // which may have multiple miplevels.  For the purposes of computing
+            // the size of a miplevel, we don't care about arrays.
+            lvl_ext_B.array_len = 1;
 
-                // Align the size to tiles
-                let lvl_tiling_ext_B = lvl_tiling.extent_B();
-                lvl_ext_B = lvl_ext_B.align(&lvl_tiling_ext_B);
+            let lvl_tiling = tiling.clamp(lvl_ext_B);
 
-                image.levels[level as usize] = ImageLevel {
-                    offset_B: layer_size_B,
-                    tiling: lvl_tiling,
-                    row_stride_B: lvl_ext_B.width,
-                };
-            } else {
-                // Linear images need to be 2D
-                assert!(image.dim == ImageDim::_2D);
-                // NVIDIA can't do linear and mipmapping
-                assert!(image.num_levels == 1);
-                // NVIDIA can't do linear and multisampling
-                assert!(image.sample_layout == SampleLayout::_1x1);
-
-                image.levels[level as usize] = ImageLevel {
-                    offset_B: layer_size_B,
-                    tiling,
-                    // Row stride needs to be aligned to 128B for render to work
-                    row_stride_B: lvl_ext_B.width.next_multiple_of(128),
-                };
-
-                assert!(lvl_ext_B.depth == 1);
+            if tiling != lvl_tiling {
+                image.mip_tail_first_lod =
+                    std::cmp::min(image.mip_tail_first_lod, level);
             }
-            layer_size_B += image.level_size_B(level);
+
+            // Align the size to tiles
+            let lvl_tiling_ext_B = lvl_tiling.extent_B();
+            lvl_ext_B = lvl_ext_B.align(&lvl_tiling_ext_B);
+            assert!(
+                info.explicit_row_stride_B == 0
+                    || info.explicit_row_stride_B == lvl_ext_B.width
+            );
+
+            image.levels[level as usize] = ImageLevel {
+                offset_B: layer_size_B,
+                tiling: lvl_tiling,
+                row_stride_B: lvl_ext_B.width,
+            };
+
+            layer_size_B += lvl_ext_B.size_B();
         }
 
         // We use the tiling for level 0 instead of the tiling selected above
@@ -252,37 +436,55 @@ impl Image {
             image.align_B = std::cmp::max(image.align_B, 1 << 16);
         }
 
-        if image.levels[0].tiling.is_tiled {
-            image.pte_kind = Self::choose_pte_kind(
-                dev,
-                info.format,
-                info.samples,
-                image.compressed,
-            );
-
-            if info.modifier != DRM_FORMAT_MOD_INVALID {
-                let bl_mod =
-                    BlockLinearModifier::try_from(info.modifier).unwrap();
-                assert!(bl_mod.pte_kind() == image.pte_kind);
-            }
+        image.pte_kind =
+            Self::choose_pte_kind(dev, info.format, info.samples, false);
+        if (info.usage & IMAGE_USAGE_UNCOMPRESSED_BIT) == 0 {
+            image.compressed_pte_kind =
+                Self::choose_pte_kind(dev, info.format, info.samples, true);
         }
 
-        if image.levels[0].tiling.is_tiled {
-            image.tile_mode = u16::from(image.levels[0].tiling.y_log2) << 4
-                | u16::from(image.levels[0].tiling.z_log2) << 8;
-
-            image.align_B = std::cmp::max(image.align_B, 4096);
-            if image.pte_kind >= 0xb && image.pte_kind <= 0xe {
-                image.align_B = std::cmp::max(image.align_B, 1 << 16);
-            }
-        } else {
-            // Linear images need to be aligned to 128B for render to work
-            image.align_B = std::cmp::max(image.align_B, 128);
+        if info.modifier != DRM_FORMAT_MOD_INVALID {
+            let bl_mod = BlockLinearModifier::try_from(info.modifier).unwrap();
+            assert!(bl_mod.pte_kind() == image.pte_kind);
         }
 
+        image.tile_mode = (u16::from(image.levels[0].tiling.y_log2) << 4)
+            | (u16::from(image.levels[0].tiling.z_log2) << 8);
+
+        image.align_B = std::cmp::max(image.align_B, 4096);
         image.size_B = image.size_B.next_multiple_of(image.align_B.into());
 
         image
+    }
+
+    pub fn new(
+        dev: &nil_rs_bindings::nv_device_info,
+        infos: &[ImageInitInfo],
+        plane: usize,
+    ) -> Self {
+        let info = &infos[plane];
+        match info.dim {
+            ImageDim::_1D => {
+                assert!(info.extent_px.height == 1);
+                assert!(info.extent_px.depth == 1);
+                assert!(info.samples == 1);
+            }
+            ImageDim::_2D => {
+                assert!(info.extent_px.depth == 1);
+            }
+            ImageDim::_3D => {
+                assert!(info.extent_px.array_len == 1);
+                assert!(info.samples == 1);
+            }
+        }
+
+        if (info.usage & IMAGE_USAGE_LINEAR_BIT) != 0
+            || info.modifier == DRM_FORMAT_MOD_LINEAR
+        {
+            Self::new_linear(dev, info)
+        } else {
+            Self::new_tiled(dev, infos, plane)
+        }
     }
 
     /// The size in bytes of an extent at a given level.
@@ -354,22 +556,43 @@ impl Image {
     }
 
     #[no_mangle]
+    pub extern "C" fn nil_image_level_layer_size_B(&self, level: u32) -> u64 {
+        self.level_layer_size_B(level)
+    }
+
+    pub fn level_layer_size_B(&self, level: u32) -> u64 {
+        assert!(level < self.num_levels);
+        let mut lvl_ext_B = self.level_extent_B(level);
+        // We only care about a single array layer here
+        lvl_ext_B.array_len = 1;
+        let level = &self.levels[level as usize];
+
+        if level.tiling.is_tiled() {
+            lvl_ext_B.align(&level.tiling.extent_B()).size_B()
+        } else {
+            assert!(lvl_ext_B.depth == 1);
+            assert!(lvl_ext_B.array_len == 1);
+            u64::from(level.row_stride_B) * u64::from(lvl_ext_B.height - 1)
+                + u64::from(lvl_ext_B.width)
+        }
+    }
+
+    #[no_mangle]
     pub extern "C" fn nil_image_level_size_B(&self, level: u32) -> u64 {
         self.level_size_B(level)
     }
 
     pub fn level_size_B(&self, level: u32) -> u64 {
-        assert!(level < self.num_levels);
         let lvl_ext_B = self.level_extent_B(level);
-        let level = &self.levels[level as usize];
+        let lvl = &self.levels[level as usize];
 
-        if level.tiling.is_tiled {
-            let lvl_tiling_ext_B = level.tiling.extent_B();
-            lvl_ext_B.align(&lvl_tiling_ext_B).size_B().into()
+        if lvl.tiling.is_tiled() {
+            let lvl_layer_size_B = self.level_layer_size_B(level);
+            self.array_stride_B * u64::from(lvl_ext_B.array_len - 1)
+                + lvl_layer_size_B
         } else {
-            assert!(lvl_ext_B.depth == 1);
-            let row_stride = level.row_stride_B * lvl_ext_B.height;
-            row_stride.into()
+            assert!(self.extent_px.array_len == 1);
+            self.level_layer_size_B(level)
         }
     }
 
@@ -419,7 +642,7 @@ impl Image {
             size_B -= next_lvl_offset_in_bytes - lvl.offset_B;
         }
 
-        let mut levels: [ImageLevel; MAX_LEVELS as usize] = Default::default();
+        let mut levels: [ImageLevel; MAX_LEVELS] = Default::default();
         levels[0] = lvl;
 
         *offset_in_bytes_out = lvl.offset_B;
@@ -498,7 +721,7 @@ impl Image {
         let lvl0 = &image_2d_out.levels[0];
 
         assert!(image_2d_out.num_levels == 1);
-        assert!(!lvl0.tiling.is_tiled || lvl0.tiling.z_log2 == 0);
+        assert!(!lvl0.tiling.is_tiled() || lvl0.tiling.z_log2 == 0);
 
         let lvl_tiling_ext_B = lvl0.tiling.extent_B();
         let lvl_ext_B = image_2d_out.level_extent_B(0);
@@ -519,13 +742,26 @@ impl Image {
         samples: u32,
         compressed: bool,
     ) -> u8 {
-        if dev.cls_eng3d >= clc597::TURING_A {
+        if dev.cls_eng3d >= clcd97::BLACKWELL_A {
+            Self::gb202_choose_pte_kind(format, compressed)
+        } else if dev.cls_eng3d >= clc597::TURING_A {
             Self::tu102_choose_pte_kind(format, compressed)
         } else if dev.cls_eng3d >= cl9097::FERMI_A {
             Self::nvc0_choose_pte_kind(format, samples, compressed)
         } else {
             panic!("Unsupported 3d engine class")
         }
+    }
+
+    fn gb202_choose_pte_kind(_format: Format, compressed: bool) -> u8 {
+        use nvidia_headers::hwref::tu102::mmu::*;
+        if compressed {
+            NV_MMU_PTE_KIND_GENERIC_MEMORY_COMPRESSIBLE
+        } else {
+            NV_MMU_PTE_KIND_GENERIC_MEMORY
+        }
+        .try_into()
+        .unwrap()
     }
 
     fn tu102_choose_pte_kind(format: Format, compressed: bool) -> u8 {
@@ -563,7 +799,13 @@ impl Image {
                     NV_MMU_PTE_KIND_ZF32_X24S8
                 }
             }
-            PIPE_FORMAT_Z32_FLOAT => NV_MMU_PTE_KIND_GENERIC_MEMORY,
+            PIPE_FORMAT_Z32_FLOAT => {
+                if compressed {
+                    NV_MMU_PTE_KIND_GENERIC_MEMORY_COMPRESSIBLE
+                } else {
+                    NV_MMU_PTE_KIND_GENERIC_MEMORY
+                }
+            }
             PIPE_FORMAT_S8_UINT => {
                 if compressed {
                     NV_MMU_PTE_KIND_S8_COMPRESSIBLE_DISABLE_PLC
@@ -571,7 +813,13 @@ impl Image {
                     NV_MMU_PTE_KIND_S8
                 }
             }
-            _ => NV_MMU_PTE_KIND_GENERIC_MEMORY,
+            _ => {
+                if compressed {
+                    NV_MMU_PTE_KIND_GENERIC_MEMORY_COMPRESSIBLE
+                } else {
+                    NV_MMU_PTE_KIND_GENERIC_MEMORY
+                }
+            }
         }
         .try_into()
         .unwrap()
@@ -725,9 +973,9 @@ impl Image {
         );
 
         let tiling_extent_B = lvl_tiling.extent_B();
-        let offset_B = offset_B
-            + u64::from(tiling_extent_B.width * tiling_extent_B.height * z_gob);
+
         offset_B
+            + u64::from(tiling_extent_B.width * tiling_extent_B.height * z_gob)
     }
 }
 
@@ -745,10 +993,39 @@ pub enum ViewType {
     CubeArray,
 }
 
+/// An enum describing how an image view will be accessed by the shader.
+#[derive(Clone, Debug, Copy, PartialEq)]
+#[repr(u8)]
+pub enum ViewAccess {
+    /// This image view will be accessed via texture instructions (tex, etc.)
+    Texture,
+
+    /// This image view will be accessed as a storage image via surface
+    /// instructions (suld/sust)
+    ///
+    /// This primarily affects multisampled images.  With multisampled storage
+    /// image, we generate a descriptor which has the image dimensions in units
+    /// of samples rather than pixels.  The resulting descriptors are safe to
+    /// access via surface instructions (suld/sust) since the surface
+    /// instructions entirely ignore the MULTI_SAMPLE_COUNT field in the image
+    /// descriptor.  They are not, however, safe to access from texture
+    /// instructions as those take the sample count into account and will think
+    /// the image is too big, possibly leading to OOB reads.
+    ///
+    /// In NAK (the compiler component), we have lowering code which takes the
+    /// sample into account and is able compute 2D (x, y) coordidinates in
+    /// sample space which correspond to the logical (x, y, s) coordinate
+    /// provided by the client shader, thus allowing multisampled storage
+    /// access.
+    Storage,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
     pub view_type: ViewType,
+
+    pub access: ViewAccess,
 
     /// The format to use in the view
     ///

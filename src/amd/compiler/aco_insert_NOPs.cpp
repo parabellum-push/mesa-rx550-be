@@ -45,7 +45,7 @@ struct NOP_ctx_gfx6 {
       }
    }
 
-   bool operator==(const NOP_ctx_gfx6& other)
+   bool operator==(const NOP_ctx_gfx6& other) const
    {
       return set_vskip_mode_then_vector == other.set_vskip_mode_then_vector &&
              valu_wr_vcc_then_div_fmas == other.valu_wr_vcc_then_div_fmas &&
@@ -129,10 +129,12 @@ struct NOP_ctx_gfx10 {
    bool has_branch_after_DS = false;
    bool has_NSA_MIMG = false;
    bool has_writelane = false;
+   bool has_salu_exec_write = false;
    std::bitset<128> sgprs_read_by_VMEM;
    std::bitset<128> sgprs_read_by_VMEM_store;
    std::bitset<128> sgprs_read_by_DS;
    std::bitset<128> sgprs_read_by_SMEM;
+   int waits_since_fp_atomic = 3;
 
    void join(const NOP_ctx_gfx10& other)
    {
@@ -144,107 +146,104 @@ struct NOP_ctx_gfx10 {
       has_branch_after_DS |= other.has_branch_after_DS;
       has_NSA_MIMG |= other.has_NSA_MIMG;
       has_writelane |= other.has_writelane;
+      has_salu_exec_write |= other.has_salu_exec_write;
       sgprs_read_by_VMEM |= other.sgprs_read_by_VMEM;
       sgprs_read_by_DS |= other.sgprs_read_by_DS;
       sgprs_read_by_VMEM_store |= other.sgprs_read_by_VMEM_store;
       sgprs_read_by_SMEM |= other.sgprs_read_by_SMEM;
+      waits_since_fp_atomic = std::min(waits_since_fp_atomic, other.waits_since_fp_atomic);
    }
 
-   bool operator==(const NOP_ctx_gfx10& other)
+   bool operator==(const NOP_ctx_gfx10& other) const
    {
       return has_VOPC_write_exec == other.has_VOPC_write_exec &&
              has_nonVALU_exec_read == other.has_nonVALU_exec_read && has_VMEM == other.has_VMEM &&
              has_branch_after_VMEM == other.has_branch_after_VMEM && has_DS == other.has_DS &&
              has_branch_after_DS == other.has_branch_after_DS &&
              has_NSA_MIMG == other.has_NSA_MIMG && has_writelane == other.has_writelane &&
+             has_salu_exec_write == other.has_salu_exec_write &&
              sgprs_read_by_VMEM == other.sgprs_read_by_VMEM &&
              sgprs_read_by_DS == other.sgprs_read_by_DS &&
              sgprs_read_by_VMEM_store == other.sgprs_read_by_VMEM_store &&
-             sgprs_read_by_SMEM == other.sgprs_read_by_SMEM;
+             sgprs_read_by_SMEM == other.sgprs_read_by_SMEM &&
+             waits_since_fp_atomic == other.waits_since_fp_atomic;
    }
 };
 
-template <int Max> struct VGPRCounterMap {
-public:
-   int base = 0;
-   BITSET_DECLARE(resident, 256);
-   int val[256];
-
-   /* Initializes all counters to Max. */
-   VGPRCounterMap() { BITSET_ZERO(resident); }
-
-   /* Increase all counters, clamping at Max. */
+template <int Max> struct RegCounterMap {
    void inc() { base++; }
+   void set(PhysReg reg) { update(reg, 0); }
 
-   /* Set counter to 0. */
-   void set(unsigned idx)
+   uint8_t get(PhysReg reg)
    {
-      val[idx] = -base;
-      BITSET_SET(resident, idx);
+      if (present.test(reg.reg() & 0x7F)) {
+         for (entry& e : list) {
+            if (e.reg == reg.reg())
+               return MIN2(base - e.val, Max);
+         }
+      }
+      return Max;
    }
 
-   void set(PhysReg reg, unsigned bytes)
-   {
-      if (reg.reg() < 256)
-         return;
-
-      for (unsigned i = 0; i < DIV_ROUND_UP(bytes, 4); i++)
-         set(reg.reg() - 256 + i);
-   }
-
-   /* Reset all counters to Max. */
    void reset()
    {
+      present.reset();
+      list.clear();
       base = 0;
-      BITSET_ZERO(resident);
    }
 
-   void reset(PhysReg reg, unsigned bytes)
+   bool empty()
    {
-      if (reg.reg() < 256)
-         return;
-
-      for (unsigned i = 0; i < DIV_ROUND_UP(bytes, 4); i++)
-         BITSET_CLEAR(resident, reg.reg() - 256 + i);
-   }
-
-   uint8_t get(unsigned idx)
-   {
-      return BITSET_TEST(resident, idx) ? MIN2(val[idx] + base, Max) : Max;
-   }
-
-   uint8_t get(PhysReg reg, unsigned offset = 0)
-   {
-      assert(reg.reg() >= 256);
-      return get(reg.reg() - 256 + offset);
-   }
-
-   void join_min(const VGPRCounterMap& other)
-   {
-      unsigned i;
-      BITSET_FOREACH_SET (i, other.resident, 256) {
-         if (BITSET_TEST(resident, i))
-            val[i] = MIN2(val[i] + base, other.val[i] + other.base) - base;
-         else
-            val[i] = other.val[i] + other.base - base;
-      }
-      BITSET_OR(resident, resident, other.resident);
-   }
-
-   bool operator==(const VGPRCounterMap& other) const
-   {
-      if (!BITSET_EQUAL(resident, other.resident))
-         return false;
-
-      unsigned i;
-      BITSET_FOREACH_SET (i, other.resident, 256) {
-         if (!BITSET_TEST(resident, i))
-            return false;
-         if (val[i] + base != other.val[i] + other.base)
+      for (entry& e : list) {
+         if (base - e.val < Max)
             return false;
       }
       return true;
    }
+
+   void join_min(const RegCounterMap& other)
+   {
+      for (const entry& e : other.list) {
+         int idx = other.base - e.val;
+         if (idx >= Max)
+            continue;
+
+         update(e.reg, idx);
+      }
+   }
+
+   void update(uint16_t reg, int idx)
+   {
+      int16_t val = base - idx;
+      for (entry& e : list) {
+         if (e.reg == reg) {
+            e.val = MAX2(e.val, val);
+            return;
+         }
+      }
+      list.push_back(entry{reg, val});
+      present.set(reg & 0x7F);
+   }
+
+   bool operator==(const RegCounterMap& other) const
+   {
+      /* Two maps with different bases could also be equal, but for our use case,
+       * i.e. checking for changes at loop headers, this is sufficient since we
+       * always join the predecessors into an empty map with base=0.
+       */
+      return base == other.base && list == other.list;
+   }
+
+private:
+   struct entry {
+      uint16_t reg;
+      int16_t val;
+      bool operator!=(const entry& other) const { return reg != other.reg || val != other.val; }
+   };
+
+   std::bitset<128> present;
+   small_vec<entry, 4> list;
+   int base = 0;
 };
 
 struct NOP_ctx_gfx11 {
@@ -253,21 +252,36 @@ struct NOP_ctx_gfx11 {
 
    /* LdsDirectVMEMHazard */
    std::bitset<256> vgpr_used_by_vmem_load;
+   std::bitset<256> vgpr_used_by_vmem_sample;
+   std::bitset<256> vgpr_used_by_vmem_bvh;
    std::bitset<256> vgpr_used_by_vmem_store;
    std::bitset<256> vgpr_used_by_ds;
 
    /* VALUTransUseHazard */
-   VGPRCounterMap<15> valu_since_wr_by_trans;
-   VGPRCounterMap<2> trans_since_wr_by_trans;
+   RegCounterMap<6> valu_since_wr_by_trans;
+   RegCounterMap<2> trans_since_wr_by_trans;
 
    /* VALUMaskWriteHazard */
    std::bitset<128> sgpr_read_by_valu_as_lanemask;
    std::bitset<128> sgpr_read_by_valu_as_lanemask_then_wr_by_salu;
+   std::bitset<128> sgpr_read_by_valu_as_lanemask_then_wr_by_valu;
+
+   /* WMMAHazards */
+   std::bitset<256> vgpr_written_by_wmma;
+
+   /* VALUReadSGPRHazard */
+   std::bitset<m0.reg() / 2> sgpr_read_by_valu; /* SGPR pairs, excluding null, exec, m0 and scc */
+   std::bitset<m0.reg()> sgpr_read_by_valu_then_wr_by_valu;
+   RegCounterMap<11> sgpr_read_by_valu_then_wr_by_salu;
+   /* Force emitting a wait mitigating VALUReadSGPRHazard before the next ALU instruction. */
+   bool force_valu_read_sgpr_wait = false;
 
    void join(const NOP_ctx_gfx11& other)
    {
       has_Vcmpx |= other.has_Vcmpx;
       vgpr_used_by_vmem_load |= other.vgpr_used_by_vmem_load;
+      vgpr_used_by_vmem_sample |= other.vgpr_used_by_vmem_sample;
+      vgpr_used_by_vmem_bvh |= other.vgpr_used_by_vmem_bvh;
       vgpr_used_by_vmem_store |= other.vgpr_used_by_vmem_store;
       vgpr_used_by_ds |= other.vgpr_used_by_ds;
       valu_since_wr_by_trans.join_min(other.valu_since_wr_by_trans);
@@ -275,19 +289,34 @@ struct NOP_ctx_gfx11 {
       sgpr_read_by_valu_as_lanemask |= other.sgpr_read_by_valu_as_lanemask;
       sgpr_read_by_valu_as_lanemask_then_wr_by_salu |=
          other.sgpr_read_by_valu_as_lanemask_then_wr_by_salu;
+      sgpr_read_by_valu_as_lanemask_then_wr_by_valu |=
+         other.sgpr_read_by_valu_as_lanemask_then_wr_by_valu;
+      vgpr_written_by_wmma |= other.vgpr_written_by_wmma;
+      sgpr_read_by_valu |= other.sgpr_read_by_valu;
+      sgpr_read_by_valu_then_wr_by_valu |= other.sgpr_read_by_valu_then_wr_by_valu;
+      sgpr_read_by_valu_then_wr_by_salu.join_min(other.sgpr_read_by_valu_then_wr_by_salu);
+      force_valu_read_sgpr_wait |= other.force_valu_read_sgpr_wait;
    }
 
-   bool operator==(const NOP_ctx_gfx11& other)
+   bool operator==(const NOP_ctx_gfx11& other) const
    {
       return has_Vcmpx == other.has_Vcmpx &&
              vgpr_used_by_vmem_load == other.vgpr_used_by_vmem_load &&
+             vgpr_used_by_vmem_sample == other.vgpr_used_by_vmem_sample &&
+             vgpr_used_by_vmem_bvh == other.vgpr_used_by_vmem_bvh &&
              vgpr_used_by_vmem_store == other.vgpr_used_by_vmem_store &&
              vgpr_used_by_ds == other.vgpr_used_by_ds &&
              valu_since_wr_by_trans == other.valu_since_wr_by_trans &&
              trans_since_wr_by_trans == other.trans_since_wr_by_trans &&
              sgpr_read_by_valu_as_lanemask == other.sgpr_read_by_valu_as_lanemask &&
              sgpr_read_by_valu_as_lanemask_then_wr_by_salu ==
-                other.sgpr_read_by_valu_as_lanemask_then_wr_by_salu;
+                other.sgpr_read_by_valu_as_lanemask_then_wr_by_salu &&
+             sgpr_read_by_valu_as_lanemask_then_wr_by_valu ==
+                other.sgpr_read_by_valu_as_lanemask_then_wr_by_valu &&
+             vgpr_written_by_wmma == other.vgpr_written_by_wmma &&
+             sgpr_read_by_valu == other.sgpr_read_by_valu &&
+             sgpr_read_by_valu_then_wr_by_salu == other.sgpr_read_by_valu_then_wr_by_salu &&
+             force_valu_read_sgpr_wait == other.force_valu_read_sgpr_wait;
    }
 };
 
@@ -435,10 +464,9 @@ set_bitset_range(BITSET_WORD* words, unsigned start, unsigned size)
 bool
 test_bitset_range(BITSET_WORD* words, unsigned start, unsigned size)
 {
-   unsigned end = start + size - 1;
    unsigned start_mod = start % BITSET_WORDBITS;
    if (start_mod + size <= BITSET_WORDBITS) {
-      return BITSET_TEST_RANGE(words, start, end);
+      return BITSET_TEST_COUNT(words, start, size);
    } else {
       unsigned first_size = BITSET_WORDBITS - start_mod;
       return test_bitset_range(words, start, BITSET_WORDBITS - start_mod) ||
@@ -785,24 +813,6 @@ check_written_regs(const aco_ptr<Instruction>& instr, const std::bitset<N>& chec
 }
 
 template <std::size_t N>
-bool
-check_read_regs(const aco_ptr<Instruction>& instr, const std::bitset<N>& check_regs)
-{
-   return std::any_of(instr->operands.begin(), instr->operands.end(),
-                      [&check_regs](const Operand& op) -> bool
-                      {
-                         if (op.isConstant())
-                            return false;
-                         bool writes_any = false;
-                         for (unsigned i = 0; i < op.size(); i++) {
-                            unsigned op_reg = op.physReg() + i;
-                            writes_any |= op_reg < check_regs.size() && check_regs[op_reg];
-                         }
-                         return writes_any;
-                      });
-}
-
-template <std::size_t N>
 void
 mark_read_regs(const aco_ptr<Instruction>& instr, std::bitset<N>& reg_reads)
 {
@@ -885,6 +895,36 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
       sa_sdst = instr->salu().imm & 0x1;
    }
 
+   /* FPAtomicToDenormModeHazard */
+   if (instr->opcode == aco_opcode::s_denorm_mode && ctx.waits_since_fp_atomic < 3) {
+      bld.sopp(aco_opcode::s_nop, 3 - ctx.waits_since_fp_atomic - 1);
+      ctx.waits_since_fp_atomic = 3;
+   } else if (instr->isVALU() || instr->opcode == aco_opcode::s_waitcnt ||
+              instr->opcode == aco_opcode::s_waitcnt_vscnt ||
+              instr->opcode == aco_opcode::s_waitcnt_vmcnt ||
+              instr->opcode == aco_opcode::s_waitcnt_expcnt ||
+              instr->opcode == aco_opcode::s_waitcnt_lgkmcnt ||
+              instr->opcode == aco_opcode::s_wait_idle) {
+      ctx.waits_since_fp_atomic = 3;
+   } else if (instr_is_vmem_fp_atomic(instr.get())) {
+      ctx.waits_since_fp_atomic = 0;
+   } else {
+      ctx.waits_since_fp_atomic += get_wait_states(instr);
+      ctx.waits_since_fp_atomic = std::min(ctx.waits_since_fp_atomic, 3);
+   }
+
+   /* 4+ dword NSA can hang if exec becomes non-zero again directly before the instruction. */
+   if (instr->isSALU() && instr->writes_exec()) {
+      ctx.has_salu_exec_write = true;
+   } else if (ctx.has_salu_exec_write) {
+      ctx.has_salu_exec_write = false;
+      if (instr->isMIMG() && get_mimg_nsa_dwords(instr.get()) > 1)
+         bld.sopp(aco_opcode::s_nop, 0);
+   }
+
+   if (state.program->gfx_level != GFX10)
+      return; /* no other hazards/bugs to mitigate */
+
    /* VMEMtoScalarWriteHazard
     * Handle EXEC/M0/SGPR write following a VMEM/DS instruction without a VALU or "waitcnt vmcnt(0)"
     * in-between.
@@ -898,14 +938,14 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
       if (instr->isFlat() || instr->isDS())
          mark_read_regs_exec(state, instr, ctx.sgprs_read_by_DS);
    } else if (instr->isSALU() || instr->isSMEM()) {
-      if (instr->opcode == aco_opcode::s_waitcnt) {
-         wait_imm imm(state.program->gfx_level, instr->salu().imm);
+      wait_imm imm;
+      if (imm.unpack(state.program->gfx_level, instr.get())) {
          if (imm.vm == 0)
             ctx.sgprs_read_by_VMEM.reset();
          if (imm.lgkm == 0)
             ctx.sgprs_read_by_DS.reset();
-      } else if (instr->opcode == aco_opcode::s_waitcnt_vscnt && instr->salu().imm == 0) {
-         ctx.sgprs_read_by_VMEM_store.reset();
+         if (imm.vs == 0)
+            ctx.sgprs_read_by_VMEM_store.reset();
       } else if (vm_vsrc == 0) {
          ctx.sgprs_read_by_VMEM.reset();
          ctx.sgprs_read_by_DS.reset();
@@ -981,15 +1021,10 @@ handle_instruction_gfx10(State& state, NOP_ctx_gfx10& ctx, aco_ptr<Instruction>&
          bld.sop1(aco_opcode::s_mov_b32, Definition(sgpr_null, s1), Operand::zero());
       }
    } else if (instr->isSALU()) {
-      /* Reducing lgkmcnt count to 0 always mitigates the hazard. */
-      if (instr->opcode == aco_opcode::s_waitcnt_lgkmcnt) {
-         const SALU_instruction& sopk = instr->salu();
-         if (sopk.imm == 0 && sopk.operands[0].physReg() == sgpr_null)
-            ctx.sgprs_read_by_SMEM.reset();
-      } else if (instr->opcode == aco_opcode::s_waitcnt) {
-         wait_imm imm(state.program->gfx_level, instr->salu().imm);
-         if (imm.lgkm == 0)
-            ctx.sgprs_read_by_SMEM.reset();
+      wait_imm imm;
+      if (imm.unpack(state.program->gfx_level, instr.get()) && imm.lgkm == 0) {
+         /* Reducing lgkmcnt count to 0 always mitigates the hazard. */
+         ctx.sgprs_read_by_SMEM.reset();
       } else if (instr->format != Format::SOPP && instr->definitions.size()) {
          /* SALU can mitigate the hazard */
          ctx.sgprs_read_by_SMEM.reset();
@@ -1056,6 +1091,13 @@ resolve_all_gfx10(State& state, NOP_ctx_gfx10& ctx,
 
    size_t prev_count = new_instructions.size();
 
+   /* FPAtomicToDenormModeHazard */
+   if (ctx.waits_since_fp_atomic < 3)
+      bld.sopp(aco_opcode::s_nop, 3 - ctx.waits_since_fp_atomic - 1);
+
+   if (state.program->gfx_level != GFX10)
+      return; /* no other hazards/bugs to mitigate */
+
    /* VcmpxPermlaneHazard */
    if (ctx.has_VOPC_write_exec) {
       ctx.has_VOPC_write_exec = false;
@@ -1117,20 +1159,19 @@ fill_vgpr_bitset(std::bitset<256>& set, PhysReg reg, unsigned bytes)
       set.set(reg.reg() - 256 + i);
 }
 
-/* GFX11 */
-unsigned
-parse_vdst_wait(aco_ptr<Instruction>& instr)
+bool
+test_vgpr_bitset(std::bitset<256>& set, Operand op)
 {
-   if (instr->isVMEM() || instr->isFlatLike() || instr->isDS() || instr->isEXP())
-      return 0;
-   else if (instr->isLDSDIR())
-      return instr->ldsdir().wait_vdst;
-   else if (instr->opcode == aco_opcode::s_waitcnt_depctr)
-      return (instr->salu().imm >> 12) & 0xf;
-   else
-      return 15;
+   if (op.physReg().reg() < 256)
+      return false;
+   for (unsigned i = 0; i < op.size(); i++) {
+      if (set[op.physReg().reg() - 256 + i])
+         return true;
+   }
+   return false;
 }
 
+/* GFX11 */
 struct LdsDirectVALUHazardGlobalState {
    unsigned wait_vdst = 15;
    PhysReg vgpr;
@@ -1170,7 +1211,7 @@ handle_lds_direct_valu_hazard_instr(LdsDirectVALUHazardGlobalState& global_state
       block_state.num_valu++;
    }
 
-   if (parse_vdst_wait(instr) == 0)
+   if (parse_depctr_wait(instr.get()).va_vdst == 0)
       return true;
 
    block_state.num_instrs++;
@@ -1246,6 +1287,10 @@ handle_valu_partial_forwarding_hazard_instr(VALUPartialForwardingHazardGlobalSta
                                             VALUPartialForwardingHazardBlockState& block_state,
                                             aco_ptr<Instruction>& instr)
 {
+   /* Check if there is already a hazard found on some other control flow path. */
+   if (global_state.hazard_found)
+      return true;
+
    if (instr->isSALU() && !instr->definitions.empty()) {
       if (block_state.state == written_after_exec_write && instr->writes_exec())
          block_state.state = exec_written;
@@ -1292,7 +1337,7 @@ handle_valu_partial_forwarding_hazard_instr(VALUPartialForwardingHazardGlobalSta
       }
 
       block_state.num_valu_since_read++;
-   } else if (parse_vdst_wait(instr) == 0) {
+   } else if (parse_depctr_wait(instr.get()).va_vdst == 0) {
       return true;
    }
 
@@ -1371,6 +1416,12 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
 {
    Builder bld(state.program, &new_instructions);
 
+   /* Due to a hazard, an s_nop is needed before "s_sendmsg sendmsg_dealloc_vgprs". */
+   if (instr->opcode == aco_opcode::s_sendmsg && instr->salu().imm == sendmsg_dealloc_vgprs &&
+       (new_instructions.empty() || new_instructions.back()->opcode != aco_opcode::s_nop)) {
+      bld.sopp(aco_opcode::s_nop, 0);
+   }
+
    /* VcmpxPermlaneHazard
     * Handle any permlane following a VOPC instruction writing exec, insert v_mov between them.
     */
@@ -1378,7 +1429,9 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
       ctx.has_Vcmpx = true;
    } else if (ctx.has_Vcmpx && (instr->opcode == aco_opcode::v_permlane16_b32 ||
                                 instr->opcode == aco_opcode::v_permlanex16_b32 ||
-                                instr->opcode == aco_opcode::v_permlane64_b32)) {
+                                instr->opcode == aco_opcode::v_permlane64_b32 ||
+                                instr->opcode == aco_opcode::v_permlane16_var_b32 ||
+                                instr->opcode == aco_opcode::v_permlanex16_var_b32)) {
       ctx.has_Vcmpx = false;
 
       /* Unlike on GFX10, v_nop should resolve the hazard on GFX11. */
@@ -1387,27 +1440,18 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
       ctx.has_Vcmpx = false;
    }
 
-   unsigned va_vdst = parse_vdst_wait(instr);
-   unsigned vm_vsrc = 7;
-   unsigned sa_sdst = 1;
-
-   if (debug_flags & DEBUG_FORCE_WAITDEPS) {
-      bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0000);
-      va_vdst = 0;
-      vm_vsrc = 0;
-      sa_sdst = 0;
-   } else if (instr->opcode == aco_opcode::s_waitcnt_depctr) {
-      /* va_vdst already obtained through parse_vdst_wait(). */
-      vm_vsrc = (instr->salu().imm >> 2) & 0x7;
-      sa_sdst = instr->salu().imm & 0x1;
-   }
+   depctr_wait wait = parse_depctr_wait(instr.get());
+   if (debug_flags & DEBUG_FORCE_WAITDEPS)
+      wait = parse_depctr_wait(bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0000));
+   else if (instr->isLDSDIR() && state.program->gfx_level >= GFX12)
+      wait.vm_vsrc = instr->ldsdir().wait_vsrc ? 7 : 0;
 
    if (instr->isLDSDIR()) {
       unsigned count = handle_lds_direct_valu_hazard(state, instr);
       LDSDIR_instruction* ldsdir = &instr->ldsdir();
-      if (count < va_vdst) {
+      if (count < wait.va_vdst) {
          ldsdir->wait_vdst = MIN2(ldsdir->wait_vdst, count);
-         va_vdst = MIN2(va_vdst, count);
+         wait.va_vdst = MIN2(wait.va_vdst, count);
       }
    }
 
@@ -1415,98 +1459,250 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
     * VALU reads VGPR written by transcendental instruction without 6+ VALU or 2+ transcendental
     * in-between.
     */
-   if (va_vdst > 0 && instr->isVALU()) {
+   if (state.program->gfx_level < GFX11_5 && wait.va_vdst > 0 && instr->isVALU()) {
       uint8_t num_valu = 15;
       uint8_t num_trans = 15;
       for (Operand& op : instr->operands) {
          if (op.physReg().reg() < 256)
             continue;
          for (unsigned i = 0; i < op.size(); i++) {
-            num_valu = std::min(num_valu, ctx.valu_since_wr_by_trans.get(op.physReg(), i));
-            num_trans = std::min(num_trans, ctx.trans_since_wr_by_trans.get(op.physReg(), i));
+            PhysReg reg = op.physReg().advance(i * 4);
+            num_valu = std::min(num_valu, ctx.valu_since_wr_by_trans.get(reg));
+            num_trans = std::min(num_trans, ctx.trans_since_wr_by_trans.get(reg));
          }
       }
       if (num_trans <= 1 && num_valu <= 5) {
          bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0fff);
-         va_vdst = 0;
+         wait.va_vdst = 0;
       }
    }
 
-   if (va_vdst > 0 && handle_valu_partial_forwarding_hazard(state, instr)) {
+   if (wait.va_vdst > 0 && state.program->gfx_level < GFX12 &&
+       handle_valu_partial_forwarding_hazard(state, instr)) {
       bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0fff);
-      va_vdst = 0;
+      wait.va_vdst = 0;
    }
 
-   /* VALUMaskWriteHazard
-    * VALU reads SGPR as a lane mask and later written by SALU cannot safely be read by SALU.
-    */
-   if (state.program->wave_size == 64 && instr->isSALU() &&
-       check_written_regs(instr, ctx.sgpr_read_by_valu_as_lanemask)) {
-      ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu = ctx.sgpr_read_by_valu_as_lanemask;
-      ctx.sgpr_read_by_valu_as_lanemask.reset();
-   } else if (state.program->wave_size == 64 && instr->isSALU() &&
-              check_read_regs(instr, ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu)) {
-      bld.sopp(aco_opcode::s_waitcnt_depctr, 0xfffe);
-      sa_sdst = 0;
-   }
+   if (state.program->gfx_level < GFX12) {
+      /* VALUMaskWriteHazard
+       * VALU reads SGPR as a lane mask and later written by SALU or VALU cannot safely be read by
+       * SALU or VALU.
+       */
+      if (state.program->wave_size == 64 && (instr->isSALU() || instr->isVALU())) {
+         uint16_t imm = 0xffff;
 
-   if (va_vdst == 0) {
-      ctx.valu_since_wr_by_trans.reset();
-      ctx.trans_since_wr_by_trans.reset();
-   }
+         for (Operand op : instr->operands) {
+            if (op.physReg() >= state.program->dev.sgpr_limit)
+               continue;
 
-   if (sa_sdst == 0)
-      ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
+            for (unsigned i = 0; i < op.size(); i++) {
+               unsigned reg = op.physReg() + i;
 
-   if (instr->isVALU()) {
-      bool is_trans = instr->isTrans();
+               /* s_waitcnt_depctr on sa_sdst, implicit wait.sa_sdst=0 is not enough. */
+               if (ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu[reg]) {
+                  imm &= 0xfffe;
+                  wait.sa_sdst = 0;
+               }
 
-      ctx.valu_since_wr_by_trans.inc();
-      if (is_trans)
-         ctx.trans_since_wr_by_trans.inc();
-
-      if (is_trans) {
-         for (Definition& def : instr->definitions) {
-            ctx.valu_since_wr_by_trans.set(def.physReg(), def.bytes());
-            ctx.trans_since_wr_by_trans.set(def.physReg(), def.bytes());
-         }
-      }
-
-      if (state.program->wave_size == 64) {
-         for (Operand& op : instr->operands) {
-            if (op.isLiteral() || (!op.isConstant() && op.physReg().reg() < 128))
-               ctx.sgpr_read_by_valu_as_lanemask.reset();
-         }
-         switch (instr->opcode) {
-         case aco_opcode::v_addc_co_u32:
-         case aco_opcode::v_subb_co_u32:
-         case aco_opcode::v_subbrev_co_u32:
-         case aco_opcode::v_cndmask_b16:
-         case aco_opcode::v_cndmask_b32:
-         case aco_opcode::v_div_fmas_f32:
-         case aco_opcode::v_div_fmas_f64:
-            if (instr->operands.back().physReg() != exec) {
-               ctx.sgpr_read_by_valu_as_lanemask.set(instr->operands.back().physReg().reg());
-               ctx.sgpr_read_by_valu_as_lanemask.set(instr->operands.back().physReg().reg() + 1);
+               /* s_waitcnt_depctr on va_sdst (if non-VCC SGPR) or va_vcc (if VCC SGPR) */
+               if (ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[reg]) {
+                  bool is_vcc = reg == vcc || reg == vcc_hi;
+                  if (is_vcc && wait.va_vcc > 0) {
+                     imm &= 0xfffd;
+                     wait.va_vcc = 0;
+                  } else if (!is_vcc && wait.va_sdst > 0) {
+                     imm &= 0xf1ff;
+                     wait.va_sdst = 0;
+                  }
+               }
             }
-            break;
-         default: break;
+         }
+
+         if (imm != 0xffff)
+            bld.sopp(aco_opcode::s_waitcnt_depctr, imm);
+      }
+
+      if (wait.va_vdst == 0) {
+         ctx.valu_since_wr_by_trans.reset();
+         ctx.trans_since_wr_by_trans.reset();
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu.reset();
+      }
+
+      if (wait.sa_sdst == 0)
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
+
+      if (wait.va_sdst == 0) {
+         std::bitset<128> old = ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu.reset();
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc] = old[vcc];
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc_hi] = old[vcc_hi];
+      }
+
+      if (wait.va_vcc == 0) {
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc] = false;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc_hi] = false;
+      }
+
+      if (state.program->wave_size == 64 && instr->isSALU() &&
+          check_written_regs(instr, ctx.sgpr_read_by_valu_as_lanemask)) {
+         unsigned reg = instr->definitions[0].physReg().reg();
+         for (unsigned i = 0; i < instr->definitions[0].size(); i++)
+            ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu[reg + i] = 1;
+      }
+
+      if (instr->isVALU()) {
+         bool is_trans = instr->isTrans();
+
+         ctx.valu_since_wr_by_trans.inc();
+         if (is_trans)
+            ctx.trans_since_wr_by_trans.inc();
+
+         if (is_trans) {
+            for (Definition& def : instr->definitions) {
+               for (unsigned i = 0; i < def.size(); i++) {
+                  PhysReg reg = def.physReg().advance(i * 4);
+                  ctx.valu_since_wr_by_trans.set(reg);
+                  ctx.trans_since_wr_by_trans.set(reg);
+               }
+            }
+         }
+
+         if (state.program->wave_size == 64) {
+            for (Operand& op : instr->operands) {
+               /* This should ignore exec reads */
+               if (!op.isConstant() && op.physReg().reg() < 126)
+                  ctx.sgpr_read_by_valu_as_lanemask.reset();
+            }
+
+            if (!instr->definitions.empty() &&
+                instr->definitions.back().getTemp().type() == RegType::sgpr &&
+                check_written_regs(instr, ctx.sgpr_read_by_valu_as_lanemask)) {
+               unsigned reg = instr->definitions.back().physReg().reg();
+               for (unsigned i = 0; i < instr->definitions.back().size(); i++)
+                  ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[reg + i] = 1;
+            }
+
+            switch (instr->opcode) {
+            case aco_opcode::v_addc_co_u32:
+            case aco_opcode::v_subb_co_u32:
+            case aco_opcode::v_subbrev_co_u32:
+            case aco_opcode::v_cndmask_b16:
+            case aco_opcode::v_cndmask_b32:
+            case aco_opcode::v_div_fmas_f32:
+            case aco_opcode::v_div_fmas_f64:
+               if (instr->operands.back().physReg() != exec) {
+                  ctx.sgpr_read_by_valu_as_lanemask.set(instr->operands.back().physReg().reg());
+                  ctx.sgpr_read_by_valu_as_lanemask.set(instr->operands.back().physReg().reg() + 1);
+               }
+               break;
+            default: break;
+            }
          }
       }
+   } else {
+      /* VALUReadSGPRHazard
+       * VALU reads SGPR and later written by VALU/SALU cannot safely be read by VALU/SALU.
+       */
+      if (instr->isVALU() || instr->isSALU()) {
+         unsigned expiry_count = instr->isSALU() ? 10 : 11;
+         uint16_t imm = 0xffff;
+
+         if (ctx.force_valu_read_sgpr_wait) {
+            imm &= 0xfffe;
+            wait.sa_sdst = 0;
+            ctx.force_valu_read_sgpr_wait = false;
+         }
+
+         for (Operand& op : instr->operands) {
+            if (op.physReg() >= m0)
+               continue;
+
+            for (unsigned i = 0; i < op.size(); i++) {
+               PhysReg reg = op.physReg().advance(i * 4);
+               /* Implicit wait.sa_sdst=0 is not enough. */
+               if (ctx.sgpr_read_by_valu_then_wr_by_salu.get(reg) < expiry_count) {
+                  imm &= 0xfffe;
+                  wait.sa_sdst = 0;
+               }
+               if (instr->isVALU()) {
+                  ctx.sgpr_read_by_valu.set(reg / 2);
+
+                  /* s_wait_alu on va_sdst (if non-VCC SGPR) or va_vcc (if VCC SGPR) */
+                  if (ctx.sgpr_read_by_valu_then_wr_by_valu[reg]) {
+                     bool is_vcc = reg == vcc || reg == vcc_hi;
+                     if (is_vcc && wait.va_vcc > 0) {
+                        imm &= 0xfffd;
+                        wait.va_vcc = 0;
+                     } else if (!is_vcc && wait.va_sdst > 0) {
+                        imm &= 0xf1ff;
+                        wait.va_sdst = 0;
+                     }
+                  }
+               }
+            }
+         }
+
+         if (imm != 0xffff)
+            bld.sopp(aco_opcode::s_waitcnt_depctr, imm);
+      }
+
+      if (wait.sa_sdst == 0)
+         ctx.sgpr_read_by_valu_then_wr_by_salu.reset();
+      else if (instr->isSALU() && !instr->isSOPP())
+         ctx.sgpr_read_by_valu_then_wr_by_salu.inc();
+
+      if (wait.va_sdst == 0) {
+         std::bitset<m0.reg()> old = ctx.sgpr_read_by_valu_then_wr_by_valu;
+         ctx.sgpr_read_by_valu_then_wr_by_valu.reset();
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] = old[vcc];
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi] = old[vcc_hi];
+      }
+      if (wait.va_vcc == 0) {
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] = false;
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi] = false;
+      }
+
+      if (instr->isVALU() && !instr->definitions.empty()) {
+         PhysReg reg = instr->definitions.back().physReg();
+         if (reg < m0 && ctx.sgpr_read_by_valu[reg / 2]) {
+            for (unsigned i = 0; i < instr->definitions.back().size(); i++)
+               ctx.sgpr_read_by_valu_then_wr_by_valu.set(reg + i);
+         }
+      } else if (instr->isSALU() && !instr->definitions.empty()) {
+         PhysReg reg = instr->definitions[0].physReg();
+         if (reg < m0 && ctx.sgpr_read_by_valu[reg / 2]) {
+            for (unsigned i = 0; i < instr->definitions[0].size(); i++)
+               ctx.sgpr_read_by_valu_then_wr_by_salu.set(reg.advance(i * 4));
+         }
+      }
+
+      /* resolve_all_gfx11() can't fix this */
+      if (instr->opcode == aco_opcode::s_call_b64 || instr->opcode == aco_opcode::s_swappc_b64)
+         ctx.sgpr_read_by_valu.set();
    }
 
    /* LdsDirectVMEMHazard
     * Handle LDSDIR writing a VGPR after it's used by a VMEM/DS instruction.
     */
    if (instr->isVMEM() || instr->isFlatLike()) {
-      for (Definition& def : instr->definitions)
-         fill_vgpr_bitset(ctx.vgpr_used_by_vmem_load, def.physReg(), def.bytes());
       if (instr->definitions.empty()) {
          for (Operand& op : instr->operands)
             fill_vgpr_bitset(ctx.vgpr_used_by_vmem_store, op.physReg(), op.bytes());
       } else {
+         uint8_t vmem_type =
+            state.program->gfx_level >= GFX12
+               ? get_vmem_type(instr.get(), state.program->dev.has_point_sample_accel)
+               : vmem_nosampler;
+         std::bitset<256>* vgprs = &ctx.vgpr_used_by_vmem_load;
+         if (vmem_type == vmem_sampler)
+            vgprs = &ctx.vgpr_used_by_vmem_sample;
+         else if (vmem_type == vmem_bvh)
+            vgprs = &ctx.vgpr_used_by_vmem_bvh;
+
+         for (Definition& def : instr->definitions)
+            fill_vgpr_bitset(*vgprs, def.physReg(), def.bytes());
          for (Operand& op : instr->operands)
-            fill_vgpr_bitset(ctx.vgpr_used_by_vmem_load, op.physReg(), op.bytes());
+            fill_vgpr_bitset(*vgprs, op.physReg(), op.bytes());
       }
    }
    if (instr->isDS() || instr->isFlat()) {
@@ -1515,35 +1711,67 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
       for (Operand& op : instr->operands)
          fill_vgpr_bitset(ctx.vgpr_used_by_ds, op.physReg(), op.bytes());
    }
-   if (instr->isVALU() || instr->isEXP() || vm_vsrc == 0) {
+   wait_imm imm;
+   if (instr->isVALU() || instr->isEXP() || wait.vm_vsrc == 0) {
       ctx.vgpr_used_by_vmem_load.reset();
+      ctx.vgpr_used_by_vmem_sample.reset();
+      ctx.vgpr_used_by_vmem_bvh.reset();
       ctx.vgpr_used_by_vmem_store.reset();
       ctx.vgpr_used_by_ds.reset();
-   } else if (instr->opcode == aco_opcode::s_waitcnt) {
-      wait_imm imm(GFX11, instr->salu().imm);
+   } else if (imm.unpack(state.program->gfx_level, instr.get())) {
       if (imm.vm == 0)
          ctx.vgpr_used_by_vmem_load.reset();
+      if (imm.sample == 0)
+         ctx.vgpr_used_by_vmem_sample.reset();
+      if (imm.bvh == 0)
+         ctx.vgpr_used_by_vmem_bvh.reset();
       if (imm.lgkm == 0)
          ctx.vgpr_used_by_ds.reset();
-   } else if (instr->opcode == aco_opcode::s_waitcnt_vscnt && instr->salu().imm == 0) {
-      ctx.vgpr_used_by_vmem_store.reset();
+      if (imm.vs == 0)
+         ctx.vgpr_used_by_vmem_store.reset();
    }
    if (instr->isLDSDIR()) {
       if (ctx.vgpr_used_by_vmem_load[instr->definitions[0].physReg().reg() - 256] ||
+          ctx.vgpr_used_by_vmem_sample[instr->definitions[0].physReg().reg() - 256] ||
+          ctx.vgpr_used_by_vmem_bvh[instr->definitions[0].physReg().reg() - 256] ||
           ctx.vgpr_used_by_vmem_store[instr->definitions[0].physReg().reg() - 256] ||
           ctx.vgpr_used_by_ds[instr->definitions[0].physReg().reg() - 256]) {
-         bld.sopp(aco_opcode::s_waitcnt_depctr, 0xffe3);
+         if (state.program->gfx_level >= GFX12)
+            instr->ldsdir().wait_vsrc = 0;
+         else
+            bld.sopp(aco_opcode::s_waitcnt_depctr, 0xffe3);
          ctx.vgpr_used_by_vmem_load.reset();
+         ctx.vgpr_used_by_vmem_sample.reset();
+         ctx.vgpr_used_by_vmem_bvh.reset();
          ctx.vgpr_used_by_vmem_store.reset();
          ctx.vgpr_used_by_ds.reset();
       }
+   }
+
+   /* WMMA Hazards */
+   if (instr_info.classes[(int)instr->opcode] == instr_class::wmma) {
+      assert(instr->operands.back().isConstant() ||
+             instr->operands.back().regClass() == instr->definitions[0].regClass());
+
+      bool is_swmma = instr->operands.size() == 4;
+      if (test_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->operands[0]) ||
+          test_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->operands[1]) ||
+          (is_swmma && test_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->operands[2]))) {
+         bld.vop1(aco_opcode::v_nop);
+      }
+
+      ctx.vgpr_written_by_wmma.reset();
+      fill_vgpr_bitset(ctx.vgpr_written_by_wmma, instr->definitions[0].physReg(),
+                       instr->definitions[0].bytes());
+   } else if (instr->isVALU()) {
+      ctx.vgpr_written_by_wmma.reset();
    }
 }
 
 bool
 has_vdst0_since_valu_instr(bool& global_state, unsigned& block_state, aco_ptr<Instruction>& pred)
 {
-   if (parse_vdst_wait(pred) == 0)
+   if (parse_depctr_wait(pred.get()).va_vdst == 0)
       return true;
 
    if (--block_state == 0) {
@@ -1577,6 +1805,7 @@ resolve_all_gfx11(State& state, NOP_ctx_gfx11& ctx,
    Builder bld(state.program, &new_instructions);
 
    unsigned waitcnt_depctr = 0xffff;
+   bool valu_read_sgpr = false;
 
    /* LdsDirectVALUHazard/VALUPartialForwardingHazard/VALUTransUseHazard */
    bool has_vdst0_since_valu = true;
@@ -1589,32 +1818,77 @@ resolve_all_gfx11(State& state, NOP_ctx_gfx11& ctx,
       ctx.trans_since_wr_by_trans.reset();
    }
 
-   /* VcmpxPermlaneHazard */
-   if (ctx.has_Vcmpx) {
+   /* VcmpxPermlaneHazard/WMMAHazards */
+   if (ctx.has_Vcmpx || ctx.vgpr_written_by_wmma.any()) {
       ctx.has_Vcmpx = false;
+      ctx.vgpr_written_by_wmma.reset();
       bld.vop1(aco_opcode::v_nop);
    }
 
    /* VALUMaskWriteHazard */
-   if (state.program->wave_size == 64 &&
-       (ctx.sgpr_read_by_valu_as_lanemask.any() ||
-        ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.any())) {
-      waitcnt_depctr &= 0xfffe;
-      ctx.sgpr_read_by_valu_as_lanemask.reset();
-      ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
+   if (state.program->gfx_level < GFX12 && state.program->wave_size == 64) {
+      if (ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.any()) {
+         waitcnt_depctr &= 0xfffe;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
+      }
+      if (ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc] ||
+          ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc_hi]) {
+         waitcnt_depctr &= 0xfffd;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc] = false;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu[vcc_hi] = false;
+      }
+      if (ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu.any()) {
+         waitcnt_depctr &= 0xf1ff;
+         ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_valu.reset();
+      }
+      if (ctx.sgpr_read_by_valu_as_lanemask.any()) {
+         valu_read_sgpr = true;
+         ctx.sgpr_read_by_valu_as_lanemask.reset();
+      }
+   }
+
+   /* VALUReadSGPRHazard */
+   if (state.program->gfx_level >= GFX12) {
+      if (!ctx.sgpr_read_by_valu_then_wr_by_salu.empty())
+         waitcnt_depctr &= 0xfffe;
+
+      ctx.sgpr_read_by_valu_then_wr_by_salu.reset();
+      if (ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] ||
+          ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi]) {
+         waitcnt_depctr &= 0xfffd;
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc] = false;
+         ctx.sgpr_read_by_valu_then_wr_by_valu[vcc_hi] = false;
+      }
+      if (ctx.sgpr_read_by_valu_then_wr_by_valu.any()) {
+         waitcnt_depctr &= 0xf1ff;
+         ctx.sgpr_read_by_valu_then_wr_by_valu.reset();
+      }
    }
 
    /* LdsDirectVMEMHazard */
    if (ctx.vgpr_used_by_vmem_load.any() || ctx.vgpr_used_by_vmem_store.any() ||
-       ctx.vgpr_used_by_ds.any()) {
+       ctx.vgpr_used_by_ds.any() || ctx.vgpr_used_by_vmem_sample.any() ||
+       ctx.vgpr_used_by_vmem_bvh.any()) {
       waitcnt_depctr &= 0xffe3;
       ctx.vgpr_used_by_vmem_load.reset();
+      ctx.vgpr_used_by_vmem_sample.reset();
+      ctx.vgpr_used_by_vmem_bvh.reset();
       ctx.vgpr_used_by_vmem_store.reset();
       ctx.vgpr_used_by_ds.reset();
    }
 
    if (waitcnt_depctr != 0xffff)
       bld.sopp(aco_opcode::s_waitcnt_depctr, waitcnt_depctr);
+
+   if (valu_read_sgpr) {
+      /* This has to be after the s_waitcnt_depctr so that the instruction is not involved in any
+       * other hazards. */
+      bld.vop3(aco_opcode::v_xor3_b32, Definition(PhysReg(256), v1), Operand(PhysReg(256), v1),
+               Operand(PhysReg(0), s1), Operand(PhysReg(0), s1));
+
+      /* workaround possible LdsDirectVALUHazard/VALUPartialForwardingHazard */
+      bld.sopp(aco_opcode::s_waitcnt_depctr, 0x0fff);
+   }
 }
 
 template <typename Ctx>
@@ -1644,7 +1918,9 @@ handle_block(Program* program, Ctx& ctx, Block& block)
       Handle(state, ctx, instr, block.instructions);
 
       /* Resolve all possible hazards (we don't know what s_setpc_b64 jumps to). */
-      if (instr->opcode == aco_opcode::s_setpc_b64) {
+      if (instr->opcode == aco_opcode::s_setpc_b64 || instr->opcode == aco_opcode::s_swappc_b64 ||
+          instr->opcode == aco_opcode::s_call_b64) {
+         found_end |= instr->opcode == aco_opcode::s_setpc_b64;
          block.instructions.emplace_back(std::move(instr));
 
          std::vector<aco_ptr<Instruction>> resolve_instrs;
@@ -1652,8 +1928,6 @@ handle_block(Program* program, Ctx& ctx, Block& block)
          block.instructions.insert(std::prev(block.instructions.end()),
                                    std::move_iterator(resolve_instrs.begin()),
                                    std::move_iterator(resolve_instrs.end()));
-
-         found_end = true;
          continue;
       }
 
@@ -1668,7 +1942,7 @@ handle_block(Program* program, Ctx& ctx, Block& block)
 
 template <typename Ctx, HandleInstr<Ctx> Handle, ResolveAll<Ctx> Resolve>
 void
-mitigate_hazards(Program* program)
+mitigate_hazards(Program* program, Ctx initial_ctx = Ctx())
 {
    std::vector<Ctx> all_ctx(program->blocks.size());
    std::stack<unsigned, std::vector<unsigned>> loop_header_indices;
@@ -1676,6 +1950,9 @@ mitigate_hazards(Program* program)
    for (unsigned i = 0; i < program->blocks.size(); i++) {
       Block& block = program->blocks[i];
       Ctx& ctx = all_ctx[i];
+
+      if (i == 0 || (block.kind & block_kind_resume))
+         ctx = initial_ctx;
 
       if (block.kind & block_kind_loop_header) {
          loop_header_indices.push(i);
@@ -1705,19 +1982,114 @@ mitigate_hazards(Program* program)
    }
 }
 
+/* FeatureRequiredExportPriority in LLVM */
+void
+required_export_priority(Program* program)
+{
+   /* Skip callees, assuming that the caller has already increased the priority. */
+   bool increase_priority = !program->is_epilog && !program->info.vs.has_prolog &&
+                            (!program->info.merged_shader_compiled_separately ||
+                             program->stage.sw == SWStage::VS || program->stage.sw == SWStage::TES);
+   increase_priority |= program->is_prolog;
+
+   for (Block& block : program->blocks) {
+      std::vector<aco_ptr<Instruction>> new_instructions;
+      new_instructions.reserve(block.instructions.size() + 6);
+
+      Builder bld(program, &new_instructions);
+
+      if (increase_priority && block.index == 0) {
+         if (!block.instructions.empty() && block.instructions[0]->opcode == aco_opcode::s_setprio)
+            block.instructions[0]->salu().imm = MAX2(block.instructions[0]->salu().imm, 2);
+         else
+            bld.sopp(aco_opcode::s_setprio, 2);
+      }
+
+      for (unsigned i = 0; i < block.instructions.size(); i++) {
+         Instruction* instr = block.instructions[i].get();
+         new_instructions.push_back(std::move(block.instructions[i]));
+
+         if (instr->opcode == aco_opcode::s_setprio) {
+            instr->salu().imm = MAX2(instr->salu().imm, 2);
+            continue;
+         }
+
+         bool end_of_export_sequence = instr->isEXP() && (i == block.instructions.size() - 1 ||
+                                                          !block.instructions[i + 1]->isEXP());
+         if (!end_of_export_sequence)
+            continue;
+
+         bool before_endpgm = false;
+         if (i != block.instructions.size() - 1) {
+            before_endpgm = block.instructions[i + 1]->opcode == aco_opcode::s_endpgm;
+         } else {
+            /* Does this fallthrough to a s_endpgm? */
+            for (unsigned j = block.index + 1; j < program->blocks.size(); j++) {
+               if (program->blocks[j].instructions.size() == 1 &&
+                   program->blocks[j].instructions[0]->opcode == aco_opcode::s_endpgm)
+                  before_endpgm = true;
+               if (!program->blocks[j].instructions.empty())
+                  break;
+            }
+         }
+
+         bld.sopp(aco_opcode::s_setprio, 0);
+         if (!before_endpgm)
+            bld.sopk(aco_opcode::s_waitcnt_expcnt, Operand(sgpr_null, s1), 0);
+         bld.sopp(aco_opcode::s_nop, 0);
+         bld.sopp(aco_opcode::s_nop, 0);
+         if (!before_endpgm)
+            bld.sopp(aco_opcode::s_setprio, 2);
+      }
+
+      block.instructions = std::move(new_instructions);
+   }
+}
+
 } /* end namespace */
 
 void
 insert_NOPs(Program* program)
 {
-   if (program->gfx_level >= GFX11)
-      mitigate_hazards<NOP_ctx_gfx11, handle_instruction_gfx11, resolve_all_gfx11>(program);
-   else if (program->gfx_level >= GFX10_3)
-      ; /* no hazards/bugs to mitigate */
-   else if (program->gfx_level >= GFX10)
-      mitigate_hazards<NOP_ctx_gfx10, handle_instruction_gfx10, resolve_all_gfx10>(program);
-   else
+   bool has_previous_part =
+      program->is_epilog || program->info.vs.has_prolog || program->info.ps.has_prolog ||
+      (program->info.merged_shader_compiled_separately && program->stage.sw != SWStage::VS &&
+       program->stage.sw != SWStage::TES) ||
+      program->stage == raytracing_cs;
+
+   if (program->gfx_level >= GFX11) {
+      NOP_ctx_gfx11 initial_ctx;
+
+      if (program->gfx_level >= GFX12 && has_previous_part) {
+         /* resolve_all_gfx11 can't resolve VALUReadSGPRHazard entirely. We have to assume that any
+          * SGPR might have been read by VALU if there was a previous shader part.
+          */
+         initial_ctx.sgpr_read_by_valu.flip();
+         /* We cannot assume the s_setpc source has not been read by VALU in the preceding shader/
+          * shader part, and there are GPU hangs in the wild suggesting that the s_setpc source may
+          * be susceptible to VALUReadSGPRHazard. It is impossible for the previous part to mitigate
+          * this, and it is not always known which register the s_setpc source was in, so force a
+          * wait to be emitted at the start of this part.
+          *
+          * TODO: This hypothesis is not yet conclusively proven. More testing is needed.
+          */
+         initial_ctx.force_valu_read_sgpr_wait = true;
+      }
+
+      mitigate_hazards<NOP_ctx_gfx11, handle_instruction_gfx11, resolve_all_gfx11>(program,
+                                                                                   initial_ctx);
+   } else if (program->gfx_level >= GFX10) {
+      NOP_ctx_gfx10 initial_ctx;
+      initial_ctx.has_salu_exec_write = has_previous_part;
+      mitigate_hazards<NOP_ctx_gfx10, handle_instruction_gfx10, resolve_all_gfx10>(program,
+                                                                                   initial_ctx);
+   } else {
       mitigate_hazards<NOP_ctx_gfx6, handle_instruction_gfx6, resolve_all_gfx6>(program);
+   }
+
+   if (program->gfx_level == GFX11_5 && (program->stage.hw == AC_HW_NEXT_GEN_GEOMETRY_SHADER ||
+                                         program->stage.hw == AC_HW_PIXEL_SHADER))
+      required_export_priority(program);
 }
 
 } // namespace aco

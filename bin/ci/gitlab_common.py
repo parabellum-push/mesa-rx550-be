@@ -12,12 +12,20 @@ import logging
 import os
 import re
 import time
+from functools import cache
 from pathlib import Path
+from typing import Optional
+
+from gitlab import Gitlab
+from gitlab.v4.objects.projects import Project
+from gitlab.v4.objects.pipelines import ProjectPipeline
 
 GITLAB_URL = "https://gitlab.freedesktop.org"
-TOKEN_DIR = Path(os.getenv("XDG_CONFIG_HOME") or Path.home() / ".config")
+TOKEN_DIR = Path(os.environ.get("XDG_CONFIG_HOME", "")
+                 if os.environ.get("XDG_CONFIG_HOME", None)
+                 else Path.home() / ".config")
 
-# Known GitLab token prefixes: https://docs.gitlab.com/ee/security/token_overview.html#token-prefixes
+# Known GitLab token prefixes: https://docs.gitlab.com/security/tokens/#token-prefixes
 TOKEN_PREFIXES: dict[str, str] = {
     "Personal access token": "glpat-",
     "OAuth Application Secret": "gloas-",
@@ -28,35 +36,62 @@ TOKEN_PREFIXES: dict[str, str] = {
     "Feed token": "glft-",
     "Incoming mail token": "glimt-",
     "GitLab Agent for Kubernetes token": "glagent-",
-    "SCIM Tokens": "glsoat-"
+    "SCIM Tokens": "glsoat-",
 }
 
 
-def pretty_duration(seconds):
+@cache
+def print_once(*args, **kwargs):
+    """Print without spamming the output"""
+    print(*args, **kwargs)
+
+
+def pretty_duration(seconds: int | float) -> str:
     """Pretty print duration"""
+    seconds = int(seconds)
     hours, rem = divmod(seconds, 3600)
     minutes, seconds = divmod(rem, 60)
     if hours:
-        return f"{hours:0.0f}h{minutes:0.0f}m{seconds:0.0f}s"
+        return f"{hours:0.0f}h{minutes:02.0f}m{seconds:02.0f}s"
     if minutes:
-        return f"{minutes:0.0f}m{seconds:0.0f}s"
+        return f"{minutes:0.0f}m{seconds:02.0f}s"
     return f"{seconds:0.0f}s"
 
 
-def get_gitlab_pipeline_from_url(gl, pipeline_url):
-    assert pipeline_url.startswith(GITLAB_URL)
-    url_path = pipeline_url[len(GITLAB_URL) :]
-    url_path_components = url_path.split("/")
-    project_name = "/".join(url_path_components[1:3])
-    assert url_path_components[3] == "-"
-    assert url_path_components[4] == "pipelines"
-    pipeline_id = int(url_path_components[5])
-    cur_project = gl.projects.get(project_name)
+def get_server_and_project_from_url(pipeline_url: str) -> tuple[str]:
+    """
+    Extract the string of the server and path that means the project with namespace
+    from a url that points to a pipeline.
+    :param pipeline_url: string with a url to a pipeline
+    :return: server_url, project_path
+    """
+    pattern = r"(https?://[^ /]+)/(.*)/-/pipelines/\d+"
+    _match = re.match(pattern, pipeline_url)
+    if not _match and len(_match.groups() != 2):
+        raise AssertionError(f"url {pipeline_url} doesn't follow the pattern {pattern}")
+    return _match.groups()
+
+
+def get_gitlab_pipeline_from_url(gl: Gitlab, pipeline_url: str, server_url: str = None) -> tuple[ProjectPipeline, Project]:
+    """
+    Extract the project and pipeline object from the url string
+    :param gl: Gitlab object
+    :param pipeline_url: string with a url to a pipeline
+    :param server_url: optional string with the server part
+    :return: ProjectPipeline, Project objects
+    """
+    server_url = server_url if server_url else GITLAB_URL
+    pattern = rf"^{re.escape(server_url)}/(.*)/-/pipelines/([0-9]+)$"
+    match = re.match(pattern, pipeline_url)
+    if not match:
+        raise AssertionError(f"url {pipeline_url} doesn't follow the pattern {pattern}")
+    namespace_with_project, pipeline_id = match.groups()
+    cur_project = gl.projects.get(namespace_with_project)
     pipe = cur_project.pipelines.get(pipeline_id)
     return pipe, cur_project
 
 
-def get_gitlab_project(glab, name: str):
+def get_gitlab_project(glab: Gitlab, name: str) -> Project:
     """Finds a specified gitlab project for given user"""
     if "/" in name:
         project_path = name
@@ -88,19 +123,23 @@ def get_token_from_default_dir() -> str:
 
 
 def validate_gitlab_token(token: str) -> bool:
-    token_suffix = token.split("-")[-1]
+    # Match against recognised token prefixes
+    token_suffix = None
+    for token_type, token_prefix in TOKEN_PREFIXES.items():
+        if token.startswith(token_prefix):
+            logging.info(f"Found probable token type: {token_type}")
+            token_suffix = token[len(token_prefix):]
+            break
+
+    if not token_suffix:
+        return False
+
     # Basic validation of the token suffix based on:
     # https://gitlab.com/gitlab-org/gitlab/-/blob/master/gems/gitlab-secret_detection/lib/gitleaks.toml
     if not re.match(r"(\w+-)?[0-9a-zA-Z_\-]{20,64}", token_suffix):
         return False
 
-    for token_type, token_prefix in TOKEN_PREFIXES.items():
-        if token.startswith(token_prefix):
-            logging.info(f"Found probable token type: {token_type}")
-            return True
-
-    # If the token type is not recognized, return False
-    return False
+    return True
 
 
 def get_token_from_arg(token_arg: str | Path | None) -> str | None:
@@ -144,7 +183,11 @@ def read_token(token_arg: str | Path | None) -> str | None:
     return token
 
 
-def wait_for_pipeline(projects, sha: str, timeout=None):
+def wait_for_pipeline(
+    projects: set[Project],
+    sha: str,
+    timeout=None,
+) -> tuple[Optional[ProjectPipeline],Optional[Project]]:
     """await until pipeline appears in Gitlab"""
     project_names = [project.path_with_namespace for project in projects]
     print(f"⏲ for the pipeline to appear in {project_names}..", end="")
@@ -160,3 +203,7 @@ def wait_for_pipeline(projects, sha: str, timeout=None):
             print(" not found", flush=True)
             return (None, None)
         time.sleep(1)
+
+@cache
+def is_gitlab_job() -> bool:
+    return os.getenv("CI_JOB_ID") is not None

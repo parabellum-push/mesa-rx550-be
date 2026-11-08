@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2023 Valve Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2023 Valve Corporation
+ * SPDX-License-Identifier: MIT
  */
 
 /* The pass uses information on which branches are divergent in order to
@@ -102,8 +84,16 @@ struct block_data {
    unsigned divergence_count;
 };
 
-void
-ir3_calc_reconvergence(struct ir3_shader_variant *so)
+/**
+ * Calculate reconvergence in one of two ways.  In wave_pair_divergence==true,
+ * consider points that co-issued waves could reconverge.  In this pass, do
+ * not setup physical edges for uGPR allocation, as uGPR resources are per
+ * wave.
+ *
+ * If wave_pair_divergence=false, calculate normal thread divergence instead.
+ */
+static void
+calc_reconvergence(struct ir3_shader_variant *so, bool wave_pair_divergence)
 {
    void *mem_ctx = ralloc_context(NULL);
 
@@ -122,6 +112,10 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
          edge_count++;
       if (block->successors[1])
          edge_count++;
+
+      block->physical_predecessors_count = 0;
+      block->physical_successors_count = 0;
+      block->reconvergence_point = false;
    }
 
    struct rb_tree forward_edges, backward_edges;
@@ -139,7 +133,8 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
       blocks[block->index].first_processed_divergent_pred = UINT_MAX;
       for (unsigned i = 0; i < ARRAY_SIZE(block->successors); i++) {
          if (block->successors[i]) {
-            ir3_block_link_physical(block, block->successors[i]);
+            if (!wave_pair_divergence)
+               ir3_block_link_physical(block, block->successors[i]);
 
             if (block->successors[i]->index > block->index + 1) {
                edges[edge] = (struct logical_edge) {
@@ -154,7 +149,7 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
                };
 
                uinterval_tree_insert(&forward_edges, &edges[edge++].node);
-            } else if (block->successors[i]->index < block->index - 1) {
+            } else if (block->successors[i]->index <= block->index) {
                edges[edge] = (struct logical_edge) {
                   .node = {
                      .interval = {
@@ -167,6 +162,41 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
                };
 
                uinterval_tree_insert(&backward_edges, &edges[edge++].node);
+            }
+         } else if (!wave_pair_divergence) {
+            struct ir3_instruction *terminator =
+               ir3_block_get_terminator(block);
+
+            /* We don't want to mark targets of predicated branches as
+             * reconvergence points below because they don't need the
+             * branchstack:
+             *        |-- i --|
+             *        | ...   |
+             *        | predt |
+             *        |-------|
+             *    succ0 /   \ succ1
+             * |-- i+1 --| |-- i+2 --|
+             * | tblock  | | fblock  |
+             * | predf   | | jump    |
+             * |---------| |---------|
+             *    succ0 \   / succ0
+             *        |-- j --|
+             *        |  ...  |
+             *        |-------|
+             * Here, neither block i+2 nor block j need (jp). However, block i+1
+             * still needs a physical edge to block i+2 (control flow will fall
+             * through here) but the code below won't add it unless block i+2 is
+             * a reconvergence point. Therefore, we add it manually here.
+             *
+             * Note: we are here because the current block has only one
+             * successor which means that, if there is a predicated terminator,
+             * block will be block i+1 in the diagram above.
+             */
+            if (terminator && (terminator->opc == OPC_PREDT ||
+                               terminator->opc == OPC_PREDF)) {
+               struct ir3_block *next =
+                  list_entry(block->node.next, struct ir3_block, node);
+               ir3_block_link_physical(block, next);
             }
          }
       }
@@ -186,14 +216,55 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
          continue;
       if (terminator->opc == OPC_PREDT || terminator->opc == OPC_PREDF)
          continue;
+
+      /* We don't have info from nir about shader level divergence vs wave
+       * level divergence.  So when calculating wave level reconvergence
+       * consider all blocks as not having a uniform divergence condition
+       */
       if (block->successors[0] && block->successors[1] &&
-          block->divergent_condition) {
-         unsigned idx = block->successors[0]->index >
-            block->successors[1]->index ? 0 : 1;
-         block->successors[idx]->reconvergence_point = true;
-         blocks[block->successors[idx]->index].first_divergent_pred =
-            block->index;
-         u_worklist_push_tail(&worklist, block->successors[idx], index);
+          (block->divergent_condition || wave_pair_divergence)) {
+         struct ir3_block *reconv_points[2];
+         unsigned num_reconv_points;
+         struct ir3_instruction *prev_instr = NULL;
+
+         if (!list_is_singular(&block->instr_list)) {
+            prev_instr =
+               list_entry(terminator->node.prev, struct ir3_instruction, node);
+         }
+
+         if (prev_instr && is_terminator(prev_instr)) {
+            /* There are two terminating branches so both successors are
+             * reconvergence points (i.e., there is no fall through into the
+             * next block). This can only happen after ir3_legalize when we fail
+             * to eliminate a non-invertible branch. For example:
+             * getone #bb0
+             * jump #bb1
+             * bb0: (jp)...
+             * bb1: (jp)...
+             */
+            reconv_points[0] = block->successors[0];
+            reconv_points[1] = block->successors[1];
+            num_reconv_points = 2;
+         } else {
+            unsigned idx =
+               block->successors[0]->index > block->successors[1]->index ? 0
+                                                                         : 1;
+            reconv_points[0] = block->successors[idx];
+            reconv_points[1] = NULL;
+            num_reconv_points = 1;
+         }
+
+         for (unsigned i = 0; i < num_reconv_points; i++) {
+            struct ir3_block *reconv_point = reconv_points[i];
+            reconv_point->reconvergence_point = true;
+
+            struct block_data *reconv_point_data = &blocks[reconv_point->index];
+            if (reconv_point_data->first_divergent_pred > block->index) {
+               reconv_point_data->first_divergent_pred = block->index;
+            }
+
+            u_worklist_push_tail(&worklist, reconv_point, index);
+         }
       }
    }
 
@@ -201,6 +272,31 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
       struct ir3_block *block =
          u_worklist_pop_head(&worklist, struct ir3_block, index);
       assert(block->reconvergence_point);
+
+      /* Backwards branches extend the range of divergence. For example, a
+       * divergent break creates a reconvergence point after the loop that
+       * stays outstanding throughout subsequent iterations, even at points
+       * before the break. This takes that into account.
+       *
+       * More precisely, a backwards edge that originates between the block and
+       * it's first_divergent_pred (i.e. in the divergence range) extends the
+       * divergence range to the beginning of its destination if it is taken, or
+       * alternatively to the end of the block before its destination.
+       */
+      struct uinterval interval2 = {
+         blocks[block->index].first_divergent_pred,
+         blocks[block->index].first_divergent_pred
+      };
+      uinterval_tree_foreach (struct logical_edge, back_edge, interval2, &backward_edges,
+                              node) {
+         if (back_edge->end_block->index < block->index) {
+            if (blocks[block->index].first_divergent_pred >
+                back_edge->start_block->index - 1) {
+               blocks[block->index].first_divergent_pred =
+                  back_edge->start_block->index - 1;
+            }
+         }
+      }
 
       /* Iterate over all edges stepping over the block. */
       struct uinterval interval = { block->index, block->index };
@@ -232,43 +328,22 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
             u_worklist_push_tail(&worklist, edge->end_block, index);
          }
 
-         /* Backwards branches extend the range of divergence. For example, a
-          * divergent break creates a reconvergence point after the loop that
-          * stays outstanding throughout subsequent iterations, even at points
-          * before the break. This takes that into account.
-          *
-          * More precisely, a backwards edge that originates between the start
-          * and end of "edge" extends the divergence range to the beginning of
-          * its destination if it is taken, or alternatively to the end of the
-          * block before its destination.
-          *
-          * TODO: in case we ever start accepting weird non-structured control
-          * flow, we may also need to handle this above if a divergent branch
-          * crosses over a backwards edge.
-          */
-         struct uinterval interval2 = { edge->start_block->index, edge->start_block->index };
-         uinterval_tree_foreach (struct logical_edge, back_edge, interval2, &backward_edges,
-                                 node) {
-            if (back_edge->end_block->index < edge->end_block->index) {
-               if (blocks[edge->end_block->index].first_divergent_pred >
-                   back_edge->start_block->index - 1) {
-                  blocks[edge->end_block->index].first_divergent_pred =
-                     back_edge->start_block->index - 1;
-                  u_worklist_push_tail(&worklist, edge->end_block, index);
-               }
-            }
-         }
-
-         if (!prev || prev->start_block != edge->start_block) {
+         if ((!prev || prev->start_block != edge->start_block) && !wave_pair_divergence) {
             /* We should only process this edge + block combination once, and
              * we use the fact that edges are sorted by start point to avoid
              * adding redundant physical edges in case multiple edges have the
              * same start point by comparing with the previous edge. Therefore
              * we should only add the physical edge once.
+             * However, we should skip logical successors of the edge's start
+             * block since physical edges for those have already been added
+             * initially.
              */
-            for (unsigned i = 0; i < block->physical_predecessors_count; i++)
-               assert(block->physical_predecessors[i] != edge->start_block);
-            ir3_block_link_physical(edge->start_block, block);
+            if (block != edge->start_block->successors[0] &&
+                block != edge->start_block->successors[1]) {
+               for (unsigned i = 0; i < block->physical_predecessors_count; i++)
+                  assert(block->physical_predecessors[i] != edge->start_block);
+               ir3_block_link_physical(edge->start_block, block);
+            }
          }
          prev = edge;
       }
@@ -287,8 +362,13 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
       }
    }
 
+   /* If we've already calculated the branchstack in the first pass,
+    * we can skip doing it a 2nd time
+    */
+   if (so->branchstack)
+      goto out;
+
    unsigned rc_level = 0;
-   so->branchstack = 0;
    foreach_block (block, &so->ir->block_list) {
       if (block->reconvergence_point)
          rc_level--;
@@ -303,7 +383,6 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
          case OPC_READ_COND_MACRO:
          case OPC_ELECT_MACRO:
          case OPC_READ_FIRST_MACRO:
-         case OPC_SWZ_SHARED_MACRO:
             so->branchstack = MAX2(so->branchstack, rc_level + 1);
             break;
          default:
@@ -313,10 +392,32 @@ ir3_calc_reconvergence(struct ir3_shader_variant *so)
 
       rc_level += blocks[block->index].divergence_count;
 
-      so->branchstack = MAX2(so->branchstack, rc_level); 
+      so->branchstack = MAX2(so->branchstack, rc_level);
    }
    assert(rc_level == 0);
 
+out:
    ralloc_free(mem_ctx);
 }
 
+void
+ir3_calc_reconvergence(struct ir3_shader_variant *so)
+{
+   so->branchstack = 0;
+
+   if (so->compiler->info->props.has_dual_wave_dispatch &&
+       (ir3_shader_compute(so) ||
+        so->type == MESA_SHADER_FRAGMENT)) {
+      calc_reconvergence(so, true);
+
+      /* The calculated convergence points are wave convergence
+       * points, move the flags over now before the second
+       * pass calculating thread divergence
+       */
+      foreach_block (block, &so->ir->block_list) {
+         block->wave_reconvergence_point = block->reconvergence_point;
+      }
+   }
+
+   calc_reconvergence(so, false);
+}

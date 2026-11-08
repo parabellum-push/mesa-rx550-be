@@ -33,32 +33,14 @@
 
 static bool debug;
 
-static void
-dump_from(struct vc4_compile *c, struct qinst *inst)
-{
-        if (!debug)
-                return;
-
-        fprintf(stderr, "optimizing: ");
-        qir_dump_inst(c, inst);
-        fprintf(stderr, "\n");
-}
-
-static void
-dump_to(struct vc4_compile *c, struct qinst *inst)
-{
-        if (!debug)
-                return;
-
-        fprintf(stderr, "to: ");
-        qir_dump_inst(c, inst);
-        fprintf(stderr, "\n");
-}
-
 static bool
 constant_fold(struct vc4_compile *c, struct qinst *inst)
 {
         int nsrc = qir_get_nsrc(inst);
+
+        if (nsrc == 0)
+                return false;
+
         uint32_t ui[nsrc];
 
         for (int i = 0; i < nsrc; i++) {
@@ -76,6 +58,7 @@ constant_fold(struct vc4_compile *c, struct qinst *inst)
         uint32_t result = 0;
         switch (inst->op) {
         case QOP_SHR:
+                assert(nsrc == 2);
                 result = ui[0] >> ui[1];
                 break;
 
@@ -83,14 +66,13 @@ constant_fold(struct vc4_compile *c, struct qinst *inst)
                 return false;
         }
 
-        dump_from(c, inst);
+        LOG_INST_OPT("Optimizing", c, inst) {
+                inst->src[0] = qir_uniform_ui(c, result);
+                for (int i = 1; i < nsrc; i++)
+                        inst->src[i] = c->undef;
+                inst->op = QOP_MOV;
+        }
 
-        inst->src[0] = qir_uniform_ui(c, result);
-        for (int i = 1; i < nsrc; i++)
-                inst->src[i] = c->undef;
-        inst->op = QOP_MOV;
-
-        dump_to(c, inst);
         return true;
 }
 

@@ -1,4 +1,4 @@
-/* Copyright 2023 Advanced Micro Devices, Inc.
+/* Copyright 2023-2025 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -28,19 +28,16 @@
 #include "vpe10_resource.h"
 #include "vpe11_cmd_builder.h"
 #include "vpe10_vpec.h"
-#include "vpe10_cdc.h"
+#include "vpe10_cdc_be.h"
+#include "vpe10_cdc_fe.h"
 #include "vpe10_dpp.h"
 #include "vpe10_mpc.h"
 #include "vpe10_opp.h"
-#include "vpe_command.h"
-#include "vpe10_cm_common.h"
+#include "vpe11_command.h"
 #include "vpe10_background.h"
-#include "vpe10/inc/asic/bringup_vpe_6_1_0_offset.h"
-#include "vpe10/inc/asic/bringup_vpe_6_1_0_sh_mask.h"
-#include "vpe10/inc/asic/bringup_vpe_6_1_0_default.h"
-#include "vpe10/inc/asic/vpe_1_0_offset.h"
-#include "custom_fp16.h"
-#include "custom_float.h"
+#include "vpe10_plane_desc_writer.h"
+#include "vpe11_vpe_desc_writer.h"
+#include "vpe10_config_writer.h"
 #include "background.h"
 
 #define LUT_NUM_ENTRIES   (17 * 17 * 17)
@@ -48,6 +45,13 @@
 #define LUT_NUM_COMPONENT (3)
 #define LUT_BUFFER_SIZE   (LUT_NUM_ENTRIES * LUT_ENTRY_SIZE * LUT_NUM_COMPONENT)
 
+#define SHAPER_LUT_DATA_POINTS_PER_CHANNEL (256)
+#define SHAPER_LUT_DMA_DATA_SIZE           (0)
+#define SHAPER_LUT_DMA_CONFIG_SIZE         (0)
+#define SHAPER_LUT_DMA_DATA_ALIGNMENT      (0)
+#define SHAPER_LUT_DMA_CONFIG_ALIGNMENT    (0)
+#define SHAPER_LUT_DMA_CONFIG_PADDING      (0)
+#define LUT_3D_DMA_ALIGNMENT               (0)
 // set field/register/bitfield name
 #define SFRB(field_name, reg_name, post_fix) .field_name = reg_name##__##field_name##post_fix
 
@@ -61,92 +65,189 @@
     .reg_name = {BASE(reg##reg_name##_BASE_IDX) + reg##reg_name, reg##reg_name##_##DEFAULT,        \
         reg##reg_name##_##DEFAULT, false}
 
-static struct vpe_caps caps = {
-    .lut_size               = LUT_BUFFER_SIZE,
-    .rotation_support       = 0,
-    .h_mirror_support       = 1,
-    .v_mirror_support       = 0,
-    .is_apu                 = 1,
-    .bg_color_check_support = 0,
-    .resource_caps =
+static struct vpe_caps
+    caps =
         {
-            .num_dpp       = 1,
-            .num_opp       = 1,
-            .num_mpc_3dlut = 1,
-            .num_queue     = 8,
-        },
-    .color_caps = {.dpp =
-                       {
-                           .pre_csc    = 1,
-                           .luma_key   = 0,
-                           .dgam_ram   = 0,
-                           .post_csc   = 1,
-                           .gamma_corr = 1,
-                           .hw_3dlut   = 1,
-                           .ogam_ram   = 1, /**< programmable gam in output -> gamma_corr */
-                           .ocsc       = 0,
-                           .dgam_rom_caps =
-                               {
-                                   .srgb     = 1,
-                                   .bt2020   = 1,
-                                   .gamma2_2 = 1,
-                                   .pq       = 1,
-                                   .hlg      = 1,
-                               },
-                       },
-        .mpc =
-            {
-                .gamut_remap         = 1,
-                .ogam_ram            = 1,
-                .ocsc                = 1,
-                .shared_3d_lut       = 1,
-                .global_alpha        = 1,
-                .top_bottom_blending = 0,
-            }},
-    .plane_caps =
-        {
-            .per_pixel_alpha = 1,
-            .input_pixel_format_support =
+            .max_input_size =
                 {
-                    .argb_packed_32b = 1,
-                    .nv12            = 1,
-                    .fp16            = 0,
-                    .p010            = 1, /**< planar 4:2:0 10-bit */
-                    .p016            = 0, /**< planar 4:2:0 16-bit */
-                    .ayuv            = 0, /**< packed 4:4:4 */
-                    .yuy2            = 0  /**< packed 4:2:2 */
+                    .width  = 16384,
+                    .height = 16384,
                 },
-            .output_pixel_format_support = {.argb_packed_32b = 1,
-                .nv12                                        = 0,
-                .fp16                                        = 1,
-                .p010                                        = 0,
-                .p016                                        = 0,
-                .ayuv                                        = 0,
-                .yuy2                                        = 0},
-            .max_upscale_factor          = 64000,
+            .max_output_size =
+                {
+                    .width  = 16384,
+                    .height = 16384,
+                },
+            .min_input_size =
+                {
+                    .width  = 1,
+                    .height = 1,
+                },
+            .min_output_size =
+                {
+                    .width  = 1,
+                    .height = 1,
+                },
+            .lut_size               = LUT_BUFFER_SIZE,
+            .rotation_support       = 0,
+            .h_mirror_support       = 1,
+            .v_mirror_support       = 0,
+            .is_apu                 = 1,
+            .bg_color_check_support = 0,
 
-            // 6:1 downscaling ratio: 1000/6 = 166.666
-            .max_downscale_factor = 167,
+            .prefer_external_scaler_coef = 1,
 
-            .pitch_alignment    = 256,
-            .addr_alignment     = 256,
-            .max_viewport_width = 1024,
-        },
+            .resource_caps =
+                {
+                    .num_dpp       = 1,
+                    .num_opp       = 1,
+                    .num_mpc_3dlut = 1,
+                    .num_queue     = 8,
+                    .num_cdc_be    = 1,
+                },
+            .color_caps = {.dpp =
+                               {
+                                   .pre_csc    = 1,
+                                   .luma_key   = 0,
+                                   .color_key  = 1,
+                                   .dgam_ram   = 0,
+                                   .post_csc   = 1,
+                                   .gamma_corr = 1,
+                                   .hw_3dlut   = 1,
+                                   .ogam_ram   = 1, /**< programmable gam in output -> gamma_corr */
+                                   .ocsc       = 0,
+                                   .dgam_rom_caps =
+                                       {
+                                           .srgb     = 1,
+                                           .bt2020   = 1,
+                                           .gamma2_2 = 1,
+                                           .pq       = 1,
+                                           .hlg      = 1,
+                                       },
+                               },
+                .mpc =
+                    {
+                        .gamut_remap         = 1,
+                        .ogam_ram            = 1,
+                        .ocsc                = 1,
+                        .shared_3d_lut       = 1,
+                        .global_alpha        = 1,
+                        .top_bottom_blending = 0,
+                        .dma_3d_lut       = 0,
+                        .yuv_linear_blend = 0,
+                        .lut_dim_caps =
+                            {
+                                .dim_9  = 1,
+                                .dim_17 = 1,
+                                .dim_33 = 0,
+                            },
+                        .fast_load_caps =
+                            {
+                                .lut_3d_17 = 0,
+                                .lut_3d_33 = 0,
+                            },
+                        .lut_caps =
+                            {
+                                .lut_shaper_caps =
+                                    {
+                                        .dma_data             = 0,
+                                        .dma_config           = 0,
+                                        .non_monotonic        = 0,
+                                        .data_alignment       = SHAPER_LUT_DMA_DATA_ALIGNMENT,
+                                        .config_alignment     = SHAPER_LUT_DMA_CONFIG_ALIGNMENT,
+                                        .config_padding       = SHAPER_LUT_DMA_CONFIG_PADDING,
+                                        .data_size            = SHAPER_LUT_DMA_DATA_SIZE,
+                                        .config_size          = SHAPER_LUT_DMA_CONFIG_SIZE,
+                                        .data_pts_per_channel = SHAPER_LUT_DATA_POINTS_PER_CHANNEL,
+                                    },
+                                .lut_3dlut_caps =
+                                    {
+                                        .data_dim_9  = 1,
+                                        .data_dim_17 = 1,
+                                        .data_dim_33 = 0,
+                                        .dma_dim_9   = 0,
+                                        .dma_dim_17  = 0,
+                                        .dma_dim_33  = 0,
+                                        .alignment   = LUT_3D_DMA_ALIGNMENT,
+                                    },
+                                .lut_3d_compound = 0,
+                            },
+                    }},
+            .plane_caps =
+                {
+                    .per_pixel_alpha = 1,
+                    .input_pixel_format_support =
+                        {
+                            .argb_packed_32b = 1,
+                            .nv12            = 1,
+                            .fp16            = 0,
+                            .p010            = 1, /**< planar 4:2:0 10-bit */
+                            .p016            = 0, /**< planar 4:2:0 16-bit */
+                            .ayuv            = 0, /**< packed 4:4:4 */
+                            .yuy2            = 0, /**< packed 4:2:2 */
+                            .y210 = 0,            /**< packed 4:2:2 10-bit */
+                            .y216 = 0,            /**< packed 4:2:2 16-bit */
+                            .p210 = 0,            /**< planar 4:2:2 10-bit */
+                            .p216 = 0,            /**< planar 4:2:2 16-bit */
+                        },
+                    .output_pixel_format_support =
+                        {
+                            .argb_packed_32b = 1,
+                            .nv12            = 0,
+                            .fp16            = 1,
+                            .p010            = 0, /**< planar 4:2:0 10-bit */
+                            .p016            = 0, /**< planar 4:2:0 16-bit */
+                            .ayuv            = 0, /**< packed 4:4:4 */
+                            .yuy2 = 0,            /**< packed 4:2:2 */
+                            .y210 = 0,            /**< packed 4:2:2 10-bit */
+                            .y216 = 0,            /**< packed 4:2:2 16-bit */
+                            .p210 = 0,            /**< planar 4:2:2 10-bit */
+                            .p216 = 0,            /**< planar 4:2:2 16-bit */
+
+                        },
+                    .max_upscale_factor = 64000,
+
+                    // 6:1 downscaling ratio: 1000/6 = 166.666
+                    .max_downscale_factor = 167,
+
+                    .pitch_alignment    = 256,
+                    .addr_alignment     = 256,
+                    .max_viewport_width = 1024,
+                },
+            .isharp_caps =
+                {
+                    .support = false,
+                    .range =
+                        {
+                            .min  = 0,
+                            .max  = 0,
+                            .step = 0,
+                        },
+                },
+            .easf_support                = 0,
+            .input_internal_dcc_support  = 0,
+            .output_internal_dcc_support = 0,
+            .histogram_support      = 0,
+            .frod_support           = 0,
+            .alpha_blending_support = 0,
+            .alpha_fill_caps =
+                {
+                    .opaque        = 1,
+                    .bg_color      = 1,
+                    .destination   = 0,
+                    .source_stream = 0,
+                },
 };
-
-static struct vpe_cap_funcs cap_funcs = {.get_dcc_compression_cap = vpe10_get_dcc_compression_cap};
 
 enum vpe_status vpe11_construct_resource(struct vpe_priv *vpe_priv, struct resource *res)
 {
     struct vpe *vpe = &vpe_priv->pub;
 
     vpe->caps      = &caps;
-    vpe->cap_funcs = &cap_funcs;
 
     vpe10_construct_vpec(vpe_priv, &res->vpec);
-
-    res->cdc[0] = vpe10_cdc_create(vpe_priv, 0);
-    if (!res->cdc[0])
+    res->cdc_fe[0] = vpe10_cdc_fe_create(vpe_priv, 0);
+    if (!res->cdc_fe[0])
         goto err;
 
     res->dpp[0] = vpe10_dpp_create(vpe_priv, 0);
@@ -157,29 +258,46 @@ enum vpe_status vpe11_construct_resource(struct vpe_priv *vpe_priv, struct resou
     if (!res->mpc[0])
         goto err;
 
+    res->cdc_be[0] = vpe10_cdc_be_create(vpe_priv, 0);
+    if (!res->cdc_be[0])
+        goto err;
+
     res->opp[0] = vpe10_opp_create(vpe_priv, 0);
     if (!res->opp[0])
         goto err;
 
     vpe11_construct_cmd_builder(vpe_priv, &res->cmd_builder);
+    vpe10_construct_plane_desc_writer(&vpe_priv->plane_desc_writer);
+    vpe11_construct_vpe_desc_writer(&vpe_priv->vpe_desc_writer);
+    vpe10_config_writer_init(&vpe_priv->config_writer);
+
     vpe_priv->num_pipe = 1;
 
     res->internal_hdr_normalization = 1;
 
-    res->check_input_color_space           = vpe10_check_input_color_space;
-    res->check_output_color_space          = vpe10_check_output_color_space;
     res->check_h_mirror_support            = vpe10_check_h_mirror_support;
     res->calculate_segments                = vpe10_calculate_segments;
+    res->get_max_seg_width                 = vpe10_get_max_seg_width;
     res->set_num_segments                  = vpe11_set_num_segments;
     res->split_bg_gap                      = vpe10_split_bg_gap;
     res->calculate_dst_viewport_and_active = vpe10_calculate_dst_viewport_and_active;
+    res->get_bg_stream_idx                 = vpe10_get_bg_stream_idx;
     res->find_bg_gaps                      = vpe_find_bg_gaps;
     res->create_bg_segments                = vpe_create_bg_segments;
     res->populate_cmd_info                 = vpe10_populate_cmd_info;
     res->program_frontend                  = vpe10_program_frontend;
     res->program_backend                   = vpe10_program_backend;
     res->get_bufs_req                      = vpe10_get_bufs_req;
-    res->get_tf_pwl_params                 = vpe10_cm_get_tf_pwl_params;
+    res->check_bg_color_support            = vpe10_check_bg_color_support;
+    res->bg_color_convert                  = vpe10_bg_color_convert;
+    res->check_mirror_rotation_support     = vpe10_check_mirror_rotation_support;
+    res->update_blnd_gamma                 = vpe10_update_blnd_gamma;
+    res->update_output_gamma               = vpe10_update_output_gamma;
+    res->validate_cached_param             = vpe11_validate_cached_param;
+    res->check_alpha_fill_support          = vpe10_check_alpha_fill_support;
+    res->populate_frod_param  = NULL;
+    res->check_lut3d_compound = NULL;
+    res->calculate_shaper = vpe10_calculate_shaper;
 
     return VPE_STATUS_OK;
 err:
@@ -189,9 +307,9 @@ err:
 
 void vpe11_destroy_resource(struct vpe_priv *vpe_priv, struct resource *res)
 {
-    if (res->cdc[0] != NULL) {
-        vpe_free(container_of(res->cdc[0], struct vpe10_cdc, base));
-        res->cdc[0] = NULL;
+    if (res->cdc_fe[0] != NULL) {
+        vpe_free(container_of(res->cdc_fe[0], struct vpe10_cdc_fe, base));
+        res->cdc_fe[0] = NULL;
     }
 
     if (res->dpp[0] != NULL) {
@@ -204,6 +322,11 @@ void vpe11_destroy_resource(struct vpe_priv *vpe_priv, struct resource *res)
         res->mpc[0] = NULL;
     }
 
+    if (res->cdc_be[0] != NULL) {
+        vpe_free(container_of(res->cdc_be[0], struct vpe10_cdc_be, base));
+        res->cdc_be[0] = NULL;
+    }
+
     if (res->opp[0] != NULL) {
         vpe_free(container_of(res->opp[0], struct vpe10_opp, base));
         res->opp[0] = NULL;
@@ -212,26 +335,84 @@ void vpe11_destroy_resource(struct vpe_priv *vpe_priv, struct resource *res)
 
 enum vpe_status vpe11_set_num_segments(struct vpe_priv *vpe_priv, struct stream_ctx *stream_ctx,
     struct scaler_data *scl_data, struct vpe_rect *src_rect, struct vpe_rect *dst_rect,
-    uint32_t *max_seg_width)
+    uint32_t *max_seg_width, uint32_t recout_width_alignment)
 {
+    uint16_t        num_segs;
+    struct dpp     *dpp         = vpe_priv->resource.dpp[0];
+    const uint32_t  max_lb_size = dpp->funcs->get_line_buffer_size();
+    enum vpe_status res         = VPE_STATUS_OK;
 
-    uint16_t       num_segs;
-    struct dpp    *dpp         = vpe_priv->resource.dpp[0];
-    const uint32_t max_lb_size = dpp->funcs->get_line_buffer_size();
-
+    (void)recout_width_alignment;
     *max_seg_width = min(*max_seg_width, max_lb_size / scl_data->taps.v_taps);
 
     num_segs = vpe_get_num_segments(vpe_priv, src_rect, dst_rect, *max_seg_width);
-    if ((src_rect->width > (uint32_t)(vpe_priv->vpe_num_instance * VPE_MIN_VIEWPORT_SIZE)) &&
-        (num_segs % vpe_priv->vpe_num_instance != 0)) {
+    if ((src_rect->width >= (uint32_t)(vpe_priv->vpe_num_instance * VPE_MIN_VIEWPORT_SIZE)) &&
+        ((num_segs % vpe_priv->vpe_num_instance) != 0)) {
         num_segs += (vpe_priv->vpe_num_instance - (num_segs % vpe_priv->vpe_num_instance));
     }
 
-    stream_ctx->segment_ctx = vpe_alloc_segment_ctx(vpe_priv, num_segs);
-    if (!stream_ctx->segment_ctx)
-        return VPE_STATUS_NO_MEMORY;
+    res = vpe_alloc_segment_ctx(vpe_priv, stream_ctx, num_segs);
 
-    stream_ctx->num_segments = num_segs;
+    if (res == VPE_STATUS_OK) {
+        stream_ctx->num_segments = num_segs;
+    }
 
-    return VPE_STATUS_OK;
+    return res;
+}
+
+bool vpe11_validate_cached_param(struct vpe_priv *vpe_priv, const struct vpe_build_param *param)
+{
+    uint32_t           i;
+    struct output_ctx *output_ctx;
+
+    if (vpe_priv->num_input_streams != param->num_streams &&
+        !(vpe_priv->init.debug.bg_color_fill_only == true && vpe_priv->num_streams == 1))
+        return false;
+
+    if (vpe_priv->collaboration_mode != param->collaboration_mode)
+        return false;
+
+    if (param->num_instances > 0 && vpe_priv->vpe_num_instance != param->num_instances)
+        return false;
+
+    for (i = 0; i < vpe_priv->num_input_streams; i++) {
+        struct vpe_stream stream = param->streams[i];
+
+        vpe_clip_stream(
+            &stream.scaling_info.src_rect, &stream.scaling_info.dst_rect, &param->target_rect);
+
+        if (memcmp(&vpe_priv->stream_ctx[i].stream, &stream, sizeof(struct vpe_stream)))
+            return false;
+    }
+
+    output_ctx = &vpe_priv->output_ctx;
+    if (output_ctx->alpha_mode != param->alpha_mode)
+        return false;
+
+    if (memcmp(&output_ctx->mpc_bg_color, &param->bg_color, sizeof(struct vpe_color)))
+        return false;
+
+    if (memcmp(&output_ctx->opp_bg_color, &param->bg_color, sizeof(struct vpe_color)))
+        return false;
+
+    if (memcmp(&output_ctx->target_rect, &param->target_rect, sizeof(struct vpe_rect)))
+        return false;
+
+    if (memcmp(&output_ctx->surface, &param->dst_surface, sizeof(struct vpe_surface_info)))
+        return false;
+
+    return true;
+}
+
+const struct vpe_caps *vpe11_get_capability(void)
+{
+    return &caps;
+}
+
+void vpe11_setup_check_funcs(struct vpe_check_support_funcs *funcs)
+{
+    funcs->check_input_format             = vpe10_check_input_format;
+    funcs->check_output_format            = vpe10_check_output_format;
+    funcs->check_input_color_space        = vpe10_check_input_color_space;
+    funcs->check_output_color_space       = vpe10_check_output_color_space;
 }

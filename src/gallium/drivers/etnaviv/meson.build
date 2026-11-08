@@ -1,22 +1,5 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 files_etnaviv = files(
   'etnaviv_asm.c',
@@ -51,10 +34,13 @@ files_etnaviv = files(
   'etnaviv_internal.h',
   'etnaviv_ml.c',
   'etnaviv_ml.h',
+  'etnaviv_ml_nn_v7.c',
+  'etnaviv_ml_nn_v8.c',
   'etnaviv_ml_nn.c',
   'etnaviv_ml_nn.h',
   'etnaviv_ml_tp.c',
   'etnaviv_ml_tp.h',
+  'etnaviv_nir_lower_128bit.c',
   'etnaviv_nir_lower_source_mods.c',
   'etnaviv_nir_lower_texture.c',
   'etnaviv_nir_lower_ubo_to_uniform.c',
@@ -66,6 +52,7 @@ files_etnaviv = files(
   'etnaviv_query.h',
   'etnaviv_query_acc_occlusion.c',
   'etnaviv_query_acc_perfmon.c',
+  'etnaviv_query_acc_xfb.c',
   'etnaviv_query_acc.c',
   'etnaviv_query_acc.h',
   'etnaviv_query_sw.c',
@@ -82,8 +69,6 @@ files_etnaviv = files(
   'etnaviv_shader.h',
   'etnaviv_state.c',
   'etnaviv_state.h',
-  'etnaviv_surface.c',
-  'etnaviv_surface.h',
   'etnaviv_texture.c',
   'etnaviv_texture.h',
   'etnaviv_texture_desc.c',
@@ -98,13 +83,15 @@ files_etnaviv = files(
   'etnaviv_uniforms.c',
   'etnaviv_uniforms.h',
   'etnaviv_util.h',
+  'etnaviv_yuv.c',
+  'etnaviv_yuv.h',
   'etnaviv_zsa.c',
   'etnaviv_zsa.h',
 )
 
 libetnaviv = static_library(
   'etnaviv',
-  files_etnaviv,
+  files_etnaviv, etnaviv_enums_h,
   gnu_symbol_visibility : 'hidden',
   include_directories : [
     inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_etnaviv,
@@ -129,7 +116,7 @@ if with_tests
       gnu_symbol_visibility : 'hidden',
       include_directories : [inc_include, inc_src, inc_gallium],
       link_with : [libetnaviv],
-      dependencies : [idep_gtest, idep_nir],
+      dependencies : [idep_gtest, idep_nir, idep_mesautil],
     ),
     suite : ['compiler', 'etnaviv'],
     protocol : 'gtest',

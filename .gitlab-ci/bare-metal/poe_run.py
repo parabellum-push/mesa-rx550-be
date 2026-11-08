@@ -25,17 +25,17 @@ import argparse
 import os
 import re
 import sys
-import threading
 
 from custom_logger import CustomLogger
 from serial_buffer import SerialBuffer
 
+
 class PoERun:
-    def __init__(self, args, test_timeout, logger):
+    def __init__(self, args, boot_timeout, test_timeout, logger):
         self.powerup = args.powerup
         self.powerdown = args.powerdown
-        self.ser = SerialBuffer(
-            args.dev, "results/serial-output.txt", "")
+        self.ser = SerialBuffer(args.dev, "results/serial-output.txt")
+        self.boot_timeout = boot_timeout
         self.test_timeout = test_timeout
         self.logger = logger
 
@@ -56,7 +56,7 @@ class PoERun:
 
         boot_detected = False
         self.logger.create_job_phase("boot")
-        for line in self.ser.lines(timeout=5 * 60, phase="bootloader"):
+        for line in self.ser.lines(timeout=self.boot_timeout, phase="bootloader"):
             if re.search("Booting Linux", line):
                 boot_detected = True
                 break
@@ -86,14 +86,17 @@ class PoERun:
                 self.print_error("nouveau jetson tk1 network fail, abandoning run.")
                 return 1
 
-            result = re.search("hwci: mesa: (\S*)", line)
+            result = re.search(r"hwci: mesa: exit_code: (\d+)", line)
             if result:
-                if result.group(1) == "pass":
+                exit_code = int(result.group(1))
+
+                if exit_code == 0:
                     self.logger.update_dut_job("status", "pass")
-                    return 0
                 else:
                     self.logger.update_status_fail("test fail")
-                    return 1
+
+                self.logger.update_dut_job("exit_code", exit_code)
+                return exit_code
 
         self.print_error(
             "Reached the end of the CPU serial log without finding a result")
@@ -109,12 +112,14 @@ def main():
     parser.add_argument('--powerdown', type=str,
                         help='shell command for powering off', required=True)
     parser.add_argument(
-        '--test-timeout', type=int, help='Test phase timeout (minutes)', required=True)
+        '--boot-timeout-seconds', type=int, help='Boot phase timeout (seconds)', required=True)
+    parser.add_argument(
+        '--test-timeout-minutes', type=int, help='Test phase timeout (minutes)', required=True)
     args = parser.parse_args()
 
-    logger = CustomLogger("job_detail.json")
+    logger = CustomLogger("results/job_detail.json")
     logger.update_dut_time("start", None)
-    poe = PoERun(args, args.test_timeout * 60, logger)
+    poe = PoERun(args, args.boot_timeout_seconds, args.test_timeout_minutes * 60, logger)
     retval = poe.run()
 
     poe.logged_system(args.powerdown)

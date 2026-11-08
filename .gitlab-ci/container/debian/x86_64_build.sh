@@ -6,10 +6,13 @@
 # DEBIAN_BUILD_TAG
 
 set -e
+
+. .gitlab-ci/setup-test-env.sh
+
 set -o xtrace
 
 export DEBIAN_FRONTEND=noninteractive
-export LLVM_VERSION="${LLVM_VERSION:=15}"
+: "${LLVM_VERSION:?llvm version not set!}"
 
 # Ephemeral packages (installed for this script and removed again at the end)
 EPHEMERAL=(
@@ -28,9 +31,11 @@ DEPS=(
     libarchive-dev
     libdrm-dev
     "libclang-cpp${LLVM_VERSION}-dev"
+    "libclang-rt-${LLVM_VERSION}-dev"
     libgbm-dev
     libglvnd-dev
     liblua5.3-dev
+    libpng-dev
     libxcb-dri2-0-dev
     libxcb-dri3-dev
     libxcb-glx0-dev
@@ -41,16 +46,17 @@ DEPS=(
     libxcb-xfixes0-dev
     libxcb1-dev
     libxml2-dev
+    libwayland-bin
+    libwayland-dev
+    libwayland-egl-backend-dev
     "llvm-${LLVM_VERSION}-dev"
     ocl-icd-opencl-dev
     python3-pip
-    python3-venv
     procps
     spirv-tools
-    shellcheck
     strace
     time
-    yamllint
+    wayland-protocols
     zstd
 )
 
@@ -75,27 +81,11 @@ tar -xvf $XORGMACROS_VERSION.tar.bz2 && rm $XORGMACROS_VERSION.tar.bz2
 cd $XORGMACROS_VERSION; ./configure; make install; cd ..
 rm -rf $XORGMACROS_VERSION
 
-. .gitlab-ci/container/build-wayland.sh
-
 . .gitlab-ci/container/build-shader-db.sh
 
 . .gitlab-ci/container/build-directx-headers.sh
 
-python3 -m pip install --break-system-packages -r .gitlab-ci/lava/requirements.txt
-
-# install bindgen
-RUSTFLAGS='-L native=/usr/local/lib' cargo install \
-  bindgen-cli --version 0.65.1 \
-  --locked \
-  -j ${FDO_CI_CONCURRENT:-4} \
-  --root /usr/local
-
-# install cbindgen
-RUSTFLAGS='-L native=/usr/local/lib' cargo install \
-  cbindgen --version 0.26.0 \
-  --locked \
-  -j ${FDO_CI_CONCURRENT:-4} \
-  --root /usr/local
+. .gitlab-ci/container/build-bindgen.sh
 
 ############### Uninstall the build software
 

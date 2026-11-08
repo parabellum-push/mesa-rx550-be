@@ -1,24 +1,6 @@
 /*
  * Copyright (c) 2016 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "elk_nir.h"
@@ -75,7 +57,7 @@ compute_local_index_id(nir_builder *b,
     */
 
    nir_def *id_x, *id_y, *id_z;
-   switch (nir->info.cs.derivative_group) {
+   switch (nir->info.derivative_group) {
    case DERIVATIVE_GROUP_NONE:
       if (nir->info.num_images == 0 &&
           nir->info.num_textures == 0) {
@@ -164,7 +146,7 @@ compute_local_index_id(nir_builder *b,
       break;
    }
    default:
-      unreachable("invalid derivative group");
+      UNREACHABLE("invalid derivative group");
    }
 }
 
@@ -206,14 +188,6 @@ lower_cs_intrinsics_convert_block(struct lower_intrinsics_state *state,
          }
 
          if (!local_index) {
-            if (nir->info.stage == MESA_SHADER_TASK ||
-                nir->info.stage == MESA_SHADER_MESH) {
-               /* Will be lowered by nir_emit_task_mesh_intrinsic() using
-                * information from the payload.
-                */
-               continue;
-            }
-
             if (state->hw_generated_local_id) {
                nir_def *local_id_vec = nir_load_local_invocation_id(b);
                nir_def *local_id[3] = { nir_channel(b, local_id_vec, 0),
@@ -272,8 +246,7 @@ lower_cs_intrinsics_convert_block(struct lower_intrinsics_state *state,
       if (intrinsic->def.bit_size == 64)
          sysval = nir_u2u64(b, sysval);
 
-      nir_def_rewrite_uses(&intrinsic->def, sysval);
-      nir_instr_remove(&intrinsic->instr);
+      nir_def_replace(&intrinsic->def, sysval);
 
       state->progress = true;
    }
@@ -290,8 +263,7 @@ lower_cs_intrinsics_convert_impl(struct lower_intrinsics_state *state)
       lower_cs_intrinsics_convert_block(state, block);
    }
 
-   nir_metadata_preserve(state->impl,
-                         nir_metadata_block_index | nir_metadata_dominance);
+   nir_progress(true, state->impl, nir_metadata_control_flow);
 }
 
 bool
@@ -299,7 +271,7 @@ elk_nir_lower_cs_intrinsics(nir_shader *nir,
                             const struct intel_device_info *devinfo,
                             struct elk_cs_prog_data *prog_data)
 {
-   assert(gl_shader_stage_uses_workgroup(nir->info.stage));
+   assert(mesa_shader_stage_uses_workgroup(nir->info.stage));
 
    struct lower_intrinsics_state state = {
       .nir = nir,
@@ -307,12 +279,12 @@ elk_nir_lower_cs_intrinsics(nir_shader *nir,
    };
 
    /* Constraints from NV_compute_shader_derivatives. */
-   if (gl_shader_stage_is_compute(nir->info.stage) &&
+   if (mesa_shader_stage_is_compute(nir->info.stage) &&
        !nir->info.workgroup_size_variable) {
-      if (nir->info.cs.derivative_group == DERIVATIVE_GROUP_QUADS) {
+      if (nir->info.derivative_group == DERIVATIVE_GROUP_QUADS) {
          assert(nir->info.workgroup_size[0] % 2 == 0);
          assert(nir->info.workgroup_size[1] % 2 == 0);
-      } else if (nir->info.cs.derivative_group == DERIVATIVE_GROUP_LINEAR) {
+      } else if (nir->info.derivative_group == DERIVATIVE_GROUP_LINEAR) {
          ASSERTED unsigned workgroup_size =
             nir->info.workgroup_size[0] *
             nir->info.workgroup_size[1] *

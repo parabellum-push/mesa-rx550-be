@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -112,7 +94,7 @@ static inline void
 fd5_cache_flush(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
 {
    fd_reset_wfi(batch);
-   OUT_PKT4(ring, REG_A5XX_UCHE_CACHE_INVALIDATE_MIN_LO, 5);
+   OUT_PKT4(ring, REG_A5XX_UCHE_CACHE_INVALIDATE_MIN, 5);
    OUT_RING(ring, 0x00000000); /* UCHE_CACHE_INVALIDATE_MIN_LO */
    OUT_RING(ring, 0x00000000); /* UCHE_CACHE_INVALIDATE_MIN_HI */
    OUT_RING(ring, 0x00000000); /* UCHE_CACHE_INVALIDATE_MAX_LO */
@@ -154,7 +136,7 @@ static inline void
 fd5_emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
    emit_marker5(ring, 7);
-   fd5_event_write(batch, ring, BLIT, true);
+   fd5_event_write(batch, ring, CCU_RESOLVE, true);
    emit_marker5(ring, 7);
 }
 
@@ -172,7 +154,7 @@ fd5_emit_render_cntl(struct fd_context *ctx, bool blit, bool binning) assert_dt
     * Other bits seem to depend on query state, like if samples-passed
     * query is active.
     */
-   bool samples_passed = (fd5_context(ctx)->samples_passed_queries > 0);
+   bool samples_passed = (ctx->occlusion_queries_active > 0);
    OUT_PKT4(ring, REG_A5XX_RB_RENDER_CNTL, 1);
    OUT_RING(ring, 0x00000000 | /* RB_RENDER_CNTL */
                      COND(binning, A5XX_RB_RENDER_CNTL_BINNING_PASS) |
@@ -195,7 +177,7 @@ fd5_emit_lrz_flush(struct fd_batch *batch, struct fd_ringbuffer *ring)
    OUT_PKT4(ring, REG_A5XX_GRAS_LRZ_CNTL, 1);
    OUT_RING(ring, A5XX_GRAS_LRZ_CNTL_ENABLE);
 
-   fd5_event_write(batch, ring, LRZ_FLUSH, false);
+   fd5_event_write(batch, ring, LRZ_FLUSH_INVALIDATE, false);
 
    OUT_PKT4(ring, REG_A5XX_GRAS_LRZ_CNTL, 1);
    OUT_RING(ring, 0x0);

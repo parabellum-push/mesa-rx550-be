@@ -91,7 +91,7 @@ extern void
 _mesa_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
                            GLenum internalFormat, GLsizei width,
                            GLsizei height, GLsizei samples,
-                           GLsizei storageSamples);
+                           GLsizei storageSamples, bool msrtt);
 
 extern GLboolean
 _mesa_has_depthstencil_combined(const struct gl_framebuffer *fb);
@@ -122,7 +122,7 @@ _mesa_framebuffer_texture(struct gl_context *ctx, struct gl_framebuffer *fb,
                           struct gl_renderbuffer_attachment *att,
                           struct gl_texture_object *texObj, GLenum textarget,
                           GLint level, GLsizei samples,
-                          GLuint layer, GLboolean layered);
+                          GLuint layer, GLboolean layered, GLsizei numviews);
 
 extern GLenum
 _mesa_check_framebuffer_status(struct gl_context *ctx,

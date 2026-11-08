@@ -1,28 +1,6 @@
 /*
  * Copyright © 2012 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
- * Authors:
- *    Eric Anholt <eric@anholt.net>
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #include "elk_fs.h"
@@ -165,7 +143,7 @@ fs_live_variables::compute_live_variables()
       foreach_block (block, cfg) {
          const struct block_data *bd = &block_data[block->num];
 
-         foreach_list_typed(elk_bblock_link, child_link, link, &block->children) {
+         brw_foreach_list_typed(elk_bblock_link, child_link, link, &block->children) {
             struct block_data *child_bd = &block_data[child_link->block->num];
 
             for (int i = 0; i < bitset_words; i++) {
@@ -185,7 +163,7 @@ fs_live_variables::compute_live_variables()
          struct block_data *bd = &block_data[block->num];
 
          /* Update liveout */
-         foreach_list_typed(elk_bblock_link, child_link, link, &block->children) {
+         brw_foreach_list_typed(elk_bblock_link, child_link, link, &block->children) {
             struct block_data *child_bd = &block_data[child_link->block->num];
 
             for (int i = 0; i < bitset_words; i++) {
@@ -254,34 +232,34 @@ fs_live_variables::fs_live_variables(const elk_backend_shader *s)
 
    num_vgrfs = s->alloc.count;
    num_vars = 0;
-   var_from_vgrf = linear_zalloc_array(lin_ctx, int, num_vgrfs);
+   var_from_vgrf = linear_alloc_array(lin_ctx, int, num_vgrfs);
    for (int i = 0; i < num_vgrfs; i++) {
       var_from_vgrf[i] = num_vars;
       num_vars += s->alloc.sizes[i];
    }
 
-   vgrf_from_var = linear_zalloc_array(lin_ctx, int, num_vars);
+   vgrf_from_var = linear_alloc_array(lin_ctx, int, num_vars);
    for (int i = 0; i < num_vgrfs; i++) {
       for (unsigned j = 0; j < s->alloc.sizes[i]; j++) {
          vgrf_from_var[var_from_vgrf[i] + j] = i;
       }
    }
 
-   start = ralloc_array(mem_ctx, int, num_vars);
-   end = linear_zalloc_array(lin_ctx, int, num_vars);
+   start = linear_alloc_array(lin_ctx, int, num_vars);
+   end = linear_alloc_array(lin_ctx, int, num_vars);
    for (int i = 0; i < num_vars; i++) {
       start[i] = MAX_INSTRUCTION;
       end[i] = -1;
    }
 
-   vgrf_start = ralloc_array(mem_ctx, int, num_vgrfs);
-   vgrf_end = ralloc_array(mem_ctx, int, num_vgrfs);
+   vgrf_start = linear_alloc_array(lin_ctx, int, num_vgrfs);
+   vgrf_end = linear_alloc_array(lin_ctx, int, num_vgrfs);
    for (int i = 0; i < num_vgrfs; i++) {
       vgrf_start[i] = MAX_INSTRUCTION;
       vgrf_end[i] = -1;
    }
 
-   block_data = linear_zalloc_array(lin_ctx, struct block_data, cfg->num_blocks);
+   block_data = linear_alloc_array(lin_ctx, struct block_data, cfg->num_blocks);
 
    bitset_words = BITSET_WORDS(num_vars);
    for (int i = 0; i < cfg->num_blocks; i++) {

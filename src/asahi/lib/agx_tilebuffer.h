@@ -8,7 +8,9 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "drm-uapi/asahi_drm.h"
 #include "util/format/u_formats.h"
+#include "agx_pack.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,12 +25,6 @@ extern "C" {
 struct nir_shader;
 struct nir_def;
 struct nir_builder;
-struct agx_usc_builder;
-
-struct agx_tile_size {
-   uint8_t width;
-   uint8_t height;
-};
 
 struct agx_tilebuffer_layout {
    /* Logical format of each render target. Use agx_tilebuffer_physical_format
@@ -55,9 +51,20 @@ struct agx_tilebuffer_layout {
    /* If layered rendering is used */
    bool layered;
 
-   /* Selected tile size */
-   struct agx_tile_size tile_size;
+   /* Selected tile size in pixels. Either 32*32, 32*16, or 16*16. */
+   uint16_t tile_size;
+
+   /* USC word corresponding to this configuration of the tilebuffer */
+   struct agx_usc_shared_packed usc;
 };
+
+static inline void
+agx_tilebuffer_set_drm_cmd(struct drm_asahi_cmd_render *c,
+                           const struct agx_tilebuffer_layout *layout)
+{
+   c->utile_width_px = layout->tile_size >= 32 * 16 ? 32 : 16;
+   c->utile_height_px = layout->tile_size <= 32 * 16 ? 16 : 32;
+}
 
 /*
  * _offset_B is undefined for non-spilled render targets. This safe accessor
@@ -87,25 +94,21 @@ struct agx_tilebuffer_layout
 agx_build_tilebuffer_layout(const enum pipe_format *formats, uint8_t nr_cbufs,
                             uint8_t nr_samples, bool layered);
 
+void agx_tilebuffer_set_samples(struct agx_tilebuffer_layout *tib,
+                                unsigned nr_samples);
+
 bool agx_nir_lower_tilebuffer(struct nir_shader *shader,
                               struct agx_tilebuffer_layout *tib,
                               uint8_t *colormasks, unsigned *bindless_base,
-                              bool *translucent);
+                              struct nir_def *write_samples, bool *translucent);
 
 bool agx_nir_lower_to_per_sample(struct nir_shader *shader);
 
 bool agx_nir_lower_monolithic_msaa(struct nir_shader *shader,
                                    uint8_t nr_samples);
 
-bool agx_nir_lower_sample_intrinsics(struct nir_shader *shader);
-
-bool agx_nir_lower_alpha_to_coverage(struct nir_shader *shader,
-                                     uint8_t nr_samples);
-
-bool agx_nir_lower_alpha_to_one(struct nir_shader *shader);
-
-void agx_usc_tilebuffer(struct agx_usc_builder *b,
-                        struct agx_tilebuffer_layout *tib);
+bool agx_nir_lower_sample_intrinsics(struct nir_shader *shader,
+                                     bool ignore_sample_mask_without_msaa);
 
 uint32_t agx_tilebuffer_total_size(struct agx_tilebuffer_layout *tib);
 
@@ -114,6 +117,8 @@ agx_tilebuffer_physical_format(struct agx_tilebuffer_layout *tib, unsigned rt);
 
 bool agx_tilebuffer_supports_mask(struct agx_tilebuffer_layout *tib,
                                   unsigned rt);
+
+void agx_tilebuffer_pack_usc(struct agx_tilebuffer_layout *tib);
 
 #ifdef __cplusplus
 } /* extern C */

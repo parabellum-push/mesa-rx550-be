@@ -23,7 +23,7 @@ struct PerfRecord {
    /// Timestamp in the GPU clock domain
    uint64_t timestamp;
 
-   /// drm_i915_perf_record_header + report data
+   /// intel_perf_record_header + report data
    std::vector<uint8_t> data;
 };
 
@@ -51,6 +51,7 @@ class IntelDriver : public Driver
    uint64_t gpu_timestamp() const override;
    bool cpu_gpu_timestamp(uint64_t &cpu_timestamp,
                           uint64_t &gpu_timestamp) const override;
+   uint32_t classify_perfetto_counter_grp(const char *category);
 
    private:
    /// @brief Requests the next perf sample

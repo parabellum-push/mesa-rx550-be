@@ -29,7 +29,6 @@
 #include "vpe10_cm_common.h"
 #include "fixed31_32.h"
 #include "conversion.h"
-#include "color_pwl.h"
 
 #define CTX_BASE mpc
 #define CTX      vpe10_mpc
@@ -58,6 +57,13 @@ static struct mpc_funcs mpc_funcs = {
     .set_blend_lut               = vpe10_mpc_set_blend_lut,
     .program_movable_cm          = vpe10_mpc_program_movable_cm,
     .program_crc                 = vpe10_mpc_program_crc,
+    .attach_3dlut_to_mpc_inst    = NULL,
+    .set_gamut_remap2            = NULL,
+    .update_3dlut_fl_bias_scale  = NULL,
+    .program_mpc_3dlut_fl_config = NULL,
+    .program_mpc_3dlut_fl        = NULL,
+    .shaper_bypass               = NULL,
+    .program_shaper_indirect     = NULL,
 };
 
 void vpe10_construct_mpc(struct vpe_priv *vpe_priv, struct mpc *mpc)
@@ -76,23 +82,8 @@ void vpe10_mpc_program_mpcc_mux(struct mpc *mpc, enum mpc_mpccid mpcc_idx,
 
     REG_SET(VPMPCC_TOP_SEL, 0, VPMPCC_TOP_SEL, topsel);
     REG_SET(VPMPCC_BOT_SEL, 0, VPMPCC_BOT_SEL, botsel);
-    REG_SET(VPMPC_OUT0_MUX, 0, VPMPC_OUT_MUX, outmux);
+    REG_SET(VPMPC_OUT_MUX, 0, VPMPC_OUT_MUX, outmux);
     REG_SET(VPMPCC_VPOPP_ID, 0, VPMPCC_VPOPP_ID, oppid);
-
-    /* program mux and MPCC_MODE */
-    if (mpc->vpe_priv->init.debug.mpc_bypass) {
-        REG_UPDATE(VPMPCC_CONTROL, VPMPCC_MODE, MPCC_BLEND_MODE_BYPASS);
-    } else if (botsel != MPC_MUX_BOTSEL_DISABLE) {
-        // ERROR: Actually VPE10 only supports 1 MPCC so botsel should always disable
-        VPE_ASSERT(0);
-        REG_UPDATE(VPMPCC_CONTROL, VPMPCC_MODE, MPCC_BLEND_MODE_TOP_BOT_BLENDING);
-    } else {
-        // single layer, use Top layer bleneded with background color
-        if (topsel != MPC_MUX_TOPSEL_DISABLE)
-            REG_UPDATE(VPMPCC_CONTROL, VPMPCC_MODE, MPCC_BLEND_MODE_TOP_LAYER_ONLY);
-        else // both layer disabled, pure bypass mode
-            REG_UPDATE(VPMPCC_CONTROL, VPMPCC_MODE, MPCC_BLEND_MODE_BYPASS);
-    }
 }
 
 void vpe10_mpc_program_mpcc_blending(
@@ -105,11 +96,12 @@ void vpe10_mpc_program_mpcc_blending(
 
     VPE_ASSERT(mpcc_idx == MPC_MPCCID_0);
 
-    REG_UPDATE_7(VPMPCC_CONTROL, VPMPCC_ALPHA_BLND_MODE, blnd_cfg->alpha_mode,
-        VPMPCC_ALPHA_MULTIPLIED_MODE, blnd_cfg->pre_multiplied_alpha,
-        VPMPCC_BLND_ACTIVE_OVERLAP_ONLY, blnd_cfg->overlap_only, VPMPCC_GLOBAL_ALPHA,
-        blnd_cfg->global_alpha, VPMPCC_GLOBAL_GAIN, blnd_cfg->global_gain, VPMPCC_BG_BPC,
-        blnd_cfg->background_color_bpc, VPMPCC_BOT_GAIN_MODE, blnd_cfg->bottom_gain_mode);
+    REG_SET_8(VPMPCC_CONTROL, REG_DEFAULT(VPMPCC_CONTROL), VPMPCC_MODE, blnd_cfg->blend_mode,
+        VPMPCC_ALPHA_BLND_MODE, blnd_cfg->alpha_mode, VPMPCC_ALPHA_MULTIPLIED_MODE,
+        blnd_cfg->pre_multiplied_alpha, VPMPCC_BLND_ACTIVE_OVERLAP_ONLY, blnd_cfg->overlap_only,
+        VPMPCC_GLOBAL_ALPHA, blnd_cfg->global_alpha, VPMPCC_GLOBAL_GAIN, blnd_cfg->global_gain,
+        VPMPCC_BG_BPC, blnd_cfg->background_color_bpc, VPMPCC_BOT_GAIN_MODE,
+        blnd_cfg->bottom_gain_mode);
 
     REG_SET(VPMPCC_TOP_GAIN, 0, VPMPCC_TOP_GAIN, blnd_cfg->top_gain);
     REG_SET(VPMPCC_BOT_GAIN_INSIDE, 0, VPMPCC_BOT_GAIN_INSIDE, blnd_cfg->bottom_inside_gain);
@@ -193,13 +185,16 @@ void vpe10_mpc_power_on_ogam_lut(struct mpc *mpc, bool power_on)
      *
      * Memory low power mode is controlled during MPC OGAM LUT init.
      */
-    REG_UPDATE(VPMPCC_MEM_PWR_CTRL, VPMPCC_OGAM_MEM_PWR_DIS, power_on ? 1 : 0);
+    REG_SET(VPMPCC_MEM_PWR_CTRL, REG_DEFAULT(VPMPCC_MEM_PWR_CTRL), VPMPCC_OGAM_MEM_PWR_DIS,
+        power_on ? 1 : 0);
 
-    /* Wait for memory to be powered on - we won't be able to write to it otherwise. */
+    /* Wait for memory to be powered on - we will not be able to write to it otherwise. */
     if (power_on) {
         // dummy write as delay in power up
-        REG_UPDATE(VPMPCC_MEM_PWR_CTRL, VPMPCC_OGAM_MEM_PWR_DIS, power_on ? 1 : 0);
-        REG_UPDATE(VPMPCC_MEM_PWR_CTRL, VPMPCC_OGAM_MEM_PWR_DIS, power_on ? 1 : 0);
+        REG_SET(VPMPCC_MEM_PWR_CTRL, REG_DEFAULT(VPMPCC_MEM_PWR_CTRL), VPMPCC_OGAM_MEM_PWR_DIS,
+            power_on ? 1 : 0);
+        REG_SET(VPMPCC_MEM_PWR_CTRL, REG_DEFAULT(VPMPCC_MEM_PWR_CTRL), VPMPCC_OGAM_MEM_PWR_DIS,
+            power_on ? 1 : 0);
     }
 }
 
@@ -210,7 +205,7 @@ void vpe10_mpc_set_output_csc(
     struct color_matrices_reg ocsc_regs;
 
     REG_SET(VPMPC_OUT_CSC_COEF_FORMAT, 0, VPMPC_OCSC0_COEF_FORMAT, 0);
-    REG_SET(VPMPC_OUT0_CSC_MODE, 0, VPMPC_OCSC_MODE, ocsc_mode);
+    REG_SET(VPMPC_OUT_CSC_MODE, 0, VPMPC_OCSC_MODE, ocsc_mode);
 
     if (ocsc_mode == MPC_OUTPUT_CSC_DISABLE)
         return;
@@ -224,8 +219,8 @@ void vpe10_mpc_set_output_csc(
     ocsc_regs.masks.csc_c12  = REG_FIELD_MASK(VPMPC_OCSC_C12_A);
 
     if (ocsc_mode == MPC_OUTPUT_CSC_COEF_A) {
-        ocsc_regs.csc_c11_c12 = REG_OFFSET(VPMPC_OUT0_CSC_C11_C12_A);
-        ocsc_regs.csc_c33_c34 = REG_OFFSET(VPMPC_OUT0_CSC_C33_C34_A);
+        ocsc_regs.csc_c11_c12 = REG_OFFSET(VPMPC_OUT_CSC_C11_C12_A);
+        ocsc_regs.csc_c33_c34 = REG_OFFSET(VPMPC_OUT_CSC_C33_C34_A);
     } else {
         VPE_ASSERT(0);
         return;
@@ -243,7 +238,7 @@ void vpe10_mpc_set_ocsc_default(struct mpc *mpc, enum vpe_surface_pixel_format p
     const uint16_t           *regval = NULL;
 
     REG_SET(VPMPC_OUT_CSC_COEF_FORMAT, 0, VPMPC_OCSC0_COEF_FORMAT, 0);
-    REG_SET(VPMPC_OUT0_CSC_MODE, 0, VPMPC_OCSC_MODE, ocsc_mode);
+    REG_SET(VPMPC_OUT_CSC_MODE, 0, VPMPC_OCSC_MODE, ocsc_mode);
 
     if (ocsc_mode == MPC_OUTPUT_CSC_DISABLE)
         return;
@@ -258,8 +253,8 @@ void vpe10_mpc_set_ocsc_default(struct mpc *mpc, enum vpe_surface_pixel_format p
     ocsc_regs.masks.csc_c12  = REG_FIELD_MASK(VPMPC_OCSC_C12_A);
 
     if (ocsc_mode == MPC_OUTPUT_CSC_COEF_A) {
-        ocsc_regs.csc_c11_c12 = REG_OFFSET(VPMPC_OUT0_CSC_C11_C12_A);
-        ocsc_regs.csc_c33_c34 = REG_OFFSET(VPMPC_OUT0_CSC_C33_C34_A);
+        ocsc_regs.csc_c11_c12 = REG_OFFSET(VPMPC_OUT_CSC_C11_C12_A);
+        ocsc_regs.csc_c33_c34 = REG_OFFSET(VPMPC_OUT_CSC_C33_C34_A);
     } else {
         VPE_ASSERT(0);
         return;
@@ -374,7 +369,7 @@ static void vpe10_mpc_program_luta(struct mpc *mpc, const struct pwl_params *par
 }
 
 static void vpe10_mpc_program_ogam_pwl(
-    struct mpc *mpc, const struct pwl_result_data *rgb, uint32_t num)
+    struct mpc *mpc, const struct pwl_result_data *rgb, uint32_t num, uint8_t ogam_lut_host_sel)
 {
     PROGRAM_ENTRY();
 
@@ -387,21 +382,27 @@ static void vpe10_mpc_program_ogam_pwl(
             REG_OFFSET(VPMPCC_OGAM_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_OGAM_LUT_DATA),
             REG_FIELD_MASK(VPMPCC_OGAM_LUT_DATA), CM_PWL_R);
     } else {
-        REG_UPDATE(VPMPCC_OGAM_LUT_CONTROL, VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 4);
+        REG_SET_2(VPMPCC_OGAM_LUT_CONTROL,
+            0, // disable READ_DBG, set CONFIG_MODE to diff start/end mode implicitly
+            VPMPCC_OGAM_LUT_HOST_SEL, ogam_lut_host_sel, VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 4);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_red, num,
             REG_OFFSET(VPMPCC_OGAM_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_OGAM_LUT_DATA),
             REG_FIELD_MASK(VPMPCC_OGAM_LUT_DATA), CM_PWL_R);
 
         REG_SET(VPMPCC_OGAM_LUT_INDEX, 0, VPMPCC_OGAM_LUT_INDEX, 0);
-        REG_UPDATE(VPMPCC_OGAM_LUT_CONTROL, VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 2);
+        REG_SET_2(VPMPCC_OGAM_LUT_CONTROL,
+            0, // disable READ_DBG, set CONFIG_MODE to diff start/end mode implicitly
+            VPMPCC_OGAM_LUT_HOST_SEL, ogam_lut_host_sel, VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 2);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_green, num,
             REG_OFFSET(VPMPCC_OGAM_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_OGAM_LUT_DATA),
             REG_FIELD_MASK(VPMPCC_OGAM_LUT_DATA), CM_PWL_G);
 
         REG_SET(VPMPCC_OGAM_LUT_INDEX, 0, VPMPCC_OGAM_LUT_INDEX, 0);
-        REG_UPDATE(VPMPCC_OGAM_LUT_CONTROL, VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 1);
+        REG_SET_2(VPMPCC_OGAM_LUT_CONTROL,
+            0, // disable READ_DBG, set CONFIG_MODE to diff start/end mode implicitly
+            VPMPCC_OGAM_LUT_HOST_SEL, ogam_lut_host_sel, VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 1);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_blue, num,
             REG_OFFSET(VPMPCC_OGAM_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_OGAM_LUT_DATA),
@@ -412,6 +413,7 @@ static void vpe10_mpc_program_ogam_pwl(
 void vpe10_mpc_set_output_gamma(struct mpc *mpc, const struct pwl_params *params)
 {
     PROGRAM_ENTRY();
+    uint8_t ogam_lut_host_sel;
 
     if (vpe_priv->init.debug.cm_in_bypass ||                  // debug option: put CM in bypass mode
         vpe_priv->init.debug.bypass_ogam || params == NULL) { // disable OGAM
@@ -426,16 +428,17 @@ void vpe10_mpc_set_output_gamma(struct mpc *mpc, const struct pwl_params *params
     mpc->funcs->power_on_ogam_lut(mpc, true);
 
     // configure_ogam_lut as LUT_A and all RGB channels to be written
+    ogam_lut_host_sel = RAM_LUT_A;
     REG_SET_2(VPMPCC_OGAM_LUT_CONTROL,
         0, // disable READ_DBG, set CONFIG_MODE to diff start/end mode implicitly
-        VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 7, VPMPCC_OGAM_LUT_HOST_SEL, RAM_LUT_A);
+        VPMPCC_OGAM_LUT_WRITE_COLOR_MASK, 7, VPMPCC_OGAM_LUT_HOST_SEL, ogam_lut_host_sel);
 
     REG_SET(VPMPCC_OGAM_LUT_INDEX, 0, VPMPCC_OGAM_LUT_INDEX, 0);
 
     // Always program LUTA in VPE10
     vpe10_mpc_program_luta(mpc, params);
 
-    vpe10_mpc_program_ogam_pwl(mpc, params->rgb_resulted, params->hw_points_num);
+    vpe10_mpc_program_ogam_pwl(mpc, params->rgb_resulted, params->hw_points_num, ogam_lut_host_sel);
 
     // Assume we prefer to enable_mem_low_power
     if (vpe_priv->init.debug.enable_mem_low_power.bits.mpc)
@@ -600,7 +603,6 @@ void vpe10_mpc_power_on_1dlut_shaper_3dlut(struct mpc *mpc, bool power_on)
     if (power_on && vpe_priv->init.debug.enable_mem_low_power.bits.mpc) {
         // REG_WAIT(VPMPCC_MCM_MEM_PWR_CTRL, VPMPCC_MCM_SHAPER_MEM_PWR_STATE, 0, 1, max_retries);
         //  Use two REG_SET instead of wait for State
-        //  TODO: Confirm if this delay is enough
         REG_SET_3(VPMPCC_MCM_MEM_PWR_CTRL, REG_DEFAULT(VPMPCC_MCM_MEM_PWR_CTRL),
             VPMPCC_MCM_SHAPER_MEM_PWR_DIS, power_on == true ? 1 : 0, VPMPCC_MCM_3DLUT_MEM_PWR_DIS,
             power_on == true ? 1 : 0, VPMPCC_MCM_1DLUT_MEM_PWR_DIS, power_on == true ? 1 : 0);
@@ -640,23 +642,16 @@ bool vpe10_mpc_program_shaper(struct mpc *mpc, const struct pwl_params *params)
     return true;
 }
 
-static void vpe10_mpc_select_3dlut_ram(
-    struct mpc *mpc, enum vpe_lut_mode mode, bool is_color_channel_12bits)
+static void vpe10_mpc_select_3dlut_ram_and_mask(struct mpc *mpc, enum vpe_lut_mode mode,
+    bool is_color_channel_12bits, uint32_t ram_selection_mask)
 {
     PROGRAM_ENTRY();
 
     VPE_ASSERT(mode == LUT_RAM_A);
 
-    REG_UPDATE_2(VPMPCC_MCM_3DLUT_READ_WRITE_CONTROL, VPMPCC_MCM_3DLUT_RAM_SEL,
-        mode == LUT_RAM_A ? 0 : 1, VPMPCC_MCM_3DLUT_30BIT_EN, is_color_channel_12bits ? 0 : 1);
-}
-
-static void vpe10_mpc_select_3dlut_ram_mask(struct mpc *mpc, uint32_t ram_selection_mask)
-{
-    PROGRAM_ENTRY();
-
-    REG_UPDATE(
-        VPMPCC_MCM_3DLUT_READ_WRITE_CONTROL, VPMPCC_MCM_3DLUT_WRITE_EN_MASK, ram_selection_mask);
+    REG_SET_3(VPMPCC_MCM_3DLUT_READ_WRITE_CONTROL, REG_DEFAULT(VPMPCC_MCM_3DLUT_READ_WRITE_CONTROL),
+        VPMPCC_MCM_3DLUT_RAM_SEL, mode == LUT_RAM_A ? 0 : 1, VPMPCC_MCM_3DLUT_30BIT_EN,
+        is_color_channel_12bits ? 0 : 1, VPMPCC_MCM_3DLUT_WRITE_EN_MASK, ram_selection_mask);
     REG_SET(VPMPCC_MCM_3DLUT_INDEX, 0, VPMPCC_MCM_3DLUT_INDEX, 0);
 }
 
@@ -733,7 +728,7 @@ static void vpe10_mpc_set3dlut_ram12_indirect(
 
     uint32_t data_array_size = (entries / 2 * 3); // DW size of config data array, actual size
 
-    config_writer_set_type(config_writer, CONFIG_TYPE_INDIRECT);
+    config_writer_set_type(config_writer, CONFIG_TYPE_INDIRECT, mpc->inst);
 
     // Optimized by single VPEP indirect config packet
     // Fill the 3dLut array pointer
@@ -744,7 +739,7 @@ static void vpe10_mpc_set3dlut_ram12_indirect(
         config_writer, REG_OFFSET(VPMPCC_MCM_3DLUT_INDEX), 0, REG_OFFSET(VPMPCC_MCM_3DLUT_DATA));
 
     // restore back to direct
-    config_writer_set_type(config_writer, CONFIG_TYPE_DIRECT);
+    config_writer_set_type(config_writer, CONFIG_TYPE_DIRECT, mpc->inst);
 }
 
 static void vpe10_mpc_set3dlut_ram10(struct mpc *mpc, const struct vpe_rgb *lut, uint32_t entries)
@@ -802,7 +797,7 @@ static void vpe10_mpc_set3dlut_ram10_indirect(
     // DW0: R1<<22 | G1<<12 | B1 <<2
     //...
 
-    config_writer_set_type(config_writer, CONFIG_TYPE_INDIRECT);
+    config_writer_set_type(config_writer, CONFIG_TYPE_INDIRECT, mpc->inst);
 
     // Optimized by single VPEP indirect config packet
     // Fill the 3dLut array pointer
@@ -813,7 +808,7 @@ static void vpe10_mpc_set3dlut_ram10_indirect(
         config_writer, REG_OFFSET(VPMPCC_MCM_3DLUT_INDEX), 0, REG_OFFSET(VPMPCC_MCM_3DLUT_DATA));
 
     // resume back to direct
-    config_writer_set_type(config_writer, CONFIG_TYPE_DIRECT);
+    config_writer_set_type(config_writer, CONFIG_TYPE_DIRECT, mpc->inst);
 }
 
 static void vpe10_mpc_set_3dlut_mode(
@@ -857,7 +852,7 @@ void vpe10_mpc_program_3dlut(struct mpc *mpc, const struct tetrahedral_params *p
     // always use LUT_RAM_A except for bypass mode which is not the case here
     mode = LUT_RAM_A;
 
-    is_17x17x17             = !params->use_tetrahedral_9;
+    is_17x17x17             = (params->lut_dim == LUT_DIM_17);
     is_12bits_color_channel = params->use_12bits;
     if (is_17x17x17) {
         lut0      = params->tetrahedral_17.lut0;
@@ -875,30 +870,29 @@ void vpe10_mpc_program_3dlut(struct mpc *mpc, const struct tetrahedral_params *p
         lut_size  = sizeof(params->tetrahedral_9.lut1) / sizeof(params->tetrahedral_9.lut1[0]);
     }
 
-    vpe10_mpc_select_3dlut_ram(mpc, mode, is_12bits_color_channel);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x1);
     // set mask to LUT0
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x1);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12(mpc, lut0, lut_size0);
     else
         vpe10_mpc_set3dlut_ram10(mpc, lut0, lut_size0);
 
     // set mask to LUT1
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x2);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x2);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12(mpc, lut1, lut_size);
     else
         vpe10_mpc_set3dlut_ram10(mpc, lut1, lut_size);
 
     // set mask to LUT2
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x4);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x4);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12(mpc, lut2, lut_size);
     else
         vpe10_mpc_set3dlut_ram10(mpc, lut2, lut_size);
 
     // set mask to LUT3
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x8);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x8);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12(mpc, lut3, lut_size);
     else
@@ -928,11 +922,12 @@ bool vpe10_mpc_program_3dlut_indirect(struct mpc *mpc,
     uint64_t                     lut3_gpuva;
     uint32_t                     lut_size0;
     uint32_t                     lut_size;
-    struct tetrahedral_17x17x17 *tetra17 = NULL;
-    struct tetrahedral_9x9x9    *tetra9  = NULL;
+    // see struct tetrahedral_17x17x17 / tetrahedral_9x9x9 definition
+    const uint32_t tetra17_lut_size = 1228;
+    const uint32_t tetra9_lut_size  = 182;
 
     // make sure it is in DIRECT type
-    config_writer_set_type(config_writer, CONFIG_TYPE_DIRECT);
+    config_writer_set_type(config_writer, CONFIG_TYPE_DIRECT, mpc->inst);
 
     if (lut0_3_buf == NULL) {
         vpe10_mpc_set_3dlut_mode(mpc, LUT_BYPASS, false);
@@ -951,42 +946,40 @@ bool vpe10_mpc_program_3dlut_indirect(struct mpc *mpc,
         lut1_gpuva = lut0_3_buf->gpu_va + (uint64_t)(offsetof(struct tetrahedral_17x17x17, lut1));
         lut2_gpuva = lut0_3_buf->gpu_va + (uint64_t)(offsetof(struct tetrahedral_17x17x17, lut2));
         lut3_gpuva = lut0_3_buf->gpu_va + (uint64_t)(offsetof(struct tetrahedral_17x17x17, lut3));
-        lut_size0  = sizeof(tetra17->lut0) / sizeof(tetra17->lut0[0]);
-        lut_size   = sizeof(tetra17->lut1) / sizeof(tetra17->lut1[0]);
+        lut_size0  = tetra17_lut_size + 1; // lut0 has an extra element (vertex (0,0,0))
+        lut_size   = tetra17_lut_size;
     } else {
         lut0_gpuva = lut0_3_buf->gpu_va;
         lut1_gpuva = lut0_3_buf->gpu_va + (uint64_t)(offsetof(struct tetrahedral_9x9x9, lut1));
         lut2_gpuva = lut0_3_buf->gpu_va + (uint64_t)(offsetof(struct tetrahedral_9x9x9, lut2));
         lut3_gpuva = lut0_3_buf->gpu_va + (uint64_t)(offsetof(struct tetrahedral_9x9x9, lut3));
-        lut_size0  = sizeof(tetra9->lut0) / sizeof(tetra9->lut0[0]);
-        lut_size   = sizeof(tetra9->lut1) / sizeof(tetra9->lut1[0]);
+        lut_size0  = tetra9_lut_size + 1; // lut0 has an extra element (vertex (0,0,0))
+        lut_size   = tetra9_lut_size;
     }
 
-    vpe10_mpc_select_3dlut_ram(mpc, mode, is_12bits_color_channel);
-
     // set mask to LUT0
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x1);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x1);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12_indirect(mpc, lut0_gpuva, lut_size0);
     else
         vpe10_mpc_set3dlut_ram10_indirect(mpc, lut0_gpuva, lut_size0);
 
     // set mask to LUT1
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x2);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x2);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12_indirect(mpc, lut1_gpuva, lut_size);
     else
         vpe10_mpc_set3dlut_ram10_indirect(mpc, lut1_gpuva, lut_size);
 
     // set mask to LUT2
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x4);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x4);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12_indirect(mpc, lut2_gpuva, lut_size);
     else
         vpe10_mpc_set3dlut_ram10_indirect(mpc, lut2_gpuva, lut_size);
 
     // set mask to LUT3
-    vpe10_mpc_select_3dlut_ram_mask(mpc, 0x8);
+    vpe10_mpc_select_3dlut_ram_and_mask(mpc, mode, is_12bits_color_channel, 0x8);
     if (is_12bits_color_channel)
         vpe10_mpc_set3dlut_ram12_indirect(mpc, lut3_gpuva, lut_size);
     else
@@ -1091,14 +1084,15 @@ static void vpe10_mpc_program_1dlut_luta_settings(struct mpc *mpc, const struct 
     vpe10_cm_helper_program_gamcor_xfer_func(config_writer, params, &gam_regs);
 }
 
-static void vpe10_mpc_program_1dlut_pwl(
-    struct mpc *mpc, const struct pwl_result_data *rgb, uint32_t num, enum cm_type gamma_type)
+static void vpe10_mpc_program_1dlut_pwl(struct mpc *mpc, const struct pwl_result_data *rgb,
+    uint32_t num, enum cm_type gamma_type, bool is_ram_a)
 {
     PROGRAM_ENTRY();
 
     uint32_t last_base_value_red;
     uint32_t last_base_value_green;
     uint32_t last_base_value_blue;
+    uint8_t  host_sel = (is_ram_a == true) ? 0 : 1;
 
     if (gamma_type == CM_DEGAM) {
         last_base_value_red = rgb[num].red_reg;
@@ -1116,21 +1110,24 @@ static void vpe10_mpc_program_1dlut_pwl(
             REG_FIELD_MASK(VPMPCC_MCM_1DLUT_LUT_DATA), CM_PWL_R);
     } else {
         REG_SET(VPMPCC_MCM_1DLUT_LUT_INDEX, 0, VPMPCC_MCM_1DLUT_LUT_INDEX, 0);
-        REG_UPDATE(VPMPCC_MCM_1DLUT_LUT_CONTROL, VPMPCC_MCM_1DLUT_LUT_WRITE_COLOR_MASK, 4);
+        REG_SET_2(VPMPCC_MCM_1DLUT_LUT_CONTROL, 0, VPMPCC_MCM_1DLUT_LUT_WRITE_COLOR_MASK, 4,
+            VPMPCC_MCM_1DLUT_LUT_HOST_SEL, host_sel);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_red, num,
             REG_OFFSET(VPMPCC_MCM_1DLUT_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_MCM_1DLUT_LUT_DATA),
             REG_FIELD_MASK(VPMPCC_MCM_1DLUT_LUT_DATA), CM_PWL_R);
 
         REG_SET(VPMPCC_MCM_1DLUT_LUT_INDEX, 0, VPMPCC_MCM_1DLUT_LUT_INDEX, 0);
-        REG_UPDATE(VPMPCC_MCM_1DLUT_LUT_CONTROL, VPMPCC_MCM_1DLUT_LUT_WRITE_COLOR_MASK, 2);
+        REG_SET_2(VPMPCC_MCM_1DLUT_LUT_CONTROL, 0, VPMPCC_MCM_1DLUT_LUT_WRITE_COLOR_MASK, 2,
+            VPMPCC_MCM_1DLUT_LUT_HOST_SEL, host_sel);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_green, num,
             REG_OFFSET(VPMPCC_MCM_1DLUT_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_MCM_1DLUT_LUT_DATA),
             REG_FIELD_MASK(VPMPCC_MCM_1DLUT_LUT_DATA), CM_PWL_G);
 
         REG_SET(VPMPCC_MCM_1DLUT_LUT_INDEX, 0, VPMPCC_MCM_1DLUT_LUT_INDEX, 0);
-        REG_UPDATE(VPMPCC_MCM_1DLUT_LUT_CONTROL, VPMPCC_MCM_1DLUT_LUT_WRITE_COLOR_MASK, 1);
+        REG_SET_2(VPMPCC_MCM_1DLUT_LUT_CONTROL, 0, VPMPCC_MCM_1DLUT_LUT_WRITE_COLOR_MASK, 1,
+            VPMPCC_MCM_1DLUT_LUT_HOST_SEL, host_sel);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_blue, num,
             REG_OFFSET(VPMPCC_MCM_1DLUT_LUT_DATA), REG_FIELD_SHIFT(VPMPCC_MCM_1DLUT_LUT_DATA),
@@ -1143,7 +1140,9 @@ void vpe10_mpc_program_1dlut(struct mpc *mpc, const struct pwl_params *params, e
 {
     PROGRAM_ENTRY();
 
-    if (params == NULL) {
+    if ((params == NULL) ||
+        (vpe_priv->init.debug.bypass_blndgam ==
+            true)) { // the bypass flag is used in debug mode to skip this block entirely
         REG_SET(VPMPCC_MCM_1DLUT_CONTROL, REG_DEFAULT(VPMPCC_MCM_1DLUT_CONTROL),
             VPMPCC_MCM_1DLUT_MODE, 0);
 
@@ -1157,7 +1156,7 @@ void vpe10_mpc_program_1dlut(struct mpc *mpc, const struct pwl_params *params, e
 
     vpe10_mpc_configure_1dlut(mpc, true);
     vpe10_mpc_program_1dlut_luta_settings(mpc, params);
-    vpe10_mpc_program_1dlut_pwl(mpc, params->rgb_resulted, params->hw_points_num, gamma_type);
+    vpe10_mpc_program_1dlut_pwl(mpc, params->rgb_resulted, params->hw_points_num, gamma_type, true);
 
     REG_SET(
         VPMPCC_MCM_1DLUT_CONTROL, REG_DEFAULT(VPMPCC_MCM_1DLUT_CONTROL), VPMPCC_MCM_1DLUT_MODE, 2);
@@ -1209,20 +1208,20 @@ void vpe10_mpc_set_denorm(struct mpc *mpc, int opp_id, enum color_depth output_d
 
     /*program min and max clamp values for the pixel components*/
     if (denorm_clamp) {
-        REG_SET_3(VPMPC_OUT0_DENORM_CONTROL, 0, VPMPC_OUT_DENORM_MODE, denorm_mode,
+        REG_SET_3(VPMPC_OUT_DENORM_CONTROL, 0, VPMPC_OUT_DENORM_MODE, denorm_mode,
             VPMPC_OUT_DENORM_CLAMP_MAX_R_CR, denorm_clamp->clamp_max_r_cr,
             VPMPC_OUT_DENORM_CLAMP_MIN_R_CR, denorm_clamp->clamp_min_r_cr);
-        REG_SET_2(VPMPC_OUT0_DENORM_CLAMP_G_Y, 0, VPMPC_OUT_DENORM_CLAMP_MAX_G_Y,
+        REG_SET_2(VPMPC_OUT_DENORM_CLAMP_G_Y, 0, VPMPC_OUT_DENORM_CLAMP_MAX_G_Y,
             denorm_clamp->clamp_max_g_y, VPMPC_OUT_DENORM_CLAMP_MIN_G_Y,
             denorm_clamp->clamp_min_g_y);
-        REG_SET_2(VPMPC_OUT0_DENORM_CLAMP_B_CB, 0, VPMPC_OUT_DENORM_CLAMP_MAX_B_CB,
+        REG_SET_2(VPMPC_OUT_DENORM_CLAMP_B_CB, 0, VPMPC_OUT_DENORM_CLAMP_MAX_B_CB,
             denorm_clamp->clamp_max_b_cb, VPMPC_OUT_DENORM_CLAMP_MIN_B_CB,
             denorm_clamp->clamp_min_b_cb);
     } else {
-        REG_SET(VPMPC_OUT0_DENORM_CONTROL, REG_DEFAULT(VPMPC_OUT0_DENORM_CONTROL),
+        REG_SET(VPMPC_OUT_DENORM_CONTROL, REG_DEFAULT(VPMPC_OUT_DENORM_CONTROL),
             VPMPC_OUT_DENORM_MODE, denorm_mode);
-        REG_SET_DEFAULT(VPMPC_OUT0_DENORM_CLAMP_G_Y);
-        REG_SET_DEFAULT(VPMPC_OUT0_DENORM_CLAMP_B_CB);
+        REG_SET_DEFAULT(VPMPC_OUT_DENORM_CLAMP_G_Y);
+        REG_SET_DEFAULT(VPMPC_OUT_DENORM_CLAMP_B_CB);
     }
 }
 
@@ -1230,7 +1229,7 @@ void vpe10_mpc_set_out_float_en(struct mpc *mpc, bool float_enable)
 {
     PROGRAM_ENTRY();
 
-    REG_SET(VPMPC_OUT0_FLOAT_CONTROL, 0, VPMPC_OUT_FLOAT_EN, float_enable);
+    REG_SET(VPMPC_OUT_FLOAT_CONTROL, 0, VPMPC_OUT_FLOAT_EN, float_enable);
 }
 
 void vpe10_mpc_program_mpc_out(struct mpc *mpc, enum vpe_surface_pixel_format format)
@@ -1241,28 +1240,35 @@ void vpe10_mpc_program_mpc_out(struct mpc *mpc, enum vpe_surface_pixel_format fo
 }
 
 void vpe10_mpc_set_mpc_shaper_3dlut(
-    struct mpc *mpc, const struct transfer_func *func_shaper, const struct vpe_3dlut *lut3d_func)
+    struct mpc *mpc, struct transfer_func *func_shaper, struct vpe_3dlut *lut3d_func)
 {
-    const struct pwl_params *shaper_lut = NULL;
+    const struct pwl_params         *shaper_lut = NULL;
+    const struct tetrahedral_params *lut3d_params;
+
+    PROGRAM_ENTRY();
+    struct stream_ctx *stream_ctx = &vpe_priv->stream_ctx[vpe_priv->fe_cb_ctx.stream_idx];
+    bool               bypass;
+
     // get the shaper lut params
     if (func_shaper) {
         if (func_shaper->type == TF_TYPE_DISTRIBUTED_POINTS) {
-            vpe10_cm_helper_translate_curve_to_hw_format(
-                func_shaper, &mpc->shaper_params, true); // should init shaper_params first
+            vpe10_cm_helper_translate_curve_to_hw_format(func_shaper, &mpc->shaper_params, true,
+                func_shaper->dirty[mpc->inst]);          // should init shaper_params first
             shaper_lut = &mpc->shaper_params;            // are there shaper prams in dpp instead?
         } else if (func_shaper->type == TF_TYPE_HWPWL) {
             shaper_lut = &func_shaper->pwl;
         }
     }
 
-    mpc->funcs->program_shaper(mpc, shaper_lut);
+    bypass = (!shaper_lut || (func_shaper && func_shaper->type == TF_TYPE_BYPASS));
+    CONFIG_CACHE(func_shaper, stream_ctx, vpe_priv->init.debug.disable_lut_caching, bypass,
+        mpc->funcs->program_shaper(mpc, shaper_lut), mpc->inst);
 
-    if (lut3d_func) {
-        if (lut3d_func->state.bits.initialized)
-            mpc->funcs->program_3dlut(mpc, &lut3d_func->lut_3d);
-        else
-            mpc->funcs->program_3dlut(mpc, NULL);
-    }
+    bypass       = (!lut3d_func || !lut3d_func->state.bits.initialized);
+    lut3d_params = (bypass) ? (NULL) : (&lut3d_func->lut_3d);
+    CONFIG_CACHE(lut3d_func, stream_ctx, vpe_priv->init.debug.disable_lut_caching, bypass,
+        mpc->funcs->program_3dlut(mpc, lut3d_params), mpc->inst);
+
     return;
 }
 
@@ -1270,63 +1276,63 @@ void vpe10_mpc_set_output_transfer_func(struct mpc *mpc, struct output_ctx *outp
 {
     /* program OGAM only for the top pipe*/
     struct pwl_params *params = NULL;
-    bool               ret    = false;
+    bool               bypass;
 
-    if (ret == false && output_ctx->output_tf) {
+    PROGRAM_ENTRY();
+
+    if (output_ctx->output_tf) {
         // No support HWPWL as it is legacy
         if (output_ctx->output_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
-            if (!output_ctx->output_tf->use_pre_calculated_table ||
-                mpc->vpe_priv->init.debug.force_tf_calculation) {
-                vpe10_cm_helper_translate_curve_to_hw_format( // this is cm3.0 version instead 1.0
-                                                              // as DCN3.2
-                    output_ctx->output_tf, &mpc->regamma_params, false);
-                params = &mpc->regamma_params;
-            } else {
-                vpe10_cm_get_tf_pwl_params(output_ctx->output_tf, &params, CM_REGAM);
-                VPE_ASSERT(params != NULL);
-                if (params == NULL)
-                    return;
-            }
+            vpe10_cm_helper_translate_curve_to_hw_format( // this is cm3.0 version instead 1.0
+                                                          // as DCN3.2
+                output_ctx->output_tf, &mpc->regamma_params, false, output_ctx->output_tf->dirty[mpc->inst]);
+            params = &mpc->regamma_params;
         }
         /* there are no ROM LUTs in OUTGAM */
         if (output_ctx->output_tf->type == TF_TYPE_PREDEFINED)
             VPE_ASSERT(0);
     }
-    mpc->funcs->set_output_gamma(mpc, params);
+
+    bypass = (!output_ctx->output_tf || (output_ctx->output_tf->type == TF_TYPE_BYPASS) ||
+              vpe_priv->init.debug.cm_in_bypass || vpe_priv->init.debug.bypass_ogam);
+
+    CONFIG_CACHE(output_ctx->output_tf, output_ctx, vpe_priv->init.debug.disable_lut_caching,
+        bypass, mpc->funcs->set_output_gamma(mpc, params), mpc->inst);
 }
 
-void vpe10_mpc_set_blend_lut(struct mpc *mpc, const struct transfer_func *blend_tf)
+void vpe10_mpc_set_blend_lut(struct mpc *mpc, struct transfer_func *blend_tf)
 {
     struct pwl_params *blend_lut = NULL;
     enum cm_type gamma_type = CM_DEGAM;
+
+    PROGRAM_ENTRY();
+
+    struct stream_ctx *stream_ctx = &vpe_priv->stream_ctx[vpe_priv->fe_cb_ctx.stream_idx];
+    bool               bypass;
 
     if (blend_tf && blend_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
 
         gamma_type = blend_tf->cm_gamma_type;
 
-        if (blend_tf->use_pre_calculated_table) {
-            vpe10_cm_get_tf_pwl_params(blend_tf, &blend_lut, gamma_type);
+        if (gamma_type == CM_DEGAM)
+            vpe10_cm_helper_translate_curve_to_degamma_hw_format(
+                blend_tf, &mpc->blender_params, blend_tf->dirty[mpc->inst]); 
+        else
+            vpe10_cm_helper_translate_curve_to_hw_format(
+                blend_tf, &mpc->blender_params, false, blend_tf->dirty[mpc->inst]);
 
-            VPE_ASSERT(blend_lut != NULL);
-            if (blend_lut == NULL)
-                return;
-        } else {
-            if (gamma_type == CM_DEGAM)
-                vpe10_cm_helper_translate_curve_to_degamma_hw_format(
-                    blend_tf, &mpc->blender_params); // TODO should init regamma_params first
-            else
-                vpe10_cm_helper_translate_curve_to_hw_format(
-                    blend_tf, &mpc->blender_params, false);
-
-            blend_lut = &mpc->blender_params;
-        }
+        blend_lut = &mpc->blender_params;
     }
 
-    mpc->funcs->program_1dlut(mpc, blend_lut, gamma_type);
+    bypass =
+        ((!blend_tf) || (blend_tf->type == TF_TYPE_BYPASS) || vpe_priv->init.debug.bypass_blndgam);
+
+    CONFIG_CACHE(blend_tf, stream_ctx, vpe_priv->init.debug.disable_lut_caching, bypass,
+        mpc->funcs->program_1dlut(mpc, blend_lut, gamma_type), mpc->inst);
 }
 
-bool vpe10_mpc_program_movable_cm(struct mpc *mpc, const struct transfer_func *func_shaper,
-    const struct vpe_3dlut *lut3d_func, const struct transfer_func *blend_tf, bool afterblend)
+bool vpe10_mpc_program_movable_cm(struct mpc *mpc, struct transfer_func *func_shaper,
+    struct vpe_3dlut *lut3d_func, struct transfer_func *blend_tf, bool afterblend)
 {
     struct pwl_params *params = NULL;
     bool               ret    = false;
@@ -1342,6 +1348,6 @@ bool vpe10_mpc_program_movable_cm(struct mpc *mpc, const struct transfer_func *f
 void vpe10_mpc_program_crc(struct mpc *mpc, bool enable)
 {
     PROGRAM_ENTRY();
-    REG_UPDATE(VPMPC_CRC_CTRL, VPMPC_CRC_EN, enable);
+    REG_SET(VPMPC_CRC_CTRL, REG_DEFAULT(VPMPC_CRC_CTRL), VPMPC_CRC_EN, enable);
 }
 

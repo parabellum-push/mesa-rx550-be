@@ -1,48 +1,57 @@
 # Copyright © 2018 Rob Clark
 # Copyright © 2019 Collabora
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
-inc_panfrost_hw = include_directories([
-   'include'
-])
+# SPDX-License-Identifier: MIT
 
 inc_panfrost = include_directories([
-   '.', 'include', 'shared', 'midgard', 'compiler', 'lib'
+   '.', 'shared', 'compiler', 'lib', 'libpan', 'model',
 ])
 
 compile_args_panfrost = [
   '-Wno-pointer-arith'
 ]
 
+if with_panfrost_rust
+  panfrost_rust_args = [
+    rust_global_args,
+    rust_2024_lint_args,
+    '-Aclippy::identity_op',
+    '-Aclippy::len_zero',
+    '-Aclippy::manual_range_contains',
+    # normally this is a good one, but we use it where the "better" code is
+    # worse
+    '-Aclippy::needless_range_loop',
+    '-Aclippy::redundant_field_names',
+    '-Aclippy::upper_case_acronyms',
+    '-Aclippy::vec_box',
+    '-Aclippy::write_with_newline',
+    # warns about public function might dereference a raw pointer, but nothing
+    # is actually public here
+    '-Aclippy::not_unsafe_ptr_arg_deref',
+    '-Anon_snake_case',
+  ]
+endif
+
 subdir('shared')
-subdir('util')
-subdir('midgard')
+subdir('model')
+
+if with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost')
+   subdir('genxml')
+   subdir('lib')
+endif
+
 subdir('compiler')
 
+if with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost')
+  subdir('clc')
+endif
+
 if with_gallium_panfrost or with_panfrost_vk
-   subdir('lib')
+   subdir('libpan')
    subdir('perf')
 endif
 
 files_bifrost = files(
-  'compiler/cmdline.c',
+  'compiler/bifrost/cmdline.c',
 )
 
 bifrost_compiler = executable(
@@ -52,7 +61,6 @@ bifrost_compiler = executable(
     inc_include,
     inc_src,
     inc_panfrost,
-    inc_panfrost_hw,
  ],
   dependencies : [
     idep_nir,
@@ -61,7 +69,7 @@ bifrost_compiler = executable(
     dep_libdrm,
   ],
   link_with : [
-    libpanfrost_bifrost,
+    libpanfrost_compiler,
   ],
   build_by_default : with_tools.contains('panfrost')
 )

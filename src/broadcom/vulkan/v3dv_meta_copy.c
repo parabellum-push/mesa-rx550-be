@@ -21,12 +21,21 @@
  * IN THE SOFTWARE.
  */
 
-#include "v3dv_private.h"
+#include "v3dv_device.h"
+#include "v3dv_cmd_buffer.h"
+#include "v3dv_image.h"
+#include "v3dv_entrypoints.h"
+#include "v3dv_version_dispatch.h"
+#include "vk_format.h"
+#include "vk_shader_module.h"
 #include "v3dv_meta_common.h"
 
 #include "compiler/nir/nir_builder.h"
 #include "util/u_pack_color.h"
 #include "vk_common_entrypoints.h"
+
+#define V3D_VERSION 42
+#include "v3dv_format_table.h"
 
 static uint32_t
 meta_blit_key_hash(const void *key)
@@ -114,6 +123,19 @@ v3dv_meta_blit_init(struct v3dv_device *device)
                                &device->meta.blit.p_layout);
 }
 
+static void
+destroy_meta_blit_pipeline(VkDevice vk_device,
+                           uint64_t obj,
+                           VkAllocationCallbacks *alloc)
+{
+   struct v3dv_meta_blit_pipeline *p =
+      (struct v3dv_meta_blit_pipeline *)(uintptr_t) obj;
+   v3dv_DestroyPipeline(vk_device, p->pipeline, alloc);
+   v3dv_DestroyRenderPass(vk_device, p->pass, alloc);
+   v3dv_DestroyRenderPass(vk_device, p->pass_no_load, alloc);
+   vk_free(alloc, p);
+}
+
 void
 v3dv_meta_blit_finish(struct v3dv_device *device)
 {
@@ -121,11 +143,8 @@ v3dv_meta_blit_finish(struct v3dv_device *device)
 
    for (uint32_t i = 0; i < 3; i++) {
       hash_table_foreach(device->meta.blit.cache[i], entry) {
-         struct v3dv_meta_blit_pipeline *item = entry->data;
-         v3dv_DestroyPipeline(_device, item->pipeline, &device->vk.alloc);
-         v3dv_DestroyRenderPass(_device, item->pass, &device->vk.alloc);
-         v3dv_DestroyRenderPass(_device, item->pass_no_load, &device->vk.alloc);
-         vk_free(&device->vk.alloc, item);
+         destroy_meta_blit_pipeline(_device, (uintptr_t)entry->data,
+                                    &device->vk.alloc);
       }
       _mesa_hash_table_destroy(device->meta.blit.cache[i], NULL);
    }
@@ -227,6 +246,19 @@ v3dv_meta_texel_buffer_copy_init(struct v3dv_device *device)
       &device->meta.texel_buffer_copy.p_layout);
 }
 
+static void
+destroy_meta_texel_buffer_copy_pipeline(VkDevice vk_device,
+                                        uint64_t obj,
+                                        VkAllocationCallbacks *alloc)
+{
+   struct v3dv_meta_texel_buffer_copy_pipeline *p =
+      (struct v3dv_meta_texel_buffer_copy_pipeline *)(uintptr_t) obj;
+   v3dv_DestroyPipeline(vk_device, p->pipeline, alloc);
+   v3dv_DestroyRenderPass(vk_device, p->pass, alloc);
+   v3dv_DestroyRenderPass(vk_device, p->pass_no_load, alloc);
+   vk_free(alloc, p);
+}
+
 void
 v3dv_meta_texel_buffer_copy_finish(struct v3dv_device *device)
 {
@@ -234,11 +266,8 @@ v3dv_meta_texel_buffer_copy_finish(struct v3dv_device *device)
 
    for (uint32_t i = 0; i < 3; i++) {
       hash_table_foreach(device->meta.texel_buffer_copy.cache[i], entry) {
-         struct v3dv_meta_texel_buffer_copy_pipeline *item = entry->data;
-         v3dv_DestroyPipeline(_device, item->pipeline, &device->vk.alloc);
-         v3dv_DestroyRenderPass(_device, item->pass, &device->vk.alloc);
-         v3dv_DestroyRenderPass(_device, item->pass_no_load, &device->vk.alloc);
-         vk_free(&device->vk.alloc, item);
+         destroy_meta_texel_buffer_copy_pipeline(_device, (uintptr_t)entry->data,
+                                                 &device->vk.alloc);
       }
       _mesa_hash_table_destroy(device->meta.texel_buffer_copy.cache[i], NULL);
    }
@@ -259,6 +288,7 @@ get_compatible_tlb_format(VkFormat format)
 {
    switch (format) {
    case VK_FORMAT_R8G8B8A8_SNORM:
+   case VK_FORMAT_B8G8R8A8_SNORM:
       return VK_FORMAT_R8G8B8A8_UINT;
 
    case VK_FORMAT_R8G8_SNORM:
@@ -428,16 +458,26 @@ copy_image_to_buffer_tlb(struct v3dv_cmd_buffer *cmd_buffer,
       return false;
    }
 
+   /* B10G11R11_UFLOAT_PACK32 maps to the TLB's 16F internal type, which
+    * canonicalizes NaN bit patterns when arbitrary 32 bits are
+    * reinterpreted as that format. vkCmdCopyImageToBuffer is a raw byte
+    * copy per spec, so alias the TLB format to R32_UINT.
+    */
+   if (image->vk.format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+      fb_format = VK_FORMAT_R32_UINT;
+
    uint32_t internal_type, internal_bpp;
-   v3dv_X(cmd_buffer->device, get_internal_type_bpp_for_image_aspects)
+   v3d_X((&cmd_buffer->device->devinfo), get_internal_type_bpp_for_image_aspects)
       (fb_format, region->imageSubresource.aspectMask,
        &internal_type, &internal_bpp);
 
    uint32_t num_layers;
-   if (image->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->imageSubresource.layerCount;
-   else
+   if (image->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&image->vk,
+                                                    &region->imageSubresource);
+   } else {
       num_layers = region->imageExtent.depth;
+   }
    assert(num_layers > 0);
 
    struct v3dv_job *job =
@@ -453,16 +493,18 @@ copy_image_to_buffer_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t width = DIV_ROUND_UP(region->imageExtent.width, block_w);
    const uint32_t height = DIV_ROUND_UP(region->imageExtent.height, block_h);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false, true, 1,
-                        internal_bpp, 4 * v3d_internal_bpp_words(internal_bpp),
-                        false);
+   v3dv_job_start_frame(job, width, height, num_layers, false, 1, internal_bpp,
+                        4 * v3d_internal_bpp_words(internal_bpp), false);
 
    struct v3dv_meta_framebuffer framebuffer;
-   v3dv_X(job->device, meta_framebuffer_init)(&framebuffer, fb_format,
+   v3d_X((&job->device->devinfo), meta_framebuffer_init)(&framebuffer, fb_format,
                                               internal_type, &job->frame_tiling);
 
-   v3dv_X(job->device, job_emit_binning_flush)(job);
-   v3dv_X(job->device, meta_emit_copy_image_to_buffer_rcl)
+   v3d_X((&job->device->devinfo), job_emit_binning_flush)(job);
+   if (!v3dv_job_allocate_tile_state(job))
+      return true;
+
+   v3d_X((&job->device->devinfo), meta_emit_copy_image_to_buffer_rcl)
       (job, buffer, image, &framebuffer, region);
 
    v3dv_cmd_buffer_finish_job(cmd_buffer);
@@ -657,7 +699,7 @@ gather_image_to_buffer_info(struct v3dv_cmd_buffer *cmd_buffer,
          buffer_bpp = 1;
          break;
       default:
-         unreachable("unsupported aspect");
+         UNREACHABLE("unsupported aspect");
          return supported;
       };
       break;
@@ -673,7 +715,7 @@ gather_image_to_buffer_info(struct v3dv_cmd_buffer *cmd_buffer,
       src_format = dst_format;
       break;
    default:
-      unreachable("unsupported bit-size");
+      UNREACHABLE("unsupported bit-size");
       return supported;
    };
 
@@ -893,10 +935,12 @@ copy_image_to_buffer_blit(struct v3dv_cmd_buffer *cmd_buffer,
 
    /* Compute layers to copy */
    uint32_t num_layers;
-   if (image->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->imageSubresource.layerCount;
-   else
+   if (image->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&image->vk,
+                                                    &region->imageSubresource);
+   } else {
       num_layers = region->imageExtent.depth;
+   }
    assert(num_layers > 0);
 
    /* Copy requested layers */
@@ -970,7 +1014,7 @@ copy_image_to_buffer_blit(struct v3dv_cmd_buffer *cmd_buffer,
                             &blit_region, VK_FILTER_NEAREST, false);
       if (!handled) {
          /* This is unexpected, we should have a supported blit spec */
-         unreachable("Unable to blit buffer to destination image");
+         UNREACHABLE("Unable to blit buffer to destination image");
          return false;
       }
    }
@@ -1052,10 +1096,12 @@ copy_image_to_buffer_texel_buffer(struct v3dv_cmd_buffer *cmd_buffer,
    handled = true;
 
    uint32_t num_layers;
-   if (src_image->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->imageSubresource.layerCount;
-   else
+   if (src_image->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&src_image->vk,
+                                                    &region->imageSubresource);
+   } else {
       num_layers = region->imageExtent.depth;
+   }
    assert(num_layers > 0);
 
    VkResult result;
@@ -1080,6 +1126,13 @@ copy_image_to_buffer_texel_buffer(struct v3dv_cmd_buffer *cmd_buffer,
    return handled;
 }
 
+static bool
+copy_buffer_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
+                      struct v3dv_image *image,
+                      struct v3dv_buffer *buffer,
+                      const VkBufferImageCopy2 *region,
+                      bool to_buffer);
+
 VKAPI_ATTR void VKAPI_CALL
 v3dv_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
                               const VkCopyImageToBufferInfo2 *info)
@@ -1096,6 +1149,10 @@ v3dv_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
    for (uint32_t i = 0; i < info->regionCount; i++) {
       const VkBufferImageCopy2 *region = &info->pRegions[i];
 
+      if (copy_buffer_image_tfu(cmd_buffer, image, buffer, region,
+                                true /* to_buffer */))
+         continue;
+
       if (copy_image_to_buffer_tlb(cmd_buffer, buffer, image, region))
          continue;
 
@@ -1105,9 +1162,33 @@ v3dv_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
       if (copy_image_to_buffer_texel_buffer(cmd_buffer, buffer, image, region))
          continue;
 
-      unreachable("Unsupported image to buffer copy.");
+      UNREACHABLE("Unsupported image to buffer copy.");
    }
    cmd_buffer->state.is_transfer = false;
+}
+
+/* Return the single-plane TFU-compatible format for the given texel size.
+ * All compatible TFU formats are single-plane; the assert documents that
+ * invariant so callers can use the plane directly.
+ */
+static const struct v3dv_format_plane *
+tfu_format_plane_for_cpp(struct v3dv_device *device, uint32_t cpp)
+{
+   const struct v3dv_format *format =
+      v3dv_get_compatible_tfu_format(device, cpp, NULL);
+   assert(format->plane_count == 1);
+   return &format->planes[0];
+}
+
+/* Return the value to pass as src/dst_padded_height_or_stride to
+ * meta_emit_tfu_job for the given image slice: raster slices use the
+ * row stride; tiled slices use the padded height.
+ */
+static uint32_t
+tfu_slice_stride_arg(const struct v3d_resource_slice *slice)
+{
+   return slice->tiling == V3D_TILING_RASTER ? slice->stride
+                                             : slice->padded_height;
 }
 
 /**
@@ -1125,8 +1206,8 @@ copy_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
       return false;
    }
 
-   /* Destination can't be raster format */
-   if (!dst->tiled)
+   /* Destination can't be raster format on V3D 4.2 */
+   if (cmd_buffer->device->devinfo.ver < 71 && !dst->tiled)
       return false;
 
    /* We can only do full copies, so if the format is D24S8 both aspects need
@@ -1207,13 +1288,13 @@ copy_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
     * to use compatible formats that are supported with the TFU unit.
     */
    assert(dst->planes[dst_plane].cpp == src->planes[src_plane].cpp);
-   const struct v3dv_format *format =
-      v3dv_get_compatible_tfu_format(cmd_buffer->device,
-                                     dst->planes[dst_plane].cpp, NULL);
+   const struct v3dv_format_plane *format_plane =
+      tfu_format_plane_for_cpp(cmd_buffer->device,
+                               dst->planes[dst_plane].cpp);
 
    /* Emit a TFU job for each layer to blit */
    const uint32_t layer_count = dst->vk.image_type != VK_IMAGE_TYPE_3D ?
-      region->dstSubresource.layerCount :
+      vk_image_subresource_layer_count(&dst->vk, &region->dstSubresource) :
       region->extent.depth;
    const uint32_t src_mip_level = region->srcSubresource.mipLevel;
 
@@ -1234,21 +1315,19 @@ copy_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
       const struct v3d_resource_slice *src_slice =
          &src->planes[src_plane].slices[src_mip_level];
 
-      v3dv_X(cmd_buffer->device, meta_emit_tfu_job)(
+      v3d_X((&cmd_buffer->device->devinfo), meta_emit_tfu_job)(
          cmd_buffer,
          dst->planes[dst_plane].mem->bo->handle,
          dst_offset,
          dst_slice->tiling,
-         dst_slice->padded_height,
+         tfu_slice_stride_arg(dst_slice),
          dst->planes[dst_plane].cpp,
          src->planes[src_plane].mem->bo->handle,
          src_offset,
          src_slice->tiling,
-         src_slice->tiling == V3D_TILING_RASTER ?
-                              src_slice->stride : src_slice->padded_height,
+         tfu_slice_stride_arg(src_slice),
          src->planes[src_plane].cpp,
-         /* All compatible TFU formats are single-plane */
-         width, height, &format->planes[0]);
+         width, height, format_plane);
    }
 
    return true;
@@ -1288,6 +1367,21 @@ copy_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
       return false;
    }
 
+   /* We can't do TLB stores of linear D/S */
+   if (!dst->tiled && vk_format_is_depth_or_stencil(fb_format))
+      return false;
+
+   /* B10G11R11_UFLOAT_PACK32 maps to the TLB's 16F internal type, which
+    * canonicalizes NaN bit patterns. vkCmdCopyImage is a raw byte copy
+    * per spec for any pair of texel-size compatible formats, so alias
+    * the TLB format to R32_UINT when either endpoint is B10G11R11 to
+    * preserve all 32 bits through the TLB round-trip.
+    */
+   if (src->vk.format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+       dst->vk.format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+      fb_format = VK_FORMAT_R32_UINT;
+   }
+
    /* From the Vulkan spec, VkImageCopy valid usage:
     *
     *    "If neither the calling command’s srcImage nor the calling command’s
@@ -1298,7 +1392,7 @@ copy_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
           region->dstSubresource.aspectMask ==
           region->srcSubresource.aspectMask);
    uint32_t internal_type, internal_bpp;
-   v3dv_X(cmd_buffer->device, get_internal_type_bpp_for_image_aspects)
+   v3d_X((&cmd_buffer->device->devinfo), get_internal_type_bpp_for_image_aspects)
       (fb_format, region->dstSubresource.aspectMask,
        &internal_type, &internal_bpp);
 
@@ -1309,14 +1403,18 @@ copy_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
     *  extent (for 3D) or layers of the dstSubresource (for non-3D)."
     */
    assert((src->vk.image_type != VK_IMAGE_TYPE_3D ?
-           region->srcSubresource.layerCount : region->extent.depth) ==
+           vk_image_subresource_layer_count(&src->vk, &region->srcSubresource) :
+           region->extent.depth) ==
           (dst->vk.image_type != VK_IMAGE_TYPE_3D ?
-           region->dstSubresource.layerCount : region->extent.depth));
+           vk_image_subresource_layer_count(&dst->vk, &region->dstSubresource) :
+           region->extent.depth));
    uint32_t num_layers;
-   if (dst->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->dstSubresource.layerCount;
-   else
+   if (dst->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&dst->vk,
+                                                    &region->dstSubresource);
+   } else {
       num_layers = region->extent.depth;
+   }
    assert(num_layers > 0);
 
    struct v3dv_job *job =
@@ -1332,16 +1430,19 @@ copy_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t width = DIV_ROUND_UP(region->extent.width, block_w);
    const uint32_t height = DIV_ROUND_UP(region->extent.height, block_h);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false, true, 1,
+   v3dv_job_start_frame(job, width, height, num_layers, false, 1,
                         internal_bpp, 4 * v3d_internal_bpp_words(internal_bpp),
                         src->vk.samples > VK_SAMPLE_COUNT_1_BIT);
 
    struct v3dv_meta_framebuffer framebuffer;
-   v3dv_X(job->device, meta_framebuffer_init)(&framebuffer, fb_format,
+   v3d_X((&job->device->devinfo), meta_framebuffer_init)(&framebuffer, fb_format,
                                               internal_type, &job->frame_tiling);
 
-   v3dv_X(job->device, job_emit_binning_flush)(job);
-   v3dv_X(job->device, meta_emit_copy_image_rcl)(job, dst, src, &framebuffer, region);
+   v3d_X((&job->device->devinfo), job_emit_binning_flush)(job);
+   if (!v3dv_job_allocate_tile_state(job))
+      return true;
+
+   v3d_X((&job->device->devinfo), meta_emit_copy_image_rcl)(job, dst, src, &framebuffer, region);
 
    v3dv_cmd_buffer_finish_job(cmd_buffer);
 
@@ -1396,6 +1497,10 @@ create_image_alias(struct v3dv_cmd_buffer *cmd_buffer,
        v3dv_flag_oom(cmd_buffer, NULL);
        return NULL;
     }
+
+    v3dv_cmd_buffer_add_private_obj(
+       cmd_buffer, (uintptr_t)_image,
+       (v3dv_cmd_buffer_private_obj_destroy_cb)v3dv_DestroyImage);
 
     struct v3dv_image *image = v3dv_image_from_handle(_image);
     image->planes[0].mem = src->planes[0].mem;
@@ -1468,7 +1573,6 @@ copy_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
        */
       assert(src->planes[src_plane].cpp == dst->planes[dst_plane].cpp);
 
-      format = VK_FORMAT_R32G32_UINT;
       switch (src->planes[src_plane].cpp) {
       case 16:
          format = VK_FORMAT_R32G32B32A32_UINT;
@@ -1477,7 +1581,7 @@ copy_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
          format = VK_FORMAT_R16G16B16A16_UINT;
          break;
       default:
-         unreachable("Unsupported compressed format");
+         UNREACHABLE("Unsupported compressed format");
       }
 
       /* Create image views of the src/dst images that we can interpret in
@@ -1493,6 +1597,14 @@ copy_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
 
       dst = create_image_alias(cmd_buffer, dst,
                                dst_scale_w, dst_scale_h, format);
+   } else if (src->planes[src_plane].vk_format ==
+              VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+      /* Sampling B10G11R11_UFLOAT in the blit shader canonicalizes NaN
+       * bit patterns at the 11/11/10-bit float decode step.
+       * vkCmdCopyImage is a raw byte copy per spec, so alias to R32_UINT
+       * for this blit to keep all 32 bits intact.
+       */
+      format = VK_FORMAT_R32_UINT;
    } else {
       format = src->format->planes[src_plane].rt_type != V3D_OUTPUT_IMAGE_FORMAT_NO ?
          src->planes[src_plane].vk_format :
@@ -1500,7 +1612,7 @@ copy_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
       if (format == VK_FORMAT_UNDEFINED)
          return false;
 
-      const struct v3dv_format *f = v3dv_X(cmd_buffer->device, get_format)(format);
+      const struct v3dv_format *f = v3d_X((&cmd_buffer->device->devinfo), get_format)(format);
       assert(f->plane_count < 2);
       if (!f->plane_count || f->planes[0].tex_type == TEXTURE_DATA_FORMAT_NO)
          return false;
@@ -1617,7 +1729,7 @@ copy_image_linear_texel_buffer(struct v3dv_cmd_buffer *cmd_buffer,
       format = VK_FORMAT_R8_UINT;
       break;
    default:
-      unreachable("unsupported bit-size");
+      UNREACHABLE("unsupported bit-size");
       return false;
    }
 
@@ -1699,7 +1811,7 @@ v3dv_CmdCopyImage2(VkCommandBuffer commandBuffer,
          continue;
       if (copy_image_linear_texel_buffer(cmd_buffer, dst, src, region))
          continue;
-      unreachable("Image copy not supported");
+      UNREACHABLE("Image copy not supported");
    }
 
    cmd_buffer->state.is_transfer = false;
@@ -1716,7 +1828,7 @@ v3dv_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
    cmd_buffer->state.is_transfer = true;
 
    for (uint32_t i = 0; i < pCopyBufferInfo->regionCount; i++) {
-      v3dv_X(cmd_buffer->device, meta_copy_buffer)
+      v3d_X((&cmd_buffer->device->devinfo), meta_copy_buffer)
          (cmd_buffer,
           dst_buffer->mem->bo, dst_buffer->mem_offset,
           src_buffer->mem->bo, src_buffer->mem_offset,
@@ -1724,16 +1836,6 @@ v3dv_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
    }
 
    cmd_buffer->state.is_transfer = false;
-}
-
-static void
-destroy_update_buffer_cb(VkDevice _device,
-                         uint64_t pobj,
-                         VkAllocationCallbacks *alloc)
-{
-   V3DV_FROM_HANDLE(v3dv_device, device, _device);
-   struct v3dv_bo *bo = (struct v3dv_bo *)((uintptr_t) pobj);
-   v3dv_bo_free(device, bo);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1749,13 +1851,13 @@ v3dv_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
    struct v3dv_bo *src_bo =
       v3dv_bo_alloc(cmd_buffer->device, dataSize, "vkCmdUpdateBuffer", true);
    if (!src_bo) {
-      fprintf(stderr, "Failed to allocate BO for vkCmdUpdateBuffer.\n");
+      mesa_loge("Failed to allocate BO for vkCmdUpdateBuffer.\n");
       return;
    }
 
    bool ok = v3dv_bo_map(cmd_buffer->device, src_bo, src_bo->size);
    if (!ok) {
-      fprintf(stderr, "Failed to map BO for vkCmdUpdateBuffer.\n");
+      mesa_loge("Failed to map BO for vkCmdUpdateBuffer.\n");
       return;
    }
 
@@ -1771,15 +1873,12 @@ v3dv_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
       .dstOffset = dstOffset,
       .size = dataSize,
    };
-   struct v3dv_job *copy_job =
-      v3dv_X(cmd_buffer->device, meta_copy_buffer)
+   v3d_X((&cmd_buffer->device->devinfo), meta_copy_buffer)
       (cmd_buffer, dst_buffer->mem->bo, dst_buffer->mem_offset,
        src_bo, 0, &region);
 
-   if (copy_job) {
-      v3dv_cmd_buffer_add_private_obj(
-         cmd_buffer, (uint64_t)(uintptr_t)src_bo, destroy_update_buffer_cb);
-   }
+   v3dv_cmd_buffer_add_private_obj(
+      cmd_buffer, (uint64_t)(uintptr_t)src_bo, v3dv_cmd_buffer_destroy_bo_cb);
 
    cmd_buffer->state.is_transfer = false;
 }
@@ -1808,39 +1907,51 @@ v3dv_CmdFillBuffer(VkCommandBuffer commandBuffer,
       size -= size % 4;
    }
 
-   v3dv_X(cmd_buffer->device, meta_fill_buffer)
-      (cmd_buffer, bo, dstOffset, size, data);
+   v3d_X((&cmd_buffer->device->devinfo), meta_fill_buffer)
+      (cmd_buffer, bo, dst_buffer->mem_offset + dstOffset, size, data);
 
    cmd_buffer->state.is_transfer = false;
 }
 
 /**
- * Returns true if the implementation supports the requested operation (even if
- * it failed to process it, for example, due to an out-of-memory error).
+ * Shared TFU implementation for buffer<->image copies. When to_buffer is
+ * false the image is the destination (buffer-to-image); when true the
+ * buffer is the destination (image-to-buffer). Returns true if the
+ * implementation supports the requested operation (even if it failed to
+ * process it, for example, due to an out-of-memory error).
  */
 static bool
-copy_buffer_to_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
-                         struct v3dv_image *image,
-                         struct v3dv_buffer *buffer,
-                         const VkBufferImageCopy2 *region)
+copy_buffer_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
+                      struct v3dv_image *image,
+                      struct v3dv_buffer *buffer,
+                      const VkBufferImageCopy2 *region,
+                      bool to_buffer)
 {
    if (V3D_DBG(DISABLE_TFU)) {
-      perf_debug("Copy buffer to image: TFU disabled, fallbacks could be slower.\n");
+      perf_debug("TFU disabled, fallbacks could be slower: %s.\n",
+                 to_buffer ? "Copy image to buffer"
+                           : "Copy buffer to image");
       return false;
    }
 
    assert(image->vk.samples == VK_SAMPLE_COUNT_1_BIT);
 
-   /* Destination can't be raster format */
-   if (!image->tiled)
+   /* The TFU on V3D 4.2 cannot produce raster output. For buffer-to-image
+    * that only matters when the destination image is linear-tiled; for
+    * image-to-buffer the destination is always a raster buffer, so V3D 4.2
+    * is unsupported.
+    */
+   if (cmd_buffer->device->devinfo.ver < 71 &&
+       (to_buffer || !image->tiled)) {
       return false;
+   }
 
-   /* We can't copy D24S8 because buffer to image copies only copy one aspect
-    * at a time, and the TFU copies full images. Also, V3D depth bits for
-    * both D24S8 and D24X8 stored in the 24-bit MSB of each 32-bit word, but
-    * the Vulkan spec has the buffer data specified the other way around, so it
-    * is not a straight copy, we would have to swizzle the channels, which the
-    * TFU can't do.
+   /* We can't copy D24S8 because buffer<->image copies only copy one
+    * aspect at a time, and the TFU copies full images. Also, V3D depth
+    * bits for both D24S8 and D24X8 are stored in the 24-bit MSB of each
+    * 32-bit word, but the Vulkan spec has the buffer data specified the
+    * other way around, so it is not a straight copy, we would have to
+    * swizzle the channels, which the TFU can't do.
     */
    if (image->vk.format == VK_FORMAT_D24_UNORM_S8_UINT ||
        image->vk.format == VK_FORMAT_X8_D24_UNORM_PACK32) {
@@ -1870,44 +1981,58 @@ copy_buffer_to_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t mip_level = region->imageSubresource.mipLevel;
    const struct v3d_resource_slice *slice = &image->planes[plane].slices[mip_level];
 
-   if (width != slice->width || height != slice->height)
-      return false;
-
    /* Handle region semantics for compressed images */
    const uint32_t block_w =
       vk_format_get_blockwidth(image->planes[plane].vk_format);
    const uint32_t block_h =
       vk_format_get_blockheight(image->planes[plane].vk_format);
+
+   /* The TFU writes/reads the full slice from its origin, so the copy
+    * region must span it. The buffer side may have trailing row/height
+    * padding (bufferRowLength, bufferImageHeight) that the TFU never
+    * touches. For compressed formats, require tight packing since
+    * block-level stride semantics are more complex.
+    */
+   if (region->imageExtent.width != slice->width ||
+       region->imageExtent.height != slice->height) {
+      return false;
+   }
+
+   const bool is_compressed = block_w > 1 || block_h > 1;
+   if (is_compressed && (width != slice->width || height != slice->height))
+      return false;
+
    width = DIV_ROUND_UP(width, block_w);
    height = DIV_ROUND_UP(height, block_h);
+   const uint32_t tfu_height = is_compressed ? height : slice->height;
 
    /* Format must be supported for texturing via the TFU. Since we are just
     * copying raw data and not converting between pixel formats, we can ignore
     * the image's format and choose a compatible TFU format for the image
     * texel size instead, which expands the list of formats we can handle here.
     */
-   const struct v3dv_format *format =
-      v3dv_get_compatible_tfu_format(cmd_buffer->device,
-                                     image->planes[plane].cpp, NULL);
-   /* We only use single-plane formats with the TFU */
-   assert(format->plane_count == 1);
-   const struct v3dv_format_plane *format_plane = &format->planes[0];
+   const struct v3dv_format_plane *format_plane =
+      tfu_format_plane_for_cpp(cmd_buffer->device,
+                               image->planes[plane].cpp);
 
    uint32_t num_layers;
-   if (image->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->imageSubresource.layerCount;
-   else
+   if (image->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&image->vk,
+                                                    &region->imageSubresource);
+   } else {
       num_layers = region->imageExtent.depth;
+   }
    assert(num_layers > 0);
 
    assert(image->planes[plane].mem && image->planes[plane].mem->bo);
-   const struct v3dv_bo *dst_bo = image->planes[plane].mem->bo;
-
    assert(buffer->mem && buffer->mem->bo);
-   const struct v3dv_bo *src_bo = buffer->mem->bo;
+   const struct v3dv_bo *image_bo = image->planes[plane].mem->bo;
+   const struct v3dv_bo *buffer_bo = buffer->mem->bo;
+
+   const uint32_t cpp = image->planes[plane].cpp;
 
    /* Emit a TFU job per layer to copy */
-   const uint32_t buffer_stride = width * image->planes[plane].cpp;
+   const uint32_t buffer_stride = width * cpp;
    for (int i = 0; i < num_layers; i++) {
       uint32_t layer;
       if (image->vk.image_type != VK_IMAGE_TYPE_3D)
@@ -1915,27 +2040,31 @@ copy_buffer_to_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
       else
          layer = region->imageOffset.z + i;
 
-      const uint32_t buffer_offset =
+      const uint32_t image_offset = image_bo->offset +
+         v3dv_layer_offset(image, mip_level, layer, plane);
+      const uint32_t buffer_offset = buffer_bo->offset +
          buffer->mem_offset + region->bufferOffset +
          height * buffer_stride * i;
-      const uint32_t src_offset = src_bo->offset + buffer_offset;
 
-      const uint32_t dst_offset =
-         dst_bo->offset + v3dv_layer_offset(image, mip_level, layer, plane);
+      const uint32_t tfu_width = is_compressed ? width : slice->width;
 
-      v3dv_X(cmd_buffer->device, meta_emit_tfu_job)(
-             cmd_buffer,
-             dst_bo->handle,
-             dst_offset,
-             slice->tiling,
-             slice->padded_height,
-             image->planes[plane].cpp,
-             src_bo->handle,
-             src_offset,
-             V3D_TILING_RASTER,
-             width,
-             1,
-             width, height, format_plane);
+      if (to_buffer) {
+         v3d_X((&cmd_buffer->device->devinfo), meta_emit_tfu_job)(
+                cmd_buffer,
+                buffer_bo->handle, buffer_offset,
+                V3D_TILING_RASTER, width, 1,
+                image_bo->handle, image_offset,
+                slice->tiling, tfu_slice_stride_arg(slice), cpp,
+                tfu_width, tfu_height, format_plane);
+      } else {
+         v3d_X((&cmd_buffer->device->devinfo), meta_emit_tfu_job)(
+                cmd_buffer,
+                image_bo->handle, image_offset,
+                slice->tiling, tfu_slice_stride_arg(slice), cpp,
+                buffer_bo->handle, buffer_offset,
+                V3D_TILING_RASTER, width, 1,
+                tfu_width, tfu_height, format_plane);
+      }
    }
 
    return true;
@@ -1961,16 +2090,49 @@ copy_buffer_to_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
       return false;
    }
 
+   /* B10G11R11_UFLOAT_PACK32 maps to the TLB's 16F internal type, which
+    * canonicalizes NaN bit patterns. vkCmdCopyBufferToImage is a raw byte
+    * copy per spec, so alias the TLB format to R32_UINT to keep all
+    * 32 bits intact (memory layout is identical, internal type becomes
+    * 32UI instead of 16F).
+    */
+   if (image->vk.format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+      fb_format = VK_FORMAT_R32_UINT;
+
+   /* From the Vulkan spec for VkBufferImageCopy2:
+    *
+    *   "The aspectMask member of imageSubresource must only have a
+    *    single bit set."
+    *
+    * For us this has relevant implications because we can't do TLB stores
+    * of linear depth/stencil so we work around this by loading D/S data to the
+    * color tile buffer using a compatible color format (see
+    * emit_copy_buffer_to_layer_per_tile_list and choose_tlb_format functions),
+    * however, when we are copying a single aspect to a combined D/S image
+    * we need to preserve the other aspect, and for that we will still use the
+    * D/S tile buffer to load and store the aspect of the image we need to
+    * preserve, so in this case we are still constrained by the hw restriction
+    * for linear D/S stores.
+    */
+   assert(util_bitcount(region->imageSubresource.aspectMask) == 1);
+   if (!image->tiled &&
+       vk_format_has_depth(fb_format) &&
+       vk_format_has_stencil(fb_format)) {
+      return false;
+   }
+
    uint32_t internal_type, internal_bpp;
-   v3dv_X(cmd_buffer->device, get_internal_type_bpp_for_image_aspects)
+   v3d_X((&cmd_buffer->device->devinfo), get_internal_type_bpp_for_image_aspects)
       (fb_format, region->imageSubresource.aspectMask,
        &internal_type, &internal_bpp);
 
    uint32_t num_layers;
-   if (image->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->imageSubresource.layerCount;
-   else
+   if (image->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&image->vk,
+                                                    &region->imageSubresource);
+   } else {
       num_layers = region->imageExtent.depth;
+   }
    assert(num_layers > 0);
 
    struct v3dv_job *job =
@@ -1986,16 +2148,19 @@ copy_buffer_to_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t width = DIV_ROUND_UP(region->imageExtent.width, block_w);
    const uint32_t height = DIV_ROUND_UP(region->imageExtent.height, block_h);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false, true, 1,
+   v3dv_job_start_frame(job, width, height, num_layers, false, 1,
                         internal_bpp, 4 * v3d_internal_bpp_words(internal_bpp),
                         false);
 
    struct v3dv_meta_framebuffer framebuffer;
-   v3dv_X(job->device, meta_framebuffer_init)(&framebuffer, fb_format,
+   v3d_X((&job->device->devinfo), meta_framebuffer_init)(&framebuffer, fb_format,
                                               internal_type, &job->frame_tiling);
 
-   v3dv_X(job->device, job_emit_binning_flush)(job);
-   v3dv_X(job->device, meta_emit_copy_buffer_to_image_rcl)
+   v3d_X((&job->device->devinfo), job_emit_binning_flush)(job);
+   if (!v3dv_job_allocate_tile_state(job))
+      return true;
+
+   v3d_X((&job->device->devinfo), meta_emit_copy_buffer_to_image_rcl)
       (job, image, buffer, &framebuffer, region);
 
    v3dv_cmd_buffer_finish_job(cmd_buffer);
@@ -2009,7 +2174,8 @@ create_tiled_image_from_buffer(struct v3dv_cmd_buffer *cmd_buffer,
                                struct v3dv_buffer *buffer,
                                const VkBufferImageCopy2 *region)
 {
-   if (copy_buffer_to_image_tfu(cmd_buffer, image, buffer, region))
+   if (copy_buffer_image_tfu(cmd_buffer, image, buffer, region,
+                             false /* to_buffer */))
       return true;
    if (copy_buffer_to_image_tlb(cmd_buffer, image, buffer, region))
       return true;
@@ -2132,7 +2298,6 @@ get_texel_buffer_copy_pipeline_cache_key(VkFormat format,
 static bool
 create_blit_render_pass(struct v3dv_device *device,
                         VkFormat dst_format,
-                        VkFormat src_format,
                         VkRenderPass *pass_load,
                         VkRenderPass *pass_no_load);
 
@@ -2150,9 +2315,8 @@ create_pipeline(struct v3dv_device *device,
                 VkPipeline *pipeline);
 
 static nir_shader *
-get_texel_buffer_copy_vs()
+get_texel_buffer_copy_vs(const nir_shader_compiler_options *options)
 {
-   const nir_shader_compiler_options *options = v3dv_pipeline_get_nir_options();
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
                                                   "meta texel buffer copy vs");
    nir_variable *vs_out_pos =
@@ -2167,7 +2331,7 @@ get_texel_buffer_copy_vs()
 }
 
 static nir_shader *
-get_texel_buffer_copy_gs()
+get_texel_buffer_copy_gs(const nir_shader_compiler_options *options)
 {
    /* FIXME: this creates a geometry shader that takes the index of a single
     * layer to clear from push constants, so we need to emit a draw call for
@@ -2176,13 +2340,12 @@ get_texel_buffer_copy_gs()
     * be careful not to exceed the maximum number of output vertices allowed in
     * a geometry shader.
     */
-   const nir_shader_compiler_options *options = v3dv_pipeline_get_nir_options();
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, options,
                                                   "meta texel buffer copy gs");
    nir_shader *nir = b.shader;
-   nir->info.inputs_read = 1ull << VARYING_SLOT_POS;
-   nir->info.outputs_written = (1ull << VARYING_SLOT_POS) |
-                               (1ull << VARYING_SLOT_LAYER);
+   nir->info.inputs_read = VARYING_BIT_POS;
+   nir->info.outputs_written = VARYING_BIT_POS |
+                               VARYING_BIT_LAYER;
    nir->info.gs.input_primitive = MESA_PRIM_TRIANGLES;
    nir->info.gs.output_primitive = MESA_PRIM_TRIANGLE_STRIP;
    nir->info.gs.vertices_in = 3;
@@ -2260,15 +2423,14 @@ component_swizzle_to_nir_swizzle(VkComponentSwizzle comp, VkComponentSwizzle swz
    case VK_COMPONENT_SWIZZLE_A:
       return 3;
    default:
-      unreachable("Invalid swizzle");
+      UNREACHABLE("Invalid swizzle");
    };
 }
 
 static nir_shader *
-get_texel_buffer_copy_fs(struct v3dv_device *device, VkFormat format,
-                         VkComponentMapping *cswizzle)
+get_texel_buffer_copy_fs(const nir_shader_compiler_options *options,
+                         VkFormat format, VkComponentMapping *cswizzle)
 {
-   const nir_shader_compiler_options *options = v3dv_pipeline_get_nir_options();
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
                                                   "meta texel buffer copy fs");
 
@@ -2373,9 +2535,12 @@ create_texel_buffer_copy_pipeline(struct v3dv_device *device,
 
    assert(vk_format_is_color(format));
 
-   nir_shader *vs_nir = get_texel_buffer_copy_vs();
-   nir_shader *fs_nir = get_texel_buffer_copy_fs(device, format, cswizzle);
-   nir_shader *gs_nir = is_layered ? get_texel_buffer_copy_gs() : NULL;
+   const nir_shader_compiler_options *options =
+      v3dv_pipeline_get_nir_options(&device->devinfo);
+
+   nir_shader *vs_nir = get_texel_buffer_copy_vs(options);
+   nir_shader *fs_nir = get_texel_buffer_copy_fs(options, format, cswizzle);
+   nir_shader *gs_nir = is_layered ? get_texel_buffer_copy_gs(options) : NULL;
 
    const VkPipelineVertexInputStateCreateInfo vi_state = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -2422,7 +2587,7 @@ create_texel_buffer_copy_pipeline(struct v3dv_device *device,
 
 static bool
 get_copy_texel_buffer_pipeline(
-   struct v3dv_device *device,
+   struct v3dv_cmd_buffer *cmd_buffer,
    VkFormat format,
    VkColorComponentFlags cmask,
    VkComponentMapping *cswizzle,
@@ -2431,19 +2596,22 @@ get_copy_texel_buffer_pipeline(
    struct v3dv_meta_texel_buffer_copy_pipeline **pipeline)
 {
    bool ok = true;
+   struct v3dv_device *device = cmd_buffer->device;
 
    uint8_t key[V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE];
-   get_texel_buffer_copy_pipeline_cache_key(format, cmask, cswizzle, is_layered,
-                                            key);
+   if (device->instance->meta_cache_enabled) {
+      get_texel_buffer_copy_pipeline_cache_key(format, cmask, cswizzle, is_layered,
+                                               key);
 
-   mtx_lock(&device->meta.mtx);
-   struct hash_entry *entry =
-      _mesa_hash_table_search(device->meta.texel_buffer_copy.cache[image_type],
-                              key);
-   if (entry) {
-      mtx_unlock(&device->meta.mtx);
-      *pipeline = entry->data;
-      return true;
+      mtx_lock(&device->meta.mtx);
+      struct hash_entry *entry =
+         _mesa_hash_table_search(device->meta.texel_buffer_copy.cache[image_type],
+                                 key);
+      if (entry) {
+         mtx_unlock(&device->meta.mtx);
+         *pipeline = entry->data;
+         return true;
+      }
    }
 
    *pipeline = vk_zalloc2(&device->vk.alloc, NULL, sizeof(**pipeline), 8,
@@ -2453,7 +2621,7 @@ get_copy_texel_buffer_pipeline(
       goto fail;
 
    /* The blit render pass is compatible */
-   ok = create_blit_render_pass(device, format, format,
+   ok = create_blit_render_pass(device, format,
                                 &(*pipeline)->pass,
                                 &(*pipeline)->pass_no_load);
    if (!ok)
@@ -2468,16 +2636,22 @@ get_copy_texel_buffer_pipeline(
    if (!ok)
       goto fail;
 
-   uint8_t *dupkey = malloc(V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE);
-   memcpy(dupkey, key, V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE);
-   _mesa_hash_table_insert(device->meta.texel_buffer_copy.cache[image_type],
-                           dupkey, *pipeline);
+   if (device->instance->meta_cache_enabled) {
+      memcpy((*pipeline)->key, key, sizeof((*pipeline)->key));
+      _mesa_hash_table_insert(device->meta.texel_buffer_copy.cache[image_type],
+                              &(*pipeline)->key, *pipeline);
+      mtx_unlock(&device->meta.mtx);
+   } else {
+      v3dv_cmd_buffer_add_private_obj(
+         cmd_buffer, (uintptr_t)*pipeline,
+         (v3dv_cmd_buffer_private_obj_destroy_cb)destroy_meta_texel_buffer_copy_pipeline);
+   }
 
-   mtx_unlock(&device->meta.mtx);
    return true;
 
 fail:
-   mtx_unlock(&device->meta.mtx);
+   if (device->instance->meta_cache_enabled)
+      mtx_unlock(&device->meta.mtx);
 
    VkDevice _device = v3dv_device_to_handle(device);
    if (*pipeline) {
@@ -2560,21 +2734,20 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
     *
     * If we are batching (region_count > 1) all our regions have the same
     * image subresource so we can take this from the first region. For 3D
-    * images we require the same depth extent.
+    * images we require the same depth extent and Z offset.
     */
    const VkImageSubresourceLayers *resource = &regions[0].imageSubresource;
    uint32_t num_layers;
    if (image->vk.image_type != VK_IMAGE_TYPE_3D) {
-      num_layers = resource->layerCount;
+      num_layers = vk_image_subresource_layer_count(&image->vk, resource);
    } else {
-      assert(region_count == 1);
       num_layers = regions[0].imageExtent.depth;
    }
    assert(num_layers > 0);
 
    /* Get the texel buffer copy pipeline */
    struct v3dv_meta_texel_buffer_copy_pipeline *pipeline = NULL;
-   bool ok = get_copy_texel_buffer_pipeline(cmd_buffer->device,
+   bool ok = get_copy_texel_buffer_pipeline(cmd_buffer,
                                             dst_format, cmask, cswizzle,
                                             image->vk.image_type, num_layers > 1,
                                             &pipeline);
@@ -2654,6 +2827,7 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
 
    VkImageViewCreateInfo image_view_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .flags = VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA,
       .image = v3dv_image_to_handle(image),
       .viewType = v3dv_image_type_to_view_type(image->vk.image_type),
       .format = dst_format,
@@ -2661,7 +2835,7 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
          .aspectMask = aspect,
          .baseMipLevel = resource->mipLevel,
          .levelCount = 1,
-         .baseArrayLayer = resource->baseArrayLayer,
+         .baseArrayLayer = resource->baseArrayLayer + regions[0].imageOffset.z,
          .layerCount = num_layers,
       },
    };
@@ -2898,10 +3072,12 @@ copy_buffer_to_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
     * image subresource so we can take this from the first region.
     */
    uint32_t num_layers;
-   if (image->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = regions[0].imageSubresource.layerCount;
-   else
+   if (image->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&image->vk,
+                                                    &regions[0].imageSubresource);
+   } else {
       num_layers = regions[0].imageExtent.depth;
+   }
    assert(num_layers > 0);
 
    /* Sanity check: we can only batch multiple regions together if they have
@@ -3004,7 +3180,7 @@ copy_buffer_to_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
             /* This is unexpected, we should have setup the upload to be
              * conformant to a TFU or TLB copy.
              */
-            unreachable("Unable to copy buffer to image through TLB");
+            UNREACHABLE("Unable to copy buffer to image through TLB");
             return false;
          }
 
@@ -3058,7 +3234,7 @@ copy_buffer_to_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
                                &blit_region, VK_FILTER_NEAREST, true);
          if (!handled) {
             /* This is unexpected, we should have a supported blit spec */
-            unreachable("Unable to blit buffer to destination image");
+            UNREACHABLE("Unable to blit buffer to destination image");
             return false;
          }
       }
@@ -3173,7 +3349,7 @@ copy_buffer_to_image_shader(struct v3dv_cmd_buffer *cmd_buffer,
          cmask = VK_COLOR_COMPONENT_R_BIT;
          break;
       default:
-         unreachable("unsupported aspect");
+         UNREACHABLE("unsupported aspect");
          return false;
       };
       break;
@@ -3190,7 +3366,7 @@ copy_buffer_to_image_shader(struct v3dv_cmd_buffer *cmd_buffer,
       dst_format = src_format;
       break;
    default:
-      unreachable("unsupported bit-size");
+      UNREACHABLE("unsupported bit-size");
       return false;
    }
 
@@ -3228,7 +3404,8 @@ v3dv_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
        * where we are copying full images, since they should be the fastest.
        */
       uint32_t batch_size = 1;
-      if (copy_buffer_to_image_tfu(cmd_buffer, image, buffer, &info->pRegions[r]))
+      if (copy_buffer_image_tfu(cmd_buffer, image, buffer, &info->pRegions[r],
+                                false /* to_buffer */))
          goto handled;
 
       if (copy_buffer_to_image_tlb(cmd_buffer, image, buffer, &info->pRegions[r]))
@@ -3248,11 +3425,13 @@ v3dv_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
          if (memcmp(rsc, rsc_s, sizeof(VkImageSubresourceLayers)) != 0)
             break;
 
-         /* For 3D images we also need to check the depth extent */
+         /* For 3D images we also need to check the depth extent / Z-offset */
          if (image->vk.image_type == VK_IMAGE_TYPE_3D &&
-             info->pRegions[s].imageExtent.depth !=
-             info->pRegions[r].imageExtent.depth) {
-               break;
+             (info->pRegions[s].imageExtent.depth !=
+              info->pRegions[r].imageExtent.depth ||
+              info->pRegions[s].imageOffset.z !=
+              info->pRegions[r].imageOffset.z)) {
+            break;
          }
 
          batch_size++;
@@ -3274,7 +3453,7 @@ v3dv_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
          goto handled;
       }
 
-      unreachable("Unsupported buffer to image copy.");
+      UNREACHABLE("Unsupported buffer to image copy.");
 
 handled:
       r += batch_size;
@@ -3322,8 +3501,8 @@ blit_tfu(struct v3dv_cmd_buffer *cmd_buffer,
    if (src->vk.format != dst->vk.format)
       return false;
 
-   /* Destination can't be raster format */
-   if (!dst->tiled)
+   /* Destination can't be raster format on V3D 4.2 */
+   if (cmd_buffer->device->devinfo.ver < 71 && !dst->tiled)
       return false;
 
    /* Source region must start at (0,0) */
@@ -3363,13 +3542,12 @@ blit_tfu(struct v3dv_cmd_buffer *cmd_buffer,
     * conversions and we can rewrite the format to use one that is TFU
     * compatible based on its texel size.
     */
-   const struct v3dv_format *format =
-      v3dv_get_compatible_tfu_format(cmd_buffer->device,
-                                     dst->planes[0].cpp, NULL);
+   const struct v3dv_format_plane *format_plane =
+      tfu_format_plane_for_cpp(cmd_buffer->device, dst->planes[0].cpp);
 
    /* Emit a TFU job for each layer to blit */
-   assert(region->dstSubresource.layerCount ==
-          region->srcSubresource.layerCount);
+   assert(vk_image_subresource_layer_count(&dst->vk, &region->dstSubresource) ==
+          vk_image_subresource_layer_count(&src->vk, &region->srcSubresource));
 
    uint32_t min_dst_layer;
    uint32_t max_dst_layer;
@@ -3380,7 +3558,9 @@ blit_tfu(struct v3dv_cmd_buffer *cmd_buffer,
                              &dst_mirror_z);
    } else {
       min_dst_layer = region->dstSubresource.baseArrayLayer;
-      max_dst_layer = min_dst_layer + region->dstSubresource.layerCount;
+      max_dst_layer = min_dst_layer +
+                      vk_image_subresource_layer_count(&dst->vk,
+                                                       &region->dstSubresource);
    }
 
    uint32_t min_src_layer;
@@ -3392,7 +3572,9 @@ blit_tfu(struct v3dv_cmd_buffer *cmd_buffer,
                              &src_mirror_z);
    } else {
       min_src_layer = region->srcSubresource.baseArrayLayer;
-      max_src_layer = min_src_layer + region->srcSubresource.layerCount;
+      max_src_layer = min_src_layer +
+                      vk_image_subresource_layer_count(&src->vk,
+                                                       &region->srcSubresource);
    }
 
    /* No Z scaling for 3D images (for non-3D images both src and dst must
@@ -3422,20 +3604,19 @@ blit_tfu(struct v3dv_cmd_buffer *cmd_buffer,
       const struct v3d_resource_slice *dst_slice = &dst->planes[0].slices[dst_mip_level];
       const struct v3d_resource_slice *src_slice = &src->planes[0].slices[src_mip_level];
 
-      v3dv_X(cmd_buffer->device, meta_emit_tfu_job)(
+      v3d_X((&cmd_buffer->device->devinfo), meta_emit_tfu_job)(
          cmd_buffer,
          dst->planes[0].mem->bo->handle,
          dst_offset,
          dst_slice->tiling,
-         dst_slice->padded_height,
+         tfu_slice_stride_arg(dst_slice),
          dst->planes[0].cpp,
          src->planes[0].mem->bo->handle,
          src_offset,
          src_slice->tiling,
-         src_slice->tiling == V3D_TILING_RASTER ?
-                              src_slice->stride : src_slice->padded_height,
+         tfu_slice_stride_arg(src_slice),
          src->planes[0].cpp,
-         dst_width, dst_height, &format->planes[0]);
+         dst_width, dst_height, format_plane);
    }
 
    return true;
@@ -3495,7 +3676,6 @@ get_blit_pipeline_cache_key(VkFormat dst_format,
 static bool
 create_blit_render_pass(struct v3dv_device *device,
                         VkFormat dst_format,
-                        VkFormat src_format,
                         VkRenderPass *pass_load,
                         VkRenderPass *pass_no_load)
 {
@@ -3733,9 +3913,8 @@ build_nir_tex_op(struct nir_builder *b,
 }
 
 static nir_shader *
-get_blit_vs()
+get_blit_vs(const nir_shader_compiler_options *options)
 {
-   const nir_shader_compiler_options *options = v3dv_pipeline_get_nir_options();
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
                                                   "meta blit vs");
 
@@ -3768,19 +3947,19 @@ get_channel_mask_for_sampler_dim(enum glsl_sampler_dim sampler_dim)
    case GLSL_SAMPLER_DIM_MS: return 0x3;
    case GLSL_SAMPLER_DIM_3D: return 0x7;
    default:
-      unreachable("invalid sampler dim");
+      UNREACHABLE("invalid sampler dim");
    };
 }
 
 static nir_shader *
-get_color_blit_fs(struct v3dv_device *device,
+get_color_blit_fs(const nir_shader_compiler_options *options,
+                  struct v3dv_device *device,
                   VkFormat dst_format,
                   VkFormat src_format,
                   VkSampleCountFlagBits dst_samples,
                   VkSampleCountFlagBits src_samples,
                   enum glsl_sampler_dim sampler_dim)
 {
-   const nir_shader_compiler_options *options = v3dv_pipeline_get_nir_options();
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
                                                   "meta blit fs");
 
@@ -3996,7 +4175,7 @@ get_sampler_dim(VkImageType type, VkSampleCountFlagBits src_samples)
                                                     GLSL_SAMPLER_DIM_MS;
    case VK_IMAGE_TYPE_3D: return GLSL_SAMPLER_DIM_3D;
    default:
-      unreachable("Invalid image type");
+      UNREACHABLE("Invalid image type");
    }
 }
 
@@ -4018,12 +4197,15 @@ create_blit_pipeline(struct v3dv_device *device,
    assert(vk_format_is_color(dst_format));
    assert(vk_format_is_color(src_format));
 
+   const nir_shader_compiler_options *options =
+      v3dv_pipeline_get_nir_options(&device->devinfo);
+
    const enum glsl_sampler_dim sampler_dim =
       get_sampler_dim(src_type, src_samples);
 
-   nir_shader *vs_nir = get_blit_vs();
+   nir_shader *vs_nir = get_blit_vs(options);
    nir_shader *fs_nir =
-      get_color_blit_fs(device, dst_format, src_format,
+      get_color_blit_fs(options, device, dst_format, src_format,
                         dst_samples, src_samples, sampler_dim);
 
    const VkPipelineVertexInputStateCreateInfo vi_state = {
@@ -4074,7 +4256,7 @@ create_blit_pipeline(struct v3dv_device *device,
  * destination and source formats.
  */
 static bool
-get_blit_pipeline(struct v3dv_device *device,
+get_blit_pipeline(struct v3dv_cmd_buffer *cmd_buffer,
                   VkFormat dst_format,
                   VkFormat src_format,
                   VkColorComponentFlags cmask,
@@ -4084,17 +4266,20 @@ get_blit_pipeline(struct v3dv_device *device,
                   struct v3dv_meta_blit_pipeline **pipeline)
 {
    bool ok = true;
+   struct v3dv_device *device = cmd_buffer->device;
 
    uint8_t key[V3DV_META_BLIT_CACHE_KEY_SIZE];
-   get_blit_pipeline_cache_key(dst_format, src_format, cmask,
-                               dst_samples, src_samples, key);
-   mtx_lock(&device->meta.mtx);
-   struct hash_entry *entry =
-      _mesa_hash_table_search(device->meta.blit.cache[src_type], &key);
-   if (entry) {
-      mtx_unlock(&device->meta.mtx);
-      *pipeline = entry->data;
-      return true;
+   if (device->instance->meta_cache_enabled) {
+      get_blit_pipeline_cache_key(dst_format, src_format, cmask,
+                                  dst_samples, src_samples, key);
+      mtx_lock(&device->meta.mtx);
+      struct hash_entry *entry =
+         _mesa_hash_table_search(device->meta.blit.cache[src_type], &key);
+      if (entry) {
+         mtx_unlock(&device->meta.mtx);
+         *pipeline = entry->data;
+         return true;
+      }
    }
 
    *pipeline = vk_zalloc2(&device->vk.alloc, NULL, sizeof(**pipeline), 8,
@@ -4103,7 +4288,7 @@ get_blit_pipeline(struct v3dv_device *device,
    if (*pipeline == NULL)
       goto fail;
 
-   ok = create_blit_render_pass(device, dst_format, src_format,
+   ok = create_blit_render_pass(device, dst_format,
                                 &(*pipeline)->pass,
                                 &(*pipeline)->pass_no_load);
    if (!ok)
@@ -4125,15 +4310,22 @@ get_blit_pipeline(struct v3dv_device *device,
    if (!ok)
       goto fail;
 
-   memcpy((*pipeline)->key, key, sizeof((*pipeline)->key));
-   _mesa_hash_table_insert(device->meta.blit.cache[src_type],
-                           &(*pipeline)->key, *pipeline);
+   if (device->instance->meta_cache_enabled) {
+      memcpy((*pipeline)->key, key, sizeof((*pipeline)->key));
+      _mesa_hash_table_insert(device->meta.blit.cache[src_type],
+                              &(*pipeline)->key, *pipeline);
+      mtx_unlock(&device->meta.mtx);
+   } else {
+      v3dv_cmd_buffer_add_private_obj(
+         cmd_buffer, (uintptr_t)*pipeline,
+         (v3dv_cmd_buffer_private_obj_destroy_cb)destroy_meta_blit_pipeline);
+   }
 
-   mtx_unlock(&device->meta.mtx);
    return true;
 
 fail:
-   mtx_unlock(&device->meta.mtx);
+   if (device->instance->meta_cache_enabled)
+      mtx_unlock(&device->meta.mtx);
 
    VkDevice _device = v3dv_device_to_handle(device);
    if (*pipeline) {
@@ -4302,11 +4494,6 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
    bool handled = true;
    VkResult result;
 
-   /* We don't support rendering to linear depth/stencil, this should have
-    * been rewritten to a compatible color blit by the caller.
-    */
-   assert(dst->tiled || !vk_format_is_depth_or_stencil(dst_format));
-
    /* Can't sample from linear images */
    if (!src->tiled && src->vk.image_type != VK_IMAGE_TYPE_1D) {
       return false;
@@ -4337,7 +4524,7 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
          dst_format = VK_FORMAT_R8G8B8A8_UINT;
          break;
       default:
-         unreachable("Unsupported depth/stencil format");
+         UNREACHABLE("Unsupported depth/stencil format");
       };
       src_format = dst_format;
    }
@@ -4414,7 +4601,9 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
    bool dst_mirror_z = false;
    if (dst->vk.image_type != VK_IMAGE_TYPE_3D) {
       min_dst_layer = region->dstSubresource.baseArrayLayer;
-      max_dst_layer = min_dst_layer + region->dstSubresource.layerCount;
+      max_dst_layer = min_dst_layer +
+                      vk_image_subresource_layer_count(&dst->vk,
+                                                       &region->dstSubresource);
    } else {
       compute_blit_3d_layers(region->dstOffsets,
                              &min_dst_layer, &max_dst_layer,
@@ -4426,7 +4615,9 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
    bool src_mirror_z = false;
    if (src->vk.image_type != VK_IMAGE_TYPE_3D) {
       min_src_layer = region->srcSubresource.baseArrayLayer;
-      max_src_layer = min_src_layer + region->srcSubresource.layerCount;
+      max_src_layer = min_src_layer +
+                      vk_image_subresource_layer_count(&src->vk,
+                                                       &region->srcSubresource);
    } else {
       compute_blit_3d_layers(region->srcOffsets,
                              &min_src_layer, &max_src_layer,
@@ -4477,7 +4668,7 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
 
    /* Get the blit pipeline */
    struct v3dv_meta_blit_pipeline *pipeline = NULL;
-   bool ok = get_blit_pipeline(cmd_buffer->device,
+   bool ok = get_blit_pipeline(cmd_buffer,
                                dst_format, src_format, cmask, src->vk.image_type,
                                dst->vk.samples, src->vk.samples,
                                &pipeline);
@@ -4547,6 +4738,7 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
       /* Setup framebuffer */
       VkImageViewCreateInfo dst_image_view_info = {
          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .flags = VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA,
          .image = v3dv_image_to_handle(dst),
          .viewType = v3dv_image_type_to_view_type(dst->vk.image_type),
          .format = dst_format,
@@ -4605,6 +4797,7 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
 
       VkImageViewCreateInfo src_image_view_info = {
          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+         .flags = VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA,
          .image = v3dv_image_to_handle(src),
          .viewType = v3dv_image_type_to_view_type(src->vk.image_type),
          .format = src_format,
@@ -4763,7 +4956,7 @@ v3dv_CmdBlitImage2(VkCommandBuffer commandBuffer,
                       pBlitImageInfo->filter, true)) {
          continue;
       }
-      unreachable("Unsupported blit operation");
+      UNREACHABLE("Unsupported blit operation");
    }
 
    cmd_buffer->state.is_transfer = false;
@@ -4773,6 +4966,7 @@ static bool
 resolve_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
                   struct v3dv_image *dst,
                   struct v3dv_image *src,
+                  VkFormat resolve_format,
                   const VkImageResolve2 *region)
 {
    /* No resolve for multi-planar images. Using plane 0 */
@@ -4786,16 +4980,19 @@ resolve_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
       return false;
    }
 
-   if (!v3dv_X(cmd_buffer->device, format_supports_tlb_resolve)(src->format))
+   const struct v3dv_format *resolve_v3dv_format =
+      v3d_X((&cmd_buffer->device->devinfo), get_format)(resolve_format);
+   assert(resolve_v3dv_format);
+   if (!v3d_X((&cmd_buffer->device->devinfo), format_supports_tlb_resolve)(resolve_v3dv_format))
       return false;
 
-   const VkFormat fb_format = src->vk.format;
-
    uint32_t num_layers;
-   if (dst->vk.image_type != VK_IMAGE_TYPE_3D)
-      num_layers = region->dstSubresource.layerCount;
-   else
+   if (dst->vk.image_type != VK_IMAGE_TYPE_3D) {
+      num_layers = vk_image_subresource_layer_count(&dst->vk,
+                                                    &region->dstSubresource);
+   } else {
       num_layers = region->extent.depth;
+   }
    assert(num_layers > 0);
 
    struct v3dv_job *job =
@@ -4811,20 +5008,22 @@ resolve_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t height = DIV_ROUND_UP(region->extent.height, block_h);
 
    uint32_t internal_type, internal_bpp;
-   v3dv_X(cmd_buffer->device, get_internal_type_bpp_for_image_aspects)
-      (fb_format, region->srcSubresource.aspectMask,
+   v3d_X((&cmd_buffer->device->devinfo), get_internal_type_bpp_for_image_aspects)
+      (resolve_format, region->srcSubresource.aspectMask,
        &internal_type, &internal_bpp);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false, true, 1,
-                        internal_bpp, 4 * v3d_internal_bpp_words(internal_bpp),
-                        true);
+   v3dv_job_start_frame(job, width, height, num_layers, false, 1, internal_bpp,
+                        4 * v3d_internal_bpp_words(internal_bpp), true);
 
    struct v3dv_meta_framebuffer framebuffer;
-   v3dv_X(job->device, meta_framebuffer_init)(&framebuffer, fb_format,
+   v3d_X((&job->device->devinfo), meta_framebuffer_init)(&framebuffer, resolve_format,
                                               internal_type, &job->frame_tiling);
 
-   v3dv_X(job->device, job_emit_binning_flush)(job);
-   v3dv_X(job->device, meta_emit_resolve_image_rcl)(job, dst, src,
+   v3d_X((&job->device->devinfo), job_emit_binning_flush)(job);
+   if (!v3dv_job_allocate_tile_state(job))
+      return true;
+
+   v3d_X((&job->device->devinfo), meta_emit_resolve_image_rcl)(job, dst, src,
                                                     &framebuffer, region);
 
    v3dv_cmd_buffer_finish_job(cmd_buffer);
@@ -4835,6 +5034,7 @@ static bool
 resolve_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
                    struct v3dv_image *dst,
                    struct v3dv_image *src,
+                   VkFormat resolve_format,
                    const VkImageResolve2 *region)
 {
    const VkImageBlit2 blit_region = {
@@ -4857,10 +5057,42 @@ resolve_image_blit(struct v3dv_cmd_buffer *cmd_buffer,
       },
    };
    return blit_shader(cmd_buffer,
-                      dst, dst->vk.format,
-                      src, src->vk.format,
+                      dst, resolve_format,
+                      src, resolve_format,
                       0, NULL,
                       &blit_region, VK_FILTER_NEAREST, true);
+}
+
+/**
+ * Resolves an image by using the TLB if supported or a shader blit otherwise.
+ *
+ * Notice that resolve operations may need to use the view format instead of
+ * the image format when executing as part of a renderpass, so the format to
+ * use is provided explicitly as parameter.
+ */
+void
+v3dv_cmd_buffer_resolve_image(struct v3dv_cmd_buffer *cmd_buffer,
+                              struct v3dv_image *dst,
+                              struct v3dv_image *src,
+                              VkFormat resolve_format,
+                              const VkImageResolve2 *region)
+{
+   /* We don't support multi-sampled multi-plane images */
+   assert(src->vk.samples == VK_SAMPLE_COUNT_4_BIT);
+   assert(dst->vk.samples == VK_SAMPLE_COUNT_1_BIT);
+
+   assert(src->plane_count == 1);
+   assert(dst->plane_count == 1);
+
+   bool save_is_transfer = cmd_buffer->state.is_transfer;
+   cmd_buffer->state.is_transfer = true;
+
+   if (!resolve_image_tlb(cmd_buffer, dst, src, resolve_format, region) &&
+       !resolve_image_blit(cmd_buffer, dst, src, resolve_format, region)) {
+      UNREACHABLE("Unsupported multisample resolve operation");
+   }
+
+   cmd_buffer->state.is_transfer = save_is_transfer;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -4876,22 +5108,11 @@ v3dv_CmdResolveImage2(VkCommandBuffer commandBuffer,
    assert(cmd_buffer->state.pass == NULL);
    assert(cmd_buffer->state.job == NULL);
 
-   assert(src->vk.samples == VK_SAMPLE_COUNT_4_BIT);
-   assert(dst->vk.samples == VK_SAMPLE_COUNT_1_BIT);
-
-   /* We don't support multi-sampled multi-plane images */
-   assert(src->plane_count == 1);
-   assert(dst->plane_count == 1);
-
-   cmd_buffer->state.is_transfer = true;
+   assert(src->vk.format == dst->vk.format);
 
    for (uint32_t i = 0; i < info->regionCount; i++) {
-      if (resolve_image_tlb(cmd_buffer, dst, src, &info->pRegions[i]))
-         continue;
-      if (resolve_image_blit(cmd_buffer, dst, src, &info->pRegions[i]))
-         continue;
-      unreachable("Unsupported multismaple resolve operation");
+      v3dv_cmd_buffer_resolve_image(cmd_buffer, dst, src,
+                                    src->vk.format,
+                                    &info->pRegions[i]);
    }
-
-   cmd_buffer->state.is_transfer = false;
 }

@@ -64,15 +64,32 @@ elk_has_uip(const struct intel_device_info *devinfo, enum elk_opcode opcode)
           opcode == ELK_OPCODE_HALT;
 }
 
-static bool
-has_branch_ctrl(const struct intel_device_info *devinfo, enum elk_opcode opcode)
+bool
+elk_has_branch_ctrl(const struct intel_device_info *devinfo, enum elk_opcode opcode)
 {
    if (devinfo->ver < 8)
       return false;
 
-   return opcode == ELK_OPCODE_IF ||
-          opcode == ELK_OPCODE_ELSE;
-          /* opcode == ELK_OPCODE_GOTO; */
+   switch (opcode) {
+   case ELK_OPCODE_IF:
+   case ELK_OPCODE_ELSE:
+   case ELK_OPCODE_GOTO:
+   case ELK_OPCODE_BREAK:
+   case ELK_OPCODE_CALL:
+   case ELK_OPCODE_CALLA:
+   case ELK_OPCODE_CONTINUE:
+   case ELK_OPCODE_ENDIF:
+   case ELK_OPCODE_HALT:
+   case ELK_OPCODE_JMPI:
+   case ELK_OPCODE_RET:
+   case ELK_OPCODE_WHILE:
+   case ELK_OPCODE_BRC:
+   case ELK_OPCODE_BRD:
+      /* TODO: "join" should also be here if added */
+      return true;
+   default:
+      return false;
+   }
 }
 
 static bool
@@ -959,7 +976,7 @@ vstride_from_align1_3src_vstride(const struct intel_device_info *devinfo,
    case ELK_ALIGN1_3SRC_VERTICAL_STRIDE_4: return ELK_VERTICAL_STRIDE_4;
    case ELK_ALIGN1_3SRC_VERTICAL_STRIDE_8: return ELK_VERTICAL_STRIDE_8;
    default:
-      unreachable("not reached");
+      UNREACHABLE("not reached");
    }
 }
 
@@ -972,7 +989,7 @@ hstride_from_align1_3src_hstride(enum gfx10_align1_3src_src_horizontal_stride hs
    case ELK_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_2: return ELK_HORIZONTAL_STRIDE_2;
    case ELK_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_4: return ELK_HORIZONTAL_STRIDE_4;
    default:
-      unreachable("not reached");
+      UNREACHABLE("not reached");
    }
 }
 
@@ -985,7 +1002,7 @@ vstride_from_align1_3src_hstride(enum gfx10_align1_3src_src_horizontal_stride hs
    case ELK_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_2: return ELK_VERTICAL_STRIDE_2;
    case ELK_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_4: return ELK_VERTICAL_STRIDE_4;
    default:
-      unreachable("not reached");
+      UNREACHABLE("not reached");
    }
 }
 
@@ -1010,7 +1027,7 @@ implied_width(enum elk_vertical_stride _vert_stride,
       case ELK_VERTICAL_STRIDE_8: return ELK_WIDTH_8;
       case ELK_VERTICAL_STRIDE_0:
       default:
-         unreachable("not reached");
+         UNREACHABLE("not reached");
       }
 
    } else {
@@ -1672,7 +1689,6 @@ elk_disassemble_inst(FILE *file, const struct elk_isa_info *isa,
       pad(file, 16);
       space = 0;
 
-      fprintf(file, "            ");
       err |= control(file, "SFID", devinfo->ver >= 6 ? gfx6_sfid : gfx4_sfid,
                      sfid, &space);
       string(file, " MsgDesc:");
@@ -1983,7 +1999,7 @@ elk_disassemble_inst(FILE *file, const struct elk_isa_info *isa,
       err |= control(file, "thread control", thread_ctrl,
                      elk_inst_thread_control(devinfo, inst),
                      &space);
-      if (has_branch_ctrl(devinfo, opcode)) {
+      if (elk_has_branch_ctrl(devinfo, opcode)) {
          err |= control(file, "branch ctrl", branch_ctrl,
                         elk_inst_branch_control(devinfo, inst), &space);
       } else if (devinfo->ver >= 6) {
@@ -2048,14 +2064,14 @@ elk_disassemble_with_errors(const struct elk_isa_info *isa,
    const struct elk_label *root_label =
       elk_label_assembly(isa, assembly, start, end, mem_ctx);
 
-   foreach_list_typed(struct inst_group, group, link,
+   brw_foreach_list_typed(struct inst_group, group, link,
                       &elk_disasm_info->group_list) {
-      struct exec_node *next_node = exec_node_get_next(&group->link);
-      if (exec_node_is_tail_sentinel(next_node))
+      struct brw_exec_node *next_node = brw_exec_node_get_next(&group->link);
+      if (brw_exec_node_is_tail_sentinel(next_node))
          break;
 
       struct inst_group *next =
-         exec_node_data(struct inst_group, next_node, link);
+         brw_exec_node_data(struct inst_group, next_node, link);
 
       int start_offset = group->offset;
       int end_offset = next->offset;

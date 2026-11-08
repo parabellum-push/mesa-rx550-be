@@ -48,9 +48,18 @@
 
 #include <llvm/Config/llvm-config.h>
 
-#include <llvm-c/Core.h>  
+#include <llvm-c/Core.h>
 
+#if GALLIVM_USE_ORCJIT
+#include <llvm-c/Orc.h>
+#endif
 
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdlib.h>
+
+#include "util/simple_mtx.h"
 
 /**
  * Redefine these LLVM entrypoints as invalid macros to make sure we
@@ -81,59 +90,89 @@
 #define LLVMInsertBasicBlock ILLEGAL_LLVM_FUNCTION
 #define LLVMCreateBuilder ILLEGAL_LLVM_FUNCTION
 
-#if LLVM_VERSION_MAJOR >= 15
-#define GALLIVM_HAVE_CORO 0
-#define GALLIVM_USE_NEW_PASS 1
-#elif LLVM_VERSION_MAJOR >= 8
-#define GALLIVM_HAVE_CORO 1
-#define GALLIVM_USE_NEW_PASS 0
-#else
-#define GALLIVM_HAVE_CORO 0
-#define GALLIVM_USE_NEW_PASS 0
-#endif
-
-#define GALLIVM_COROUTINES (GALLIVM_HAVE_CORO || GALLIVM_USE_NEW_PASS)
-
-/* LLVM is transitioning to "opaque pointers", and as such deprecates
- * LLVMBuildGEP, LLVMBuildCall, LLVMBuildLoad, replacing them with
- * LLVMBuildGEP2, LLVMBuildCall2, LLVMBuildLoad2 respectivelly.
- * These new functions were added in LLVM 8.0; so for LLVM before 8.0 we
- * simply forward to the non-opaque-pointer variants.
+/* ORC's ThreadSafeContext only locks during add-to-JIT; IR building
+ * touches the LLVMContext without that lock, so a separate mutex is
+ * needed for shareable shaders. Aliasing copies (owned=false) share
+ * the same mutex pointer.
  */
-#if LLVM_VERSION_MAJOR < 8
+typedef struct lp_context_ref {
+   LLVMContextRef ref;
+#if GALLIVM_USE_ORCJIT
+   LLVMOrcThreadSafeContextRef tsref;
+#endif
+   simple_mtx_t *mutex;
+   bool owned;
+} lp_context_ref;
 
-static inline LLVMValueRef
-LLVMBuildGEP2(LLVMBuilderRef B, LLVMTypeRef Ty,
-              LLVMValueRef Pointer, LLVMValueRef *Indices,
-              unsigned NumIndices, const char *Name)
+static inline void
+lp_context_create(lp_context_ref *context)
 {
-   return LLVMBuildGEP(B, Pointer, Indices, NumIndices, Name);
+   assert(context != NULL);
+
+   context->mutex = NULL;
+
+#if GALLIVM_USE_ORCJIT
+#if LLVM_VERSION_MAJOR >= 21
+   context->ref = LLVMContextCreate();
+   /* Ownership of ref is then transferred to tsref */
+   context->tsref = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(context->ref);
+#else
+   context->tsref = LLVMOrcCreateNewThreadSafeContext();
+   context->ref = LLVMOrcThreadSafeContextGetContext(context->tsref);
+#endif
+#else
+   context->ref = LLVMContextCreate();
+#endif
+   context->owned = true;
+#if LLVM_VERSION_MAJOR == 15
+   if (context->ref) {
+      LLVMContextSetOpaquePointers(context->ref, false);
+   }
+#endif
 }
 
-static inline LLVMValueRef
-LLVMBuildInBoundsGEP2(LLVMBuilderRef B, LLVMTypeRef Ty,
-                      LLVMValueRef Pointer, LLVMValueRef *Indices,
-                      unsigned NumIndices, const char *Name)
+/* Like lp_context_create, but also creates the mutex that serializes
+ * LLVMContext access for shareable shaders. Only the screen's shared context
+ * needs it; per-context users call lp_context_create.
+ */
+static inline void
+lp_context_create_thread_safe(lp_context_ref *context)
 {
-   return LLVMBuildInBoundsGEP(B, Pointer, Indices, NumIndices, Name);
+   assert(context != NULL);
+
+   simple_mtx_t *mutex = (simple_mtx_t *)malloc(sizeof(simple_mtx_t));
+   if (!mutex) {
+      /* Caller checks ref == NULL to detect failure. */
+      context->ref = NULL;
+#if GALLIVM_USE_ORCJIT
+      context->tsref = NULL;
+#endif
+      context->owned = false;
+      return;
+   }
+   simple_mtx_init(mutex, mtx_plain);
+
+   lp_context_create(context);
+   context->mutex = mutex;
 }
 
-static inline LLVMValueRef
-LLVMBuildLoad2(LLVMBuilderRef B, LLVMTypeRef Ty,
-               LLVMValueRef PointerVal, const char *Name)
+static inline void
+lp_context_destroy(lp_context_ref *context)
 {
-  LLVMValueRef val = LLVMBuildLoad(B, PointerVal, Name);
-  return LLVMTypeOf(val) == Ty ? val : LLVMBuildBitCast(B, val, Ty, Name);
+   assert(context != NULL);
+   if (context->owned) {
+#if GALLIVM_USE_ORCJIT
+      LLVMOrcDisposeThreadSafeContext(context->tsref);
+#else
+      LLVMContextDispose(context->ref);
+#endif
+      context->ref = NULL;
+      if (context->mutex) {
+         simple_mtx_destroy(context->mutex);
+         free(context->mutex);
+      }
+   }
 }
 
-static inline LLVMValueRef
-LLVMBuildCall2(LLVMBuilderRef B, LLVMTypeRef Ty, LLVMValueRef Fn,
-               LLVMValueRef *Args, unsigned NumArgs,
-               const char *Name)
-{
-   return LLVMBuildCall(B, Fn, Args, NumArgs, Name);
-}
-
-#endif /* LLVM_VERSION_MAJOR < 8 */
 
 #endif /* LP_BLD_H */

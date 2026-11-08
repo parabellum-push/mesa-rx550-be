@@ -15,6 +15,8 @@
 #include "driver_trace/tr_public.h"
 #include "driver_noop/noop_public.h"
 
+#include "pipe/p_screen.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,13 +28,14 @@ extern "C" {
 static inline struct pipe_screen *
 debug_screen_wrap(struct pipe_screen *screen)
 {
+#if HAVE_GFX_COMPUTE
    screen = ddebug_screen_create(screen);
    screen = trace_screen_create(screen);
    screen = noop_screen_create(screen);
 
    if (debug_get_bool_option("GALLIUM_TESTS", false))
       util_run_tests(screen);
-
+#endif
    return screen;
 }
 

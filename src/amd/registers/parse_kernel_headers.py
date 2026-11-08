@@ -66,6 +66,12 @@ gfx_levels = {
         'asic_reg/gc/gc_11_5_0_sh_mask.h',
         'soc21_enum.h',
     ],
+    'gfx12': [
+        [0x00001260, 0x0000A000, 0x0001C000, 0x02402C00, 0, 0], # IP_BASE GC_BASE
+        'asic_reg/gc/gc_12_0_0_offset.h',
+        'asic_reg/gc/gc_12_0_0_sh_mask.h',
+        'soc21_enum.h',
+    ],
 }
 
 # match: #define mmSDMA0_DEC_START                              0x0000
@@ -731,6 +737,9 @@ enums_missing = {
   'gfx115': {
     **missing_enums_gfx115plus,
   },
+  'gfx12': {
+    **missing_enums_gfx115plus,
+  },
 }
 
 # Register field definitions that are missing in kernel headers
@@ -771,7 +780,7 @@ fields_missing = {
   },
   'gfx11': {
     "VGT_DRAW_PAYLOAD_CNTL": [["EN_VRS_RATE", 6, 6]],
-    # Only GFX1103_R2:
+    # Only Phoenix2:
     "CB_COLOR0_FDCC_CONTROL": [["DISABLE_OVERRIDE_INCONSISTENT_KEYS", 25, 25],
                                ["ENABLE_MAX_COMP_FRAG_OVERRIDE", 26, 26],
                                ["MAX_COMP_FRAGS", 27, 29]],

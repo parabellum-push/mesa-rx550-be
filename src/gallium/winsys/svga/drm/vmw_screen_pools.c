@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2009-2023 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2009-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 
 #include "vmw_screen.h"
@@ -92,7 +74,7 @@ vmw_query_pools_init(struct vmw_winsys_screen *vws)
    vws->pools.query_fenced = simple_fenced_bufmgr_create(
       vws->pools.query_mm, vws->fence_ops);
 
-   if(!vws->pools.query_fenced)
+   if (!vws->pools.query_fenced)
       goto out_no_query_fenced;
 
    return true;
@@ -122,7 +104,7 @@ vmw_pools_init(struct vmw_winsys_screen *vws)
    vws->pools.dma_mm = mm_bufmgr_create(vws->pools.dma_base,
                                         VMW_GMR_POOL_SIZE,
                                         12 /* 4096 alignment */);
-   if(!vws->pools.dma_mm)
+   if (!vws->pools.dma_mm)
       goto error;
 
    vws->pools.dma_cache =
@@ -136,8 +118,8 @@ vmw_pools_init(struct vmw_winsys_screen *vws)
    vws->pools.dma_fenced =
       simple_fenced_bufmgr_create(vws->pools.dma_cache,
                                   vws->fence_ops);
-   
-   if(!vws->pools.dma_fenced)
+
+   if (!vws->pools.dma_fenced)
       goto error;
 
    /*
@@ -157,12 +139,12 @@ vmw_pools_init(struct vmw_winsys_screen *vws)
                                    8192,
                                    16384,
                                    &desc);
-   if(!vws->pools.dma_slab)
+   if (!vws->pools.dma_slab)
      goto error;
 
    vws->pools.dma_slab_fenced =
       simple_fenced_bufmgr_create(vws->pools.dma_slab,
-		                  vws->fence_ops);
+                                  vws->fence_ops);
    if (!vws->pools.dma_slab_fenced)
       goto error;
 

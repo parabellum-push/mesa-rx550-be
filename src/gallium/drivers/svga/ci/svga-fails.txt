@@ -4,10 +4,7 @@ glx@glx-swap-pixmap-bad,Fail
 glx@glx-visuals-depth,Fail
 glx@glx-visuals-depth -pixmap,Fail
 glx@glx-visuals-stencil -pixmap,Fail
-glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
-glx@glx_arb_create_context_no_error@no error,Fail
 glx@glx_arb_sync_control@waitformsc,Fail
-shaders@glsl-bug-110796,Fail
 shaders@glsl-max-varyings >max_varying_components,Fail
 shaders@glsl-uniform-interstage-limits@subdivide 5,Fail
 shaders@glsl-uniform-interstage-limits@subdivide 5- statechanges,Fail
@@ -20,635 +17,9 @@ shaders@point-vertex-id gl_vertexid gl_instanceid,Fail
 shaders@point-vertex-id gl_vertexid gl_instanceid divisor,Fail
 spec@!opengl 1.0@gl-1.0-edgeflag,Fail
 spec@!opengl 1.0@gl-1.0-edgeflag-quads,Fail
-spec@!opengl 1.0@gl-1.0-polygon-line-aa,Fail
 spec@!opengl 1.0@rasterpos,Fail
 spec@!opengl 1.0@rasterpos@glsl_vs_gs_linked,Fail
 spec@!opengl 1.0@rasterpos@glsl_vs_tes_linked,Fail
-spec@!opengl 1.1@clipflat,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glBegin/End(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawArrays(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_POLYGON)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUADS)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_QUAD_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLES)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_FAN)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CCW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: center top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: left top PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right bottom PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right middle PV: LAST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: FIRST,Fail
-spec@!opengl 1.1@clipflat@glDrawElements(GL_TRIANGLE_STRIP)- glFrontFace(GL_CW)- glPolygonMode(GL_LINE)- quadrant: right top PV: LAST,Fail
 spec@!opengl 1.1@copyteximage 1d,Fail
 spec@!opengl 1.1@copyteximage 2d,Fail
 spec@!opengl 1.1@line-smooth-coverage,Fail
@@ -690,10 +61,6 @@ spec@!opengl 1.1@polygon-mode-offset@config 6: Expected white pixel on left edge
 spec@!opengl 1.1@polygon-mode-offset@config 6: Expected white pixel on right edge,Fail
 spec@!opengl 1.1@polygon-mode-offset@config 6: Expected white pixel on top edge,Fail
 spec@!opengl 1.1@polygon-offset,Fail
-spec@!opengl 1.1@texwrap 1d bordercolor,Fail
-spec@!opengl 1.1@texwrap 1d bordercolor@GL_RGBA8- border color only,Fail
-spec@!opengl 1.1@texwrap 1d proj bordercolor,Fail
-spec@!opengl 1.1@texwrap 1d proj bordercolor@GL_RGBA8- projected- border color only,Fail
 spec@!opengl 1.1@texwrap 2d bordercolor,Fail
 spec@!opengl 1.1@texwrap 2d bordercolor@GL_RGBA8- border color only,Fail
 spec@!opengl 1.1@texwrap 2d proj bordercolor,Fail
@@ -764,10 +131,14 @@ spec@!opengl 1.1@texwrap formats bordercolor@GL_RGBA16- border color only,Fail
 spec@!opengl 1.1@texwrap formats bordercolor@GL_RGBA2- border color only,Fail
 spec@!opengl 1.1@texwrap formats bordercolor@GL_RGBA4- border color only,Fail
 spec@!opengl 1.1@texwrap formats bordercolor@GL_RGBA8- border color only,Fail
-spec@!opengl 1.2@texwrap 3d bordercolor,Fail
-spec@!opengl 1.2@texwrap 3d bordercolor@GL_RGBA8- border color only,Fail
+spec@!opengl 1.1@texwrap 1d bordercolor,Fail
+spec@!opengl 1.1@texwrap 1d bordercolor@GL_RGBA8- border color only,Fail
+spec@!opengl 1.1@texwrap 1d proj bordercolor,Fail
+spec@!opengl 1.1@texwrap 1d proj bordercolor@GL_RGBA8- projected- border color only,Fail
 spec@!opengl 1.2@texwrap 3d proj bordercolor,Fail
 spec@!opengl 1.2@texwrap 3d proj bordercolor@GL_RGBA8- projected- border color only,Fail
+spec@!opengl 1.2@texwrap 3d bordercolor,Fail
+spec@!opengl 1.2@texwrap 3d bordercolor@GL_RGBA8- border color only,Fail
 spec@!opengl 1.4@gl-1.4-polygon-offset,Fail
 spec@!opengl 2.0@gl-2.0-edgeflag,Fail
 spec@!opengl 2.0@gl-2.0-edgeflag-immediate,Fail
@@ -779,35 +150,19 @@ spec@!opengl es 3.0@gles-3.0-transform-feedback-uniform-buffer-object,Fail
 spec@arb_arrays_of_arrays@execution@atomic_counters@fs-indirect-index,Fail
 spec@arb_arrays_of_arrays@execution@atomic_counters@vs-indirect-index,Fail
 spec@arb_arrays_of_arrays@execution@sampler@fs-nested-struct-arrays-nonconst-nested-array,Fail
-spec@arb_buffer_storage@bufferstorage-persistent read,Fail
-spec@arb_buffer_storage@bufferstorage-persistent read client-storage,Fail
-spec@arb_buffer_storage@bufferstorage-persistent read coherent,Fail
-spec@arb_buffer_storage@bufferstorage-persistent read coherent client-storage,Fail
-spec@arb_buffer_storage@bufferstorage-persistent_gles3 read,Fail
-spec@arb_buffer_storage@bufferstorage-persistent_gles3 read client-storage,Fail
-spec@arb_buffer_storage@bufferstorage-persistent_gles3 read coherent,Fail
-spec@arb_buffer_storage@bufferstorage-persistent_gles3 read coherent client-storage,Fail
-spec@arb_clear_texture@arb_clear_texture-depth,Crash
+spec@arb_clear_texture@arb_clear_texture-depth,Fail
 spec@arb_clear_texture@arb_clear_texture-depth-stencil,Fail
 spec@arb_clear_texture@arb_clear_texture-stencil,Fail
 spec@arb_clip_control@arb_clip_control-clip-control,Fail
-spec@arb_copy_buffer@copy_buffer_coherency,Fail
-spec@arb_copy_buffer@copybuffersubdata,Fail
-spec@arb_copy_buffer@data-sync,Fail
-spec@arb_copy_buffer@data-sync@overwrite source data,Fail
-spec@arb_copy_buffer@dlist,Fail
-spec@arb_copy_buffer@intra-buffer-copy,Fail
-spec@arb_copy_buffer@overlap,Fail
-spec@arb_copy_buffer@subdata-sync,Fail
-spec@arb_copy_buffer@subdata-sync@overwrite source data,Fail
-spec@arb_copy_buffer@targets,Fail
 spec@arb_copy_image@arb_copy_image-formats,Crash
 spec@arb_copy_image@arb_copy_image-formats --samples=2,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=2@Source: GL_RGB32I/Destination: GL_RGB32F,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=2@Source: GL_RGB32UI/Destination: GL_RGB32F,Fail
+spec@arb_copy_image@arb_copy_image-formats --samples=2@Source: GL_R32F/Destination: GL_RG16,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=4,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_RGB32I/Destination: GL_RGB32F,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_RGB32UI/Destination: GL_RGB32F,Fail
+spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_R32F/Destination: GL_RG16,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32I/Destination: GL_RGB32F,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32UI/Destination: GL_RGB32F,Fail
@@ -874,16 +229,11 @@ spec@arb_internalformat_query2@max dimensions related pname checks@GL_MAX_DEPTH,
 spec@arb_internalformat_query2@max dimensions related pname checks@GL_MAX_HEIGHT,Fail
 spec@arb_internalformat_query2@max dimensions related pname checks@GL_MAX_LAYERS,Fail
 spec@arb_internalformat_query2@max dimensions related pname checks@GL_MAX_WIDTH,Fail
-spec@arb_occlusion_query@occlusion_query_conform,Fail
-spec@arb_occlusion_query@occlusion_query_conform@GetObjivAval_multi1,Fail
 spec@arb_occlusion_query@occlusion_query_meta_no_fragments,Fail
 spec@arb_occlusion_query@occlusion_query_meta_save,Fail
 spec@arb_point_parameters@arb_point_parameters-point-attenuation,Fail
-spec@arb_point_parameters@arb_point_parameters-point-attenuation@Aliased combinations,Fail
 spec@arb_point_sprite@arb_point_sprite-checkerboard,Fail
 spec@arb_point_sprite@arb_point_sprite-mipmap,Fail
-spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex,Fail
-spec@arb_program_interface_query@arb_program_interface_query-getprogramresourceindex@'vs_input2[1][0]' on GL_PROGRAM_INPUT,Fail
 spec@arb_sample_shading@arb_sample_shading-builtin-gl-sample-mask-mrt-alpha-to-coverage,Fail
 spec@arb_sample_shading@builtin-gl-sample-mask 0,Fail
 spec@arb_sample_shading@builtin-gl-sample-mask-simple 0,Fail
@@ -902,11 +252,7 @@ spec@arb_sample_shading@samplemask 2 all@1.000000 mask_in_one,Fail
 spec@arb_sample_shading@samplemask 2 all@noms mask_in_one,Fail
 spec@arb_sample_shading@samplemask 2 all@noms partition,Fail
 spec@arb_sample_shading@samplemask 2 all@sample mask_in_one,Fail
-spec@arb_sample_shading@samplemask 2@0.500000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 2@1.000000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 2@noms mask_in_one,Fail
 spec@arb_sample_shading@samplemask 2@noms partition,Fail
-spec@arb_sample_shading@samplemask 2@sample mask_in_one,Fail
 spec@arb_sample_shading@samplemask 4,Fail
 spec@arb_sample_shading@samplemask 4 all,Fail
 spec@arb_sample_shading@samplemask 4 all@0.250000 mask_in_one,Fail
@@ -915,12 +261,7 @@ spec@arb_sample_shading@samplemask 4 all@1.000000 mask_in_one,Fail
 spec@arb_sample_shading@samplemask 4 all@noms mask_in_one,Fail
 spec@arb_sample_shading@samplemask 4 all@noms partition,Fail
 spec@arb_sample_shading@samplemask 4 all@sample mask_in_one,Fail
-spec@arb_sample_shading@samplemask 4@0.250000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 4@0.500000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 4@1.000000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 4@noms mask_in_one,Fail
 spec@arb_sample_shading@samplemask 4@noms partition,Fail
-spec@arb_sample_shading@samplemask 4@sample mask_in_one,Fail
 spec@arb_sample_shading@samplemask 6,Fail
 spec@arb_sample_shading@samplemask 6 all,Fail
 spec@arb_sample_shading@samplemask 6 all@0.125000 mask_in_one,Fail
@@ -939,13 +280,7 @@ spec@arb_sample_shading@samplemask 6@noms partition,Fail
 spec@arb_sample_shading@samplemask 6@sample mask_in_one,Fail
 spec@arb_sample_shading@samplemask 8,Fail
 spec@arb_sample_shading@samplemask 8 all,Fail
-spec@arb_sample_shading@samplemask 8 all@0.125000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 8 all@0.250000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 8 all@0.500000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 8 all@1.000000 mask_in_one,Fail
-spec@arb_sample_shading@samplemask 8 all@noms mask_in_one,Fail
 spec@arb_sample_shading@samplemask 8 all@noms partition,Fail
-spec@arb_sample_shading@samplemask 8 all@sample mask_in_one,Fail
 spec@arb_sample_shading@samplemask 8@0.125000 mask_in_one,Fail
 spec@arb_sample_shading@samplemask 8@0.250000 mask_in_one,Fail
 spec@arb_sample_shading@samplemask 8@0.500000 mask_in_one,Fail
@@ -1058,22 +393,15 @@ spec@arb_shader_image_load_store@shader-mem-barrier@Tessellation control shader/
 spec@arb_shader_image_load_store@shader-mem-barrier@Tessellation control shader/'volatile' qualifier memory barrier test/modulus=64,Fail
 spec@arb_shader_storage_buffer_object@array-ssbo-auto-binding,Fail
 spec@arb_shader_storage_buffer_object@array-ssbo-binding,Crash
+spec@arb_shader_storage_buffer_object@maxblocks,Fail
 spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgrad,Fail
 spec@arb_shader_texture_lod@execution@arb_shader_texture_lod-texgradcube,Fail
-spec@arb_sync@clientwaitsync-timeout,Fail
-spec@arb_sync@clientwaitsync-timeout@read,Fail
-spec@arb_sync@clientwaitsync-timeout@read client-storage,Fail
-spec@arb_sync@clientwaitsync-timeout@read coherent,Fail
-spec@arb_sync@clientwaitsync-timeout@read coherent client-storage,Fail
 spec@arb_tessellation_shader@arb_tessellation_shader-tes-gs-max-output -small -scan 1 50,Fail
 spec@arb_tessellation_shader@execution@barrier,Fail
 spec@arb_tessellation_shader@execution@barrier-patch,Fail
 spec@arb_tessellation_shader@execution@invocation-counting-even,Fail
 spec@arb_tessellation_shader@execution@invocation-counting-odd,Fail
 spec@arb_tessellation_shader@execution@tcs-primitiveid,Fail
-spec@arb_tessellation_shader@execution@tcs-tes-max-in-out-components,Fail
-spec@arb_tessellation_shader@execution@tcs-tes-max-in-out-patch-components,Fail
-spec@arb_tessellation_shader@execution@tes-input@tes-input-gl_clipdistance,Fail
 spec@arb_tessellation_shader@execution@tesslevels-indirect,Fail
 spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-float-index-rd-after-barrier,Fail
 spec@arb_tessellation_shader@execution@variable-indexing@tcs-output-array-float-index-wr,Fail
@@ -1106,7 +434,6 @@ spec@arb_tessellation_shader@execution@variable-indexing@tes-patch-input-array-v
 spec@arb_tessellation_shader@execution@variable-indexing@tes-patch-input-array-vec2-index-rd,Fail
 spec@arb_tessellation_shader@execution@variable-indexing@tes-patch-input-array-vec3-index-rd,Fail
 spec@arb_tessellation_shader@execution@variable-indexing@tes-patch-input-array-vec4-index-rd,Fail
-spec@arb_tessellation_shader@execution@vs-tes-max-in-out-components,Fail
 spec@arb_texture_buffer_object@texture-buffer-size-clamp,Fail
 spec@arb_texture_buffer_object@texture-buffer-size-clamp@r8ui_texture_buffer_size_via_image,Fail
 spec@arb_texture_buffer_object@texture-buffer-size-clamp@r8ui_texture_buffer_size_via_sampler,Fail
@@ -1139,42 +466,22 @@ spec@arb_texture_compression_bptc@texwrap formats bordercolor@GL_COMPRESSED_RGB_
 spec@arb_texture_compression_bptc@texwrap formats bordercolor@GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT- border color only,Fail
 spec@arb_texture_compression_bptc@texwrap formats bordercolor@GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM- border color only,Fail
 spec@arb_texture_cube_map@copyteximage cube,Fail
-spec@arb_texture_cube_map@copyteximage cube samples=2,Fail
-spec@arb_texture_cube_map@copyteximage cube samples=4,Fail
-spec@arb_texture_cube_map@copyteximage cube samples=6,Fail
-spec@arb_texture_cube_map@copyteximage cube samples=8,Fail
 spec@arb_texture_cube_map_array@arb_texture_cube_map_array-sampler-cube-array-shadow,Fail
 spec@arb_texture_float@texwrap formats bordercolor,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_ALPHA16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_ALPHA32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_INTENSITY16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_INTENSITY32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE_ALPHA16F_ARB- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_LUMINANCE_ALPHA32F_ARB- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGB16F- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGB32F- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGBA16F- swizzled- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor-swizzled@GL_RGBA32F- swizzled- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_ALPHA16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_ALPHA32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_INTENSITY16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_INTENSITY32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE_ALPHA16F_ARB- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_LUMINANCE_ALPHA32F_ARB- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_RGB16F- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_RGB32F- border color only,Fail
 spec@arb_texture_float@texwrap formats bordercolor@GL_RGBA16F- border color only,Fail
-spec@arb_texture_float@texwrap formats bordercolor@GL_RGBA32F- border color only,Fail
 spec@arb_texture_rectangle@copyteximage rect,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=2,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=4,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=6,Fail
-spec@arb_texture_rectangle@copyteximage rect samples=8,Fail
 spec@arb_texture_rectangle@texwrap rect bordercolor,Fail
 spec@arb_texture_rectangle@texwrap rect bordercolor@GL_RGBA8- border color only,Fail
 spec@arb_texture_rectangle@texwrap rect proj bordercolor,Fail
@@ -1192,13 +499,9 @@ spec@arb_texture_rg@texwrap formats bordercolor@GL_RG8- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_R16F- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_R32F- swizzled- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_RG16F- swizzled- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor-swizzled@GL_RG32F- swizzled- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor@GL_R16F- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor@GL_R32F- border color only,Fail
 spec@arb_texture_rg@texwrap formats-float bordercolor@GL_RG16F- border color only,Fail
-spec@arb_texture_rg@texwrap formats-float bordercolor@GL_RG32F- border color only,Fail
 spec@arb_texture_stencil8@fbo-stencil-blit,Fail
 spec@arb_texture_view@rendering-formats,Fail
 spec@arb_texture_view@rendering-formats@clear GL_R16 as GL_R16UI,Fail
@@ -1322,18 +625,13 @@ spec@arb_texture_view@rendering-formats@render to GL_RGB8 as GL_RGB8_SNORM,Fail
 spec@arb_texture_view@rendering-formats@render to GL_RGB8I as GL_RGB8,Fail
 spec@arb_texture_view@rendering-formats@render to GL_RGB8UI as GL_RGB8,Fail
 spec@arb_texture_view@rendering-formats@render to GL_RGB8_SNORM as GL_RGB8,Fail
-spec@arb_texture_view@rendering-formats@sample GL_RGB32F as GL_RGB32UI,Fail
-spec@arb_texture_view@rendering-formats@sample GL_RGB32I as GL_RGB32F,Fail
 spec@arb_texture_view@rendering-formats@sample GL_RGB32UI as GL_RGB32F,Fail
 spec@arb_texture_view@rendering-formats@sample GL_RGB8 as GL_RGB8I,Fail
-spec@arb_texture_view@rendering-formats@sample GL_RGB8UI as GL_RGB8,Fail
 spec@arb_texture_view@rendering-layers-image,Fail
 spec@arb_texture_view@rendering-layers-image@layers rendering of image1DArray,Fail
 spec@arb_texture_view@rendering-layers-image@layers rendering of image2DArray,Fail
 spec@arb_texture_view@rendering-layers-image@layers rendering of imageCubeArray,Fail
-spec@arb_timer_query@timestamp-get,Fail
 spec@arb_uniform_buffer_object@maxblocks,Fail
-spec@arb_viewport_array@display-list,Fail
 spec@arb_viewport_array@render-depthrange,Fail
 spec@egl 1.4@eglterminate then unbind context,Fail
 spec@egl_ext_device_base@conformance,Fail
@@ -1344,8 +642,6 @@ spec@egl_khr_gl_image@egl_khr_gl_renderbuffer_image-clear-shared-image gl_depth_
 spec@egl_khr_surfaceless_context@viewport,Fail
 spec@egl_mesa_configless_context@basic,Fail
 spec@ext_clear_texture@ext_clear_texture-stencil,Fail
-spec@ext_direct_state_access@named-buffers 30,Fail
-spec@ext_direct_state_access@named-buffers 30@NamedCopyBufferSubDataEXT,Fail
 spec@ext_framebuffer_blit@fbo-sys-sub-blit,Fail
 spec@ext_framebuffer_multisample@accuracy 2 stencil_resolve depthstencil,Fail
 spec@ext_framebuffer_multisample@accuracy 2 stencil_resolve small depthstencil,Fail
@@ -1400,29 +696,19 @@ spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuv420,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yuyv,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yvu420,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yvyu,Fail
-spec@ext_packed_depth_stencil@fbo-blit-d24s8,Fail
 spec@ext_packed_depth_stencil@fbo-stencil-gl_depth24_stencil8-blit,Fail
 spec@ext_packed_depth_stencil@texwrap formats bordercolor,Fail
+spec@ext_packed_depth_stencil@texwrap formats bordercolor@GL_DEPTH24_STENCIL8- border color only,Fail
 spec@ext_packed_depth_stencil@texwrap formats bordercolor-swizzled,Fail
 spec@ext_packed_depth_stencil@texwrap formats bordercolor-swizzled@GL_DEPTH24_STENCIL8- swizzled- border color only,Fail
-spec@ext_packed_depth_stencil@texwrap formats bordercolor@GL_DEPTH24_STENCIL8- border color only,Fail
 spec@ext_packed_float@fbo-generatemipmap-formats,Fail
 spec@ext_packed_float@fbo-generatemipmap-formats@GL_R11F_G11F_B10F NPOT,Fail
-spec@ext_packed_float@query-rgba-signed-components,Fail
 spec@ext_packed_float@texwrap formats bordercolor,Fail
+spec@ext_packed_float@texwrap formats bordercolor@GL_R11F_G11F_B10F- border color only,Fail
 spec@ext_packed_float@texwrap formats bordercolor-swizzled,Fail
 spec@ext_packed_float@texwrap formats bordercolor-swizzled@GL_R11F_G11F_B10F- swizzled- border color only,Fail
-spec@ext_packed_float@texwrap formats bordercolor@GL_R11F_G11F_B10F- border color only,Fail
 spec@ext_texture_array@copyteximage 1d_array,Fail
-spec@ext_texture_array@copyteximage 1d_array samples=2,Fail
-spec@ext_texture_array@copyteximage 1d_array samples=4,Fail
-spec@ext_texture_array@copyteximage 1d_array samples=6,Fail
-spec@ext_texture_array@copyteximage 1d_array samples=8,Fail
 spec@ext_texture_array@copyteximage 2d_array,Fail
-spec@ext_texture_array@copyteximage 2d_array samples=2,Fail
-spec@ext_texture_array@copyteximage 2d_array samples=4,Fail
-spec@ext_texture_array@copyteximage 2d_array samples=6,Fail
-spec@ext_texture_array@copyteximage 2d_array samples=8,Fail
 spec@ext_texture_compression_rgtc@texwrap formats bordercolor,Fail
 spec@ext_texture_compression_rgtc@texwrap formats bordercolor-swizzled,Fail
 spec@ext_texture_compression_rgtc@texwrap formats bordercolor-swizzled@GL_COMPRESSED_RED_RGTC1- swizzled- border color only,Fail
@@ -1484,16 +770,24 @@ spec@ext_texture_snorm@texwrap formats bordercolor@GL_RGB8_SNORM- border color o
 spec@ext_texture_snorm@texwrap formats bordercolor@GL_RGBA16_SNORM- border color only,Fail
 spec@ext_texture_snorm@texwrap formats bordercolor@GL_RGBA8_SNORM- border color only,Fail
 spec@ext_texture_srgb@texwrap formats bordercolor,Fail
+spec@ext_texture_srgb@texwrap formats bordercolor@GL_SLUMINANCE8- border color only,Fail
+spec@ext_texture_srgb@texwrap formats bordercolor@GL_SLUMINANCE8_ALPHA8- border color only,Fail
+spec@ext_texture_srgb@texwrap formats bordercolor@GL_SRGB8- border color only,Fail
+spec@ext_texture_srgb@texwrap formats bordercolor@GL_SRGB8_ALPHA8- border color only,Fail
 spec@ext_texture_srgb@texwrap formats bordercolor-swizzled,Fail
 spec@ext_texture_srgb@texwrap formats bordercolor-swizzled@GL_SLUMINANCE8- swizzled- border color only,Fail
 spec@ext_texture_srgb@texwrap formats bordercolor-swizzled@GL_SLUMINANCE8_ALPHA8- swizzled- border color only,Fail
 spec@ext_texture_srgb@texwrap formats bordercolor-swizzled@GL_SRGB8- swizzled- border color only,Fail
 spec@ext_texture_srgb@texwrap formats bordercolor-swizzled@GL_SRGB8_ALPHA8- swizzled- border color only,Fail
-spec@ext_texture_srgb@texwrap formats bordercolor@GL_SLUMINANCE8- border color only,Fail
-spec@ext_texture_srgb@texwrap formats bordercolor@GL_SLUMINANCE8_ALPHA8- border color only,Fail
-spec@ext_texture_srgb@texwrap formats bordercolor@GL_SRGB8- border color only,Fail
-spec@ext_texture_srgb@texwrap formats bordercolor@GL_SRGB8_ALPHA8- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SLUMINANCE- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SLUMINANCE_ALPHA- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT- border color only,Fail
+spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_S3TC_DXT1_EXT- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled@GL_COMPRESSED_SLUMINANCE- swizzled- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled@GL_COMPRESSED_SLUMINANCE_ALPHA- swizzled- border color only,Fail
@@ -1503,14 +797,6 @@ spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled@GL_COMPRESSED_SR
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT- swizzled- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT- swizzled- border color only,Fail
 spec@ext_texture_srgb@texwrap formats-s3tc bordercolor-swizzled@GL_COMPRESSED_SRGB_S3TC_DXT1_EXT- swizzled- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SLUMINANCE- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SLUMINANCE_ALPHA- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT- border color only,Fail
-spec@ext_texture_srgb@texwrap formats-s3tc bordercolor@GL_COMPRESSED_SRGB_S3TC_DXT1_EXT- border color only,Fail
 spec@ext_transform_feedback@change-size range-grow,Fail
 spec@ext_transform_feedback@immediate-reuse-index-buffer,Fail
 spec@ext_transform_feedback@immediate-reuse-uniform-buffer,Fail
@@ -1536,7 +822,6 @@ spec@glsl-1.10@execution@clipping@clip-plane-transformation pos_clipvert,Fail
 spec@glsl-1.30@execution@clipping@clip-plane-transformation pos,Fail
 spec@glsl-1.30@execution@fs-logic-joined-comparisons-with-nan2,Fail
 spec@glsl-1.30@execution@range_analysis_fsat_of_nan,Fail
-spec@glsl-1.40@uniform_buffer@two-stages,Fail
 spec@glsl-1.50@execution@geometry@primitive-id-restart gl_line_loop ffs,Fail
 spec@glsl-1.50@execution@geometry@primitive-id-restart gl_line_loop other,Fail
 spec@glsl-1.50@execution@geometry@primitive-id-restart gl_line_strip ffs,Fail
@@ -1724,6 +1009,8 @@ spec@nv_copy_image@nv_copy_image-formats --samples=8@Source: GL_RGB32UI/Destinat
 spec@nv_copy_image@nv_copy_image-formats --samples=8@Source: GL_RGB32UI/Destination: GL_RGB32UI,Fail
 
 # uprev Piglit in Mesa
+spec@!opengl 1.1@large-tex,Fail
+spec@!opengl 1.1@large-tex@test_clear_and_read_pixels,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=2@Source: GL_RGB32F/Destination: GL_RGB32I,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=2@Source: GL_RGB32F/Destination: GL_RGB32UI,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=2@Source: GL_RGB32I/Destination: GL_RGB32I,Fail
@@ -1736,12 +1023,65 @@ spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_RGB32I/Destina
 spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_RGB32I/Destination: GL_RGB32UI,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_RGB32UI/Destination: GL_RGB32I,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=4@Source: GL_RGB32UI/Destination: GL_RGB32UI,Fail
+spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_R32F/Destination: GL_RG16,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32F/Destination: GL_RGB32I,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32F/Destination: GL_RGB32UI,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32I/Destination: GL_RGB32I,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32I/Destination: GL_RGB32UI,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32UI/Destination: GL_RGB32I,Fail
 spec@arb_copy_image@arb_copy_image-formats --samples=8@Source: GL_RGB32UI/Destination: GL_RGB32UI,Fail
+spec@arb_framebuffer_object@execution@msaa-alpha-to-coverage_alpha-to-one_write-z,Fail
+spec@arb_framebuffer_object@execution@msaa-alpha-to-coverage_alpha-to-one,Fail
+spec@arb_gpu_shader5@execution@precise@saturate-min-nan,Fail
+spec@arb_point_parameters@arb_point_parameters-point-attenuation@Antialiased combinations,Fail
+spec@arb_sample_shading@samplemask 2@0.500000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 2@1.000000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 2@noms mask_in_one,Fail
+spec@arb_sample_shading@samplemask 2@sample mask_in_one,Fail
+spec@arb_sample_shading@samplemask 4@0.250000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 4@0.500000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 4@1.000000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 4@noms mask_in_one,Fail
+spec@arb_sample_shading@samplemask 4@sample mask_in_one,Fail
+spec@arb_sample_shading@samplemask 6 all@0.125000 fix,Fail
+spec@arb_sample_shading@samplemask 6 all@0.125000 partition,Fail
+spec@arb_sample_shading@samplemask 6 all@0.250000 fix,Fail
+spec@arb_sample_shading@samplemask 6 all@0.250000 partition,Fail
+spec@arb_sample_shading@samplemask 6 all@0.500000 fix,Fail
+spec@arb_sample_shading@samplemask 6 all@0.500000 partition,Fail
+spec@arb_sample_shading@samplemask 6 all@1.000000 fix,Fail
+spec@arb_sample_shading@samplemask 6 all@1.000000 partition,Fail
+spec@arb_sample_shading@samplemask 6 all@noms fix,Fail
+spec@arb_sample_shading@samplemask 6 all@sample fix,Fail
+spec@arb_sample_shading@samplemask 6 all@sample partition,Fail
+spec@arb_sample_shading@samplemask 8 all@0.125000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 8 all@0.250000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 8 all@0.500000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 8 all@1.000000 mask_in_one,Fail
+spec@arb_sample_shading@samplemask 8 all@noms mask_in_one,Fail
+spec@arb_sample_shading@samplemask 8 all@sample mask_in_one,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=2,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=4,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=6,Fail
+spec@arb_texture_cube_map@copyteximage cube samples=8,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=2,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=4,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=6,Fail
+spec@arb_texture_rectangle@copyteximage rect samples=8,Fail
+spec@arb_texture_view@tex-view,Fail
 spec@egl_chromium_sync_control@conformance,Fail
 spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test,Fail
-spec@glsl-1.30@execution@texelfetch fs sampler2darray 98x1x9-98x129x9,Timeout
+spec@ext_image_dma_buf_import@ext_image_dma_buf_import-tex-modifier,Fail
+spec@ext_packed_depth_stencil@fbo-blit-d24s8,Fail
+spec@ext_texture_array@copyteximage 1d_array samples=2,Fail
+spec@ext_texture_array@copyteximage 1d_array samples=4,Fail
+spec@ext_texture_array@copyteximage 1d_array samples=6,Fail
+spec@ext_texture_array@copyteximage 1d_array samples=8,Fail
+spec@ext_texture_array@copyteximage 2d_array samples=2,Fail
+spec@ext_texture_array@copyteximage 2d_array samples=4,Fail
+spec@ext_texture_array@copyteximage 2d_array samples=6,Fail
+spec@ext_texture_array@copyteximage 2d_array samples=8,Fail
+spec@ext_texture_integer@fbo-integer-attachments,Fail
+spec@glsl-1.30@execution@glsl-packed-back-color,Fail
+spec@glsl-1.30@execution@glsl-packed-colors-clamping,Fail
+

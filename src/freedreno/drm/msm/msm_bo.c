@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012-2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012-2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -156,6 +138,13 @@ msm_bo_set_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size)
 static int
 msm_bo_get_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size)
 {
+   /* Zero-initialize the caller's buffer so that any bytes the kernel does
+    * not fill (e.g. when no metadata was ever set on this BO) are zero
+    * rather than left uninitialized, and so that we are robust to kernels
+    * that don't report the actual stored length in req.len.
+    */
+   memset(metadata, 0, metadata_size);
+
    struct drm_msm_gem_info req = {
       .handle = bo->handle,
       .info = MSM_INFO_GET_METADATA,
@@ -163,13 +152,24 @@ msm_bo_get_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size)
       .len = metadata_size,
    };
 
-   int ret = drmCommandWrite(bo->dev->fd, DRM_MSM_GEM_INFO, &req, sizeof(req));
+   /* drmCommandWriteRead() (not drmCommandWrite()) so that the kernel's
+    * req.len -- the actual length of the stored metadata -- is copied back.
+    */
+   int ret = drmCommandWriteRead(bo->dev->fd, DRM_MSM_GEM_INFO, &req, sizeof(req));
    if (ret) {
       mesa_logw_once("Failed to get BO metadata with DRM_MSM_GEM_INFO: %d",
                      ret);
+      return ret;
    }
 
-   return ret;
+   /* If the kernel has no metadata stored for this BO (or stored less than
+    * the caller requested), signal ENODATA so callers fall back to their own
+    * layout defaults instead of trusting a partial/zeroed struct.
+    */
+   if (req.len < metadata_size)
+      return -ENODATA;
+
+   return 0;
 }
 
 static const struct fd_bo_funcs funcs = {

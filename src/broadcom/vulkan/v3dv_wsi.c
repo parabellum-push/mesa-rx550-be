@@ -23,9 +23,9 @@
  * IN THE SOFTWARE.
  */
 
-#include "v3dv_private.h"
+#include "v3dv_device.h"
+#include "v3dv_entrypoints.h"
 #include "vk_util.h"
-#include "wsi_common.h"
 #include "wsi_common_drm.h"
 #include "wsi_common_entrypoints.h"
 
@@ -41,7 +41,15 @@ v3dv_wsi_can_present_on_device(VkPhysicalDevice _pdevice, int fd)
 {
    V3DV_FROM_HANDLE(v3dv_physical_device, pdevice, _pdevice);
    assert(pdevice->display_fd != -1);
-   return wsi_common_drm_devices_equal(fd, pdevice->display_fd);
+   assert(pdevice->render_fd != -1);
+
+   /* v3dv handles presentation by allocating wsi buffers in the display
+    * device, so both render and display devices can match here.
+    * In particular, this callback receives the render device when
+    * running in an XWayland environment.
+    */
+   return wsi_common_drm_devices_equal(fd, pdevice->display_fd) ||
+          wsi_common_drm_devices_equal(fd, pdevice->render_fd);
 }
 
 
@@ -93,12 +101,15 @@ VkResult
 v3dv_wsi_init(struct v3dv_physical_device *physical_device)
 {
    VkResult result;
+   const struct v3dv_instance *v3dv_instance =
+      container_of(physical_device->vk.instance, struct v3dv_instance, vk);
 
    result = wsi_device_init(&physical_device->wsi_device,
                             v3dv_physical_device_to_handle(physical_device),
                             v3dv_wsi_proc_addr,
                             &physical_device->vk.instance->alloc,
-                            physical_device->display_fd, NULL,
+                            physical_device->display_fd,
+                            &v3dv_instance->drirc.options,
                             &(struct wsi_device_options){.sw_device = false});
 
    if (result != VK_SUCCESS)
@@ -119,11 +130,4 @@ v3dv_wsi_finish(struct v3dv_physical_device *physical_device)
    physical_device->vk.wsi_device = NULL;
    wsi_device_finish(&physical_device->wsi_device,
                      &physical_device->vk.instance->alloc);
-}
-
-struct v3dv_image *
-v3dv_wsi_get_image_from_swapchain(VkSwapchainKHR swapchain, uint32_t index)
-{
-   VkImage image = wsi_common_get_image(swapchain, index);
-   return v3dv_image_from_handle(image);
 }

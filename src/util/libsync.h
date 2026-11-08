@@ -34,11 +34,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/types.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include "util/detect_os.h"
+#include "util/os_file.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -84,6 +87,17 @@ struct sync_merge_data {
 	uint32_t	flags;
 	uint32_t	pad;
 };
+#if defined(__GNU__)
+#define _IOT_sync_merge_data _IOT(_IOTS(struct sync_merge_data), 1, 0, 0, 0, 0)
+#endif
+
+struct sync_fence_info {
+	char obj_name[32];
+	char driver_name[32];
+	int32_t status;
+	uint32_t flags;
+	uint64_t timestamp_ns;
+};
 
 struct sync_file_info {
 	char	name[32];
@@ -94,6 +108,9 @@ struct sync_file_info {
 
 	uint64_t	sync_fence_info;
 };
+#if defined(__GNU__)
+#define _IOT_sync_file_info _IOT(_IOTS(struct sync_file_info), 1, 0, 0, 0, 0)
+#endif
 
 #define SYNC_IOC_MAGIC		'>'
 #define SYNC_IOC_MERGE		_IOWR(SYNC_IOC_MAGIC, 3, struct sync_merge_data)
@@ -159,6 +176,34 @@ sync_valid_fd(int fd)
 	return ioctl(fd, SYNC_IOC_FILE_INFO, &info) >= 0;
 }
 
+static inline struct sync_file_info* sync_file_info(int32_t fd)
+{
+    struct sync_file_info local_info;
+    struct sync_file_info *info;
+    int err;
+
+    memset(&local_info, 0, sizeof(local_info));
+    err = ioctl(fd, SYNC_IOC_FILE_INFO, &local_info);
+    if (err < 0)
+        return NULL;
+
+    info = (struct sync_file_info *)calloc(1, sizeof(struct sync_file_info) +
+                  local_info.num_fences * sizeof(struct sync_fence_info));
+    if (!info)
+        return NULL;
+
+    info->num_fences = local_info.num_fences;
+    info->sync_fence_info = (uint64_t)(uintptr_t)(info + 1);
+
+    err = ioctl(fd, SYNC_IOC_FILE_INFO, info);
+    if (err < 0) {
+        free(info);
+        return NULL;
+    }
+
+    return info;
+}
+
 #endif /* DETECT_OS_ANDROID */
 
 /* accumulate fd2 into fd1.  If *fd1 is not a valid fd then dup fd2,
@@ -185,7 +230,7 @@ static inline int sync_accumulate(const char *name, int *fd1, int fd2)
 	assert(fd2 >= 0);
 
 	if (*fd1 < 0) {
-		*fd1 = dup(fd2);
+		*fd1 = os_dupfd_cloexec(fd2);
 		return 0;
 	}
 

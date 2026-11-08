@@ -6,6 +6,9 @@
 # FEDORA_X86_64_BUILD_TAG
 
 set -e
+
+. .gitlab-ci/setup-test-env.sh
+
 set -o xtrace
 
 
@@ -25,9 +28,7 @@ EPHEMERAL=(
 )
 
 DEPS=(
-    bindgen
     bison
-    cbindgen
     ccache
     clang-devel
     flex
@@ -37,6 +38,7 @@ DEPS=(
     gettext
     glslang
     kernel-headers
+    libstdc++-static
     llvm-devel
     ninja-build
     "pkgconfig(LLVMSPIRVLib)"
@@ -48,11 +50,8 @@ DEPS=(
     "pkgconfig(libclc)"
     "pkgconfig(libelf)"
     "pkgconfig(libglvnd)"
-    "pkgconfig(libomxil-bellagio)"
-    "pkgconfig(libselinux)"
     "pkgconfig(libva)"
     "pkgconfig(pciaccess)"
-    "pkgconfig(vdpau)"
     "pkgconfig(vulkan)"
     "pkgconfig(x11)"
     "pkgconfig(x11-xcb)"
@@ -69,19 +68,21 @@ DEPS=(
     "pkgconfig(xfixes)"
     "pkgconfig(xrandr)"
     "pkgconfig(xshmfence)"
-    "pkgconfig(xtensor)"
     "pkgconfig(xxf86vm)"
     "pkgconfig(zlib)"
     procps-ng
     python-unversioned-command
     python3-devel
     python3-mako
+    python3-packaging
     python3-ply
     python3-pycparser
-    rust-packaging
-    vulkan-headers
+    python3-yaml
+    SDL3-devel
     spirv-tools-devel
     spirv-llvm-translator-devel
+    vulkan-headers
+    which
 )
 
 dnf install -y --setopt=install_weak_deps=False "${DEPS[@]}" "${EPHEMERAL[@]}"
@@ -101,8 +102,11 @@ tar -xvf $XORGMACROS_VERSION.tar.bz2 && rm $XORGMACROS_VERSION.tar.bz2
 cd $XORGMACROS_VERSION; ./configure; make install; cd ..
 rm -rf $XORGMACROS_VERSION
 
-# We need at least 1.3.1 for rusticl
-pip install meson==1.3.1
+. .gitlab-ci/container/install-meson.sh
+
+. .gitlab-ci/container/build-rust.sh build
+
+. .gitlab-ci/container/build-bindgen.sh
 
 . .gitlab-ci/container/build-mold.sh
 

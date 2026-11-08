@@ -47,7 +47,8 @@ vn_ring_get_layout(size_t buf_size,
 struct vn_ring *
 vn_ring_create(struct vn_instance *instance,
                const struct vn_ring_layout *layout,
-               uint8_t direct_order);
+               uint8_t direct_order,
+               bool is_tls_ring);
 
 void
 vn_ring_destroy(struct vn_ring *ring);
@@ -63,6 +64,9 @@ vn_ring_unset_status_bits(struct vn_ring *ring, uint32_t mask);
 
 bool
 vn_ring_get_seqno_status(struct vn_ring *ring, uint32_t seqno);
+
+void
+vn_ring_wait_seqno(struct vn_ring *ring, uint32_t seqno);
 
 void
 vn_ring_wait_all(struct vn_ring *ring);

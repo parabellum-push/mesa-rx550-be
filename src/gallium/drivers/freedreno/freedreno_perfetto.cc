@@ -1,30 +1,11 @@
 /*
  * Copyright © 2021 Google, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
-
-#include <perfetto.h>
 
 #include "util/perf/u_perfetto.h"
 #include "util/perf/u_perfetto_renderpass.h"
+#include "util/simple_mtx.h"
 
 #include "freedreno_tracepoints.h"
 
@@ -39,13 +20,10 @@ static uint64_t next_clock_sync_ns; /* cpu time of next clk sync */
  * the GPU traces with timestamps before this.
  */
 static uint64_t sync_gpu_ts;
-
-struct FdRenderpassIncrementalState {
-   bool was_cleared = true;
-};
+static simple_mtx_t clock_sync_mtx = SIMPLE_MTX_INITIALIZER;
 
 struct FdRenderpassTraits : public perfetto::DefaultDataSourceTraits {
-   using IncrementalStateType = FdRenderpassIncrementalState;
+   using IncrementalStateType = MesaRenderpassIncrementalState;
 };
 
 class FdRenderpassDataSource : public MesaRenderpassDataSource<FdRenderpassDataSource, FdRenderpassTraits> {
@@ -55,12 +33,25 @@ public:
    {
       MesaRenderpassDataSource<FdRenderpassDataSource, FdRenderpassTraits>::OnStart(args);
 
-      /* Note: clock_id's below 128 are reserved.. for custom clock sources,
-       * using the hash of a namespaced string is the recommended approach.
-       * See: https://perfetto.dev/docs/concepts/clock-sync
+      /* See: https://perfetto.dev/docs/concepts/clock-sync
+       *
+       * Use sequence-scoped clock (64 <= ID < 128) for GPU clock because
+       * there's no central daemon emitting consistent snapshots for
+       * synchronization between CPU and GPU clocks on behalf of renderstages
+       * and counters producers.
+       *
+       * When CPU clock is the same with the authoritative trace clock
+       * (normally default to CLOCK_BOOTTIME), perfetto drops the
+       * non-monotonic snapshots to ensure validity of the global source clock
+       * in the resolution graph. When they are different, the clocks are
+       * marked invalid and the rest of the clock syncs will fail during trace
+       * processing.
+       *
+       * Meanwhile, since the clock is now sequence-scoped (unique per
+       * producer + writer pair within the tracing session), we can simply
+       * pick 64.
        */
-      gpu_clock_id =
-         _mesa_hash_string("org.freedesktop.mesa.freedreno") | 0x80000000;
+      gpu_clock_id = 64;
    }
 };
 
@@ -109,17 +100,53 @@ stage_start(struct pipe_context *pctx, uint64_t ts_ns, enum fd_stage_id stage)
 }
 
 static void
+sync_timestamp(struct fd_context *ctx)
+{
+   uint64_t cpu_ts = perfetto::base::GetBootTimeNs().count();
+   uint64_t gpu_ts;
+
+   if (!ctx->ts_to_ns)
+      return;
+
+   /* optimistically check without lock: */
+   if (cpu_ts < next_clock_sync_ns)
+      return;
+
+   if (fd_pipe_get_param(ctx->pipe, FD_TIMESTAMP, &gpu_ts)) {
+      PERFETTO_ELOG("Could not sync CPU and GPU clocks");
+      return;
+   }
+
+   simple_mtx_lock(&clock_sync_mtx);
+
+   if (cpu_ts >= next_clock_sync_ns) {
+      /* get cpu timestamp again because FD_TIMESTAMP can take >100us */
+      uint32_t cpu_clock_id = perfetto::protos::pbzero::BUILTIN_CLOCK_BOOTTIME;
+      cpu_ts = perfetto::base::GetBootTimeNs().count();
+
+      /* convert GPU ts into ns: */
+      gpu_ts = ctx->ts_to_ns(gpu_ts);
+
+      FdRenderpassDataSource::Trace([=](auto tctx) {
+         MesaRenderpassDataSource<FdRenderpassDataSource,
+                                 FdRenderpassTraits>::EmitClockSync(tctx, cpu_ts,
+                                                                     gpu_ts, cpu_clock_id,
+                                                                     gpu_clock_id);
+         sync_gpu_ts = gpu_ts;
+         next_clock_sync_ns = cpu_ts + 30000000;
+      });
+   }
+
+   simple_mtx_unlock(&clock_sync_mtx);
+}
+
+static void
 stage_end(struct pipe_context *pctx, uint64_t ts_ns, enum fd_stage_id stage)
 {
    struct fd_context *ctx = fd_context(pctx);
    struct fd_perfetto_state *p = &ctx->perfetto;
 
-   /* If we haven't managed to calibrate the alignment between GPU and CPU
-    * timestamps yet, then skip this trace, otherwise perfetto won't know
-    * what to do with it.
-    */
-   if (!sync_gpu_ts)
-      return;
+   sync_timestamp(ctx);
 
    FdRenderpassDataSource::Trace([=](FdRenderpassDataSource::TraceContext tctx) {
       if (auto state = tctx.GetIncrementalState(); state->was_cleared) {
@@ -209,6 +236,8 @@ stage_end(struct pipe_context *pctx, uint64_t ts_ns, enum fd_stage_id stage)
             data->set_name("binHeight");
             data->set_value(std::to_string(p->binh));
          }
+      } else if (stage == NONDRAW_STAGE_ID) {
+         event->set_submission_id(p->submit_id);
       } else if (stage == COMPUTE_STAGE_ID) {
          {
             auto data = event->add_extra_data();
@@ -283,44 +312,14 @@ extern "C" {
 void
 fd_perfetto_init(void)
 {
-   util_perfetto_init();
-
    perfetto::DataSourceDescriptor dsd;
+#if DETECT_OS_ANDROID
+   // Android tooling expects this data source name
+   dsd.set_name("gpu.renderstages");
+#else
    dsd.set_name("gpu.renderstages.msm");
+#endif
    FdRenderpassDataSource::Register(dsd);
-}
-
-static void
-sync_timestamp(struct fd_context *ctx)
-{
-   uint64_t cpu_ts = perfetto::base::GetBootTimeNs().count();
-   uint64_t gpu_ts;
-
-   if (!ctx->ts_to_ns)
-      return;
-
-   if (cpu_ts < next_clock_sync_ns)
-      return;
-
-   if (fd_pipe_get_param(ctx->pipe, FD_TIMESTAMP, &gpu_ts)) {
-      PERFETTO_ELOG("Could not sync CPU and GPU clocks");
-      return;
-   }
-
-   /* get cpu timestamp again because FD_TIMESTAMP can take >100us */
-   cpu_ts = perfetto::base::GetBootTimeNs().count();
-
-   /* convert GPU ts into ns: */
-   gpu_ts = ctx->ts_to_ns(gpu_ts);
-
-   FdRenderpassDataSource::Trace([=](auto tctx) {
-      MesaRenderpassDataSource<FdRenderpassDataSource,
-                               FdRenderpassTraits>::EmitClockSync(tctx, cpu_ts,
-                                                                  gpu_ts, gpu_clock_id);
-   });
-
-   sync_gpu_ts = gpu_ts;
-   next_clock_sync_ns = cpu_ts + 30000000;
 }
 
 static void
@@ -345,7 +344,6 @@ fd_perfetto_submit(struct fd_context *ctx)
    if (!u_trace_perfetto_active(&ctx->trace_context))
       return;
 
-   sync_timestamp(ctx);
    emit_submit_id(ctx);
 }
 
@@ -357,7 +355,8 @@ fd_perfetto_submit(struct fd_context *ctx)
 void
 fd_start_render_pass(struct pipe_context *pctx, uint64_t ts_ns,
                      uint16_t tp_idx, const void *flush_data,
-                     const struct trace_start_render_pass *payload)
+                     const struct trace_start_render_pass *payload,
+                     const void *indirect_data)
 {
    stage_start(pctx, ts_ns, SURFACE_STAGE_ID);
 
@@ -378,15 +377,39 @@ fd_start_render_pass(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_render_pass(struct pipe_context *pctx, uint64_t ts_ns,
                    uint16_t tp_idx, const void *flush_data,
-                   const struct trace_end_render_pass *payload)
+                   const struct trace_end_render_pass *payload,
+                   const void *indirect_data)
 {
    stage_end(pctx, ts_ns, SURFACE_STAGE_ID);
 }
 
 void
+fd_start_nondraw(struct pipe_context *pctx, uint64_t ts_ns,
+                 uint16_t tp_idx, const void *flush_data,
+                 const struct trace_start_nondraw *payload,
+                 const void *indirect_data)
+{
+   stage_start(pctx, ts_ns, NONDRAW_STAGE_ID);
+
+   struct fd_perfetto_state *p = &fd_context(pctx)->perfetto;
+
+   p->submit_id = payload->submit_id;
+}
+
+void
+fd_end_nondraw(struct pipe_context *pctx, uint64_t ts_ns,
+               uint16_t tp_idx, const void *flush_data,
+               const struct trace_end_nondraw *payload,
+               const void *indirect_data)
+{
+   stage_end(pctx, ts_ns, NONDRAW_STAGE_ID);
+}
+
+void
 fd_start_binning_ib(struct pipe_context *pctx, uint64_t ts_ns,
                     uint16_t tp_idx, const void *flush_data,
-                    const struct trace_start_binning_ib *payload)
+                    const struct trace_start_binning_ib *payload,
+                    const void *indirect_data)
 {
    stage_start(pctx, ts_ns, BINNING_STAGE_ID);
 }
@@ -394,7 +417,8 @@ fd_start_binning_ib(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_binning_ib(struct pipe_context *pctx, uint64_t ts_ns,
                   uint16_t tp_idx, const void *flush_data,
-                  const struct trace_end_binning_ib *payload)
+                  const struct trace_end_binning_ib *payload,
+                  const void *indirect_data)
 {
    stage_end(pctx, ts_ns, BINNING_STAGE_ID);
 }
@@ -402,7 +426,8 @@ fd_end_binning_ib(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_draw_ib(struct pipe_context *pctx, uint64_t ts_ns,
                  uint16_t tp_idx, const void *flush_data,
-                 const struct trace_start_draw_ib *payload)
+                 const struct trace_start_draw_ib *payload,
+                 const void *indirect_data)
 {
    stage_start(
       pctx, ts_ns,
@@ -412,7 +437,8 @@ fd_start_draw_ib(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_draw_ib(struct pipe_context *pctx, uint64_t ts_ns,
                uint16_t tp_idx, const void *flush_data,
-               const struct trace_end_draw_ib *payload)
+               const struct trace_end_draw_ib *payload,
+               const void *indirect_data)
 {
    stage_end(
       pctx, ts_ns,
@@ -422,7 +448,8 @@ fd_end_draw_ib(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_blit(struct pipe_context *pctx, uint64_t ts_ns,
               uint16_t tp_idx, const void *flush_data,
-              const struct trace_start_blit *payload)
+              const struct trace_start_blit *payload,
+              const void *indirect_data)
 {
    stage_start(pctx, ts_ns, BLIT_STAGE_ID);
 }
@@ -430,7 +457,8 @@ fd_start_blit(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_blit(struct pipe_context *pctx, uint64_t ts_ns,
             uint16_t tp_idx, const void *flush_data,
-            const struct trace_end_blit *payload)
+            const struct trace_end_blit *payload,
+            const void *indirect_data)
 {
    stage_end(pctx, ts_ns, BLIT_STAGE_ID);
 }
@@ -438,7 +466,8 @@ fd_end_blit(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_compute(struct pipe_context *pctx, uint64_t ts_ns,
                  uint16_t tp_idx, const void *flush_data,
-                 const struct trace_start_compute *payload)
+                 const struct trace_start_compute *payload,
+                 const void *indirect_data)
 {
    stage_start(pctx, ts_ns, COMPUTE_STAGE_ID);
 
@@ -458,7 +487,8 @@ fd_start_compute(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_compute(struct pipe_context *pctx, uint64_t ts_ns,
                uint16_t tp_idx, const void *flush_data,
-               const struct trace_end_compute *payload)
+               const struct trace_end_compute *payload,
+               const void *indirect_data)
 {
    stage_end(pctx, ts_ns, COMPUTE_STAGE_ID);
 }
@@ -466,7 +496,8 @@ fd_end_compute(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_clears(struct pipe_context *pctx, uint64_t ts_ns,
                 uint16_t tp_idx, const void *flush_data,
-                const struct trace_start_clears *payload)
+                const struct trace_start_clears *payload,
+                const void *indirect_data)
 {
    stage_start(pctx, ts_ns, CLEAR_STAGE_ID);
 }
@@ -474,7 +505,8 @@ fd_start_clears(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_clears(struct pipe_context *pctx, uint64_t ts_ns,
               uint16_t tp_idx, const void *flush_data,
-              const struct trace_end_clears *payload)
+              const struct trace_end_clears *payload,
+              const void *indirect_data)
 {
    stage_end(pctx, ts_ns, CLEAR_STAGE_ID);
 }
@@ -482,7 +514,8 @@ fd_end_clears(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_tile_loads(struct pipe_context *pctx, uint64_t ts_ns,
                     uint16_t tp_idx, const void *flush_data,
-                    const struct trace_start_tile_loads *payload)
+                    const struct trace_start_tile_loads *payload,
+                    const void *indirect_data)
 {
    stage_start(pctx, ts_ns, TILE_LOAD_STAGE_ID);
 }
@@ -490,7 +523,8 @@ fd_start_tile_loads(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_tile_loads(struct pipe_context *pctx, uint64_t ts_ns,
                   uint16_t tp_idx, const void *flush_data,
-                  const struct trace_end_tile_loads *payload)
+                  const struct trace_end_tile_loads *payload,
+                  const void *indirect_data)
 {
    stage_end(pctx, ts_ns, TILE_LOAD_STAGE_ID);
 }
@@ -498,7 +532,8 @@ fd_end_tile_loads(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_tile_stores(struct pipe_context *pctx, uint64_t ts_ns,
                      uint16_t tp_idx, const void *flush_data,
-                     const struct trace_start_tile_stores *payload)
+                     const struct trace_start_tile_stores *payload,
+                     const void *indirect_data)
 {
    stage_start(pctx, ts_ns, TILE_STORE_STAGE_ID);
 }
@@ -506,7 +541,8 @@ fd_start_tile_stores(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_tile_stores(struct pipe_context *pctx, uint64_t ts_ns,
                    uint16_t tp_idx, const void *flush_data,
-                   const struct trace_end_tile_stores *payload)
+                   const struct trace_end_tile_stores *payload,
+                   const void *indirect_data)
 {
    stage_end(pctx, ts_ns, TILE_STORE_STAGE_ID);
 }
@@ -514,7 +550,8 @@ fd_end_tile_stores(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_state_restore(struct pipe_context *pctx, uint64_t ts_ns,
                        uint16_t tp_idx, const void *flush_data,
-                       const struct trace_start_state_restore *payload)
+                       const struct trace_start_state_restore *payload,
+                       const void *indirect_data)
 {
    stage_start(pctx, ts_ns, STATE_RESTORE_STAGE_ID);
 }
@@ -522,7 +559,8 @@ fd_start_state_restore(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_state_restore(struct pipe_context *pctx, uint64_t ts_ns,
                      uint16_t tp_idx, const void *flush_data,
-                     const struct trace_end_state_restore *payload)
+                     const struct trace_end_state_restore *payload,
+                     const void *indirect_data)
 {
    stage_end(pctx, ts_ns, STATE_RESTORE_STAGE_ID);
 }
@@ -530,7 +568,8 @@ fd_end_state_restore(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_vsc_overflow_test(struct pipe_context *pctx, uint64_t ts_ns,
                            uint16_t tp_idx, const void *flush_data,
-                           const struct trace_start_vsc_overflow_test *payload)
+                           const struct trace_start_vsc_overflow_test *payload,
+                           const void *indirect_data)
 {
    stage_start(pctx, ts_ns, VSC_OVERFLOW_STAGE_ID);
 }
@@ -538,7 +577,8 @@ fd_start_vsc_overflow_test(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_vsc_overflow_test(struct pipe_context *pctx, uint64_t ts_ns,
                          uint16_t tp_idx, const void *flush_data,
-                         const struct trace_end_vsc_overflow_test *payload)
+                         const struct trace_end_vsc_overflow_test *payload,
+                         const void *indirect_data)
 {
    stage_end(pctx, ts_ns, VSC_OVERFLOW_STAGE_ID);
 }
@@ -546,7 +586,8 @@ fd_end_vsc_overflow_test(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_start_prologue(struct pipe_context *pctx, uint64_t ts_ns,
                   uint16_t tp_idx, const void *flush_data,
-                  const struct trace_start_prologue *payload)
+                  const struct trace_start_prologue *payload,
+                  const void *indirect_data)
 {
    stage_start(pctx, ts_ns, PROLOGUE_STAGE_ID);
 }
@@ -554,7 +595,8 @@ fd_start_prologue(struct pipe_context *pctx, uint64_t ts_ns,
 void
 fd_end_prologue(struct pipe_context *pctx, uint64_t ts_ns,
                 uint16_t tp_idx, const void *flush_data,
-                const struct trace_end_prologue *payload)
+                const struct trace_end_prologue *payload,
+                const void *indirect_data)
 {
    stage_end(pctx, ts_ns, PROLOGUE_STAGE_ID);
 }

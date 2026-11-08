@@ -56,7 +56,7 @@ pad_to(struct disasm_state *disasm, int n)
 
 
 static void
-v3d33_qpu_disasm_raddr(struct disasm_state *disasm,
+v3d42_qpu_disasm_raddr(struct disasm_state *disasm,
                        const struct v3d_qpu_instr *instr,
                        enum v3d_qpu_mux mux)
 {
@@ -135,10 +135,10 @@ v3d_qpu_disasm_raddr(struct disasm_state *disasm,
                      const struct v3d_qpu_input *input,
                      enum v3d_qpu_input_class input_class)
 {
-        if (disasm->devinfo->ver < 71)
-                v3d33_qpu_disasm_raddr(disasm, instr, input->mux);
-        else
+        if (disasm->devinfo->ver >= 71)
                 v3d71_qpu_disasm_raddr(disasm, instr, input->raddr, input_class);
+        else
+                v3d42_qpu_disasm_raddr(disasm, instr, input->mux);
 }
 
 static void
@@ -408,13 +408,4 @@ v3d_qpu_disasm(const struct v3d_device_info *devinfo, uint64_t inst)
         assert(ok); (void)ok;
 
         return v3d_qpu_decode(devinfo, &instr);
-}
-
-void
-v3d_qpu_dump(const struct v3d_device_info *devinfo,
-             const struct v3d_qpu_instr *instr)
-{
-        const char *decoded = v3d_qpu_decode(devinfo, instr);
-        fprintf(stderr, "%s", decoded);
-        ralloc_free((char *)decoded);
 }

@@ -27,6 +27,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Struct for tracking features of the V3D chip across driver and compiler.
  */
@@ -37,19 +41,88 @@ struct v3d_device_info {
         /** V3D revision number */
         uint8_t rev;
 
+        /** V3D compatitiblity revision number */
+        uint8_t compat_rev;
+
+        /** Maximum number of performance counters for a given V3D version **/
+        uint8_t max_perfcnt;
+
         /** Size of the VPM, in bytes. */
         int vpm_size;
 
-        /* NSLC * QUPS from the core's IDENT registers. */
+        /** NSLC * QUPS from the core's IDENT registers. */
         int qpu_count;
 
-        /* If the hw has accumulator registers */
+        /** If the hw has accumulator registers */
         bool has_accumulators;
+
+        /** If kernel supports GPU reset counter */
+        bool has_reset_counter;
+
+        /** Granularity for the Clipper XY Scaling */
+        float clipper_xy_granularity;
+
+        /** The Control List Executor (CLE) pre-fetches V3D_CLE_READAHEAD
+         *  bytes from the Control List buffer. The usage of these last bytes
+         *  should be avoided or the CLE would pre-fetch the data after the
+         *  end of the CL buffer, reporting the kernel "MMU error from client
+         *  CLE".
+         */
+        uint32_t cle_readahead;
+
+        /** OS page size. It's the minimum allocation size for a v3d buffer. */
+        uint32_t page_size;
+
+        /** Maximum framebuffer dimension is limited by max clip size */
+        uint32_t max_framebuffer_size;
+
+        /** Max render targets the GPU supports */
+        uint8_t max_render_targets;
 };
+
+/* TFU has a 64-bytes readhead. To avoid the unit reading unmaped memory
+ * we need to overallocate buffers that could be read by the TFU.
+ */
+#define V3D_TFU_READAHEAD_SIZE 64
 
 typedef int (*v3d_ioctl_fun)(int fd, unsigned long request, void *arg);
 
 bool
 v3d_get_device_info(int fd, struct v3d_device_info* devinfo, v3d_ioctl_fun fun);
+
+static inline bool
+v3d_device_has_draw_index(const struct v3d_device_info *devinfo)
+{
+        return devinfo->ver > 71 || (devinfo->ver == 71 && devinfo->rev >= 10);
+}
+
+static inline bool
+v3d_device_has_unpack_sat(const struct v3d_device_info *devinfo)
+{
+        return devinfo->ver > 45 || (devinfo->ver == 45 && devinfo->rev >= 7);
+}
+
+static inline bool
+v3d_device_has_unpack_max0(const struct v3d_device_info *devinfo)
+{
+        return devinfo->ver > 71 ||
+               (devinfo->ver == 71 &&
+                (devinfo->rev >= 7 ||
+                 (devinfo->rev == 6 && devinfo->compat_rev >= 4)));
+}
+
+/* V3D 4.2 and earlier shader records carry an address for the values used when
+ * a vertex attribute is not fed by the vertex input state. Later hardware
+ * dropped the field, so the backing BO is only needed on <= 4.2.
+ */
+static inline bool
+v3d_device_needs_default_attribute_values(const struct v3d_device_info *devinfo)
+{
+        return devinfo->ver <= 42;
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

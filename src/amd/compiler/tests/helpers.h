@@ -9,7 +9,6 @@
 #include "vulkan/vulkan.h"
 
 #include "framework.h"
-#include "ac_gpu_info.h"
 #include "nir_builder.h"
 #include <functional>
 
@@ -63,16 +62,18 @@ bool setup_cs(const char* input_spec, enum amd_gfx_level gfx_level,
               enum radeon_family family = CHIP_UNKNOWN, const char* subvariant = "",
               unsigned wave_size = 64);
 bool
-setup_nir_cs(enum amd_gfx_level gfx_level, gl_shader_stage stage = MESA_SHADER_COMPUTE,
+setup_nir_cs(enum amd_gfx_level gfx_level, mesa_shader_stage stage = MESA_SHADER_COMPUTE,
              enum radeon_family family = CHIP_UNKNOWN, const char* subvariant = "");
 
-void finish_program(aco::Program* program, bool endpgm = true);
+void finish_program(aco::Program* program, bool endpgm = true, bool dominance = false);
 void finish_validator_test();
 void finish_opt_test();
 void finish_setup_reduce_temp_test();
-void finish_ra_test(aco::ra_test_policy, bool lower = false);
+void finish_lower_subdword_test();
+void finish_ra_test(aco::ra_test_policy);
 void finish_optimizer_postRA_test();
 void finish_to_hw_instr_test();
+void finish_lower_branches_test();
 void finish_schedule_vopd_test();
 void finish_waitcnt_test();
 void finish_insert_nops_test(bool endpgm = true);
@@ -97,7 +98,9 @@ aco::Temp fsat(aco::Temp src, aco::Builder b = bld);
 aco::Temp fmin(aco::Temp src0, aco::Temp src1, aco::Builder b = bld);
 aco::Temp fmax(aco::Temp src0, aco::Temp src1, aco::Builder b = bld);
 aco::Temp ext_ushort(aco::Temp src, unsigned idx, aco::Builder b = bld);
+aco::Temp ext_sshort(aco::Temp src, unsigned idx, aco::Builder b = bld);
 aco::Temp ext_ubyte(aco::Temp src, unsigned idx, aco::Builder b = bld);
+aco::Temp ext_sbyte(aco::Temp src, unsigned idx, aco::Builder b = bld);
 void emit_divergent_if_else(aco::Program* prog, aco::Builder& b, aco::Operand cond,
                             std::function<void()> then, std::function<void()> els);
 

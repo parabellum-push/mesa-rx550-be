@@ -44,26 +44,25 @@ va_at(struct anv_va_range *range, uint64_t addr, uint64_t size)
 static void
 anv_device_print_vas(struct anv_physical_device *device)
 {
-   fprintf(stderr, "Driver heaps:\n");
+   mesa_logi("Driver heaps:\n");
 #define PRINT_HEAP(name) \
-   fprintf(stderr, "   0x%016"PRIx64"-0x%016"PRIx64": %s\n", \
+   mesa_logi("   0x%016"PRIx64"-0x%016"PRIx64": %s\n", \
            device->va.name.addr, \
            device->va.name.addr + device->va.name.size, \
            #name);
    PRINT_HEAP(general_state_pool);
    PRINT_HEAP(low_heap);
-   PRINT_HEAP(dynamic_state_pool);
-   PRINT_HEAP(sampler_state_pool);
    PRINT_HEAP(binding_table_pool);
    PRINT_HEAP(internal_surface_state_pool);
    PRINT_HEAP(scratch_surface_state_pool);
    PRINT_HEAP(bindless_surface_state_pool);
    PRINT_HEAP(indirect_descriptor_pool);
    PRINT_HEAP(indirect_push_descriptor_pool);
-   PRINT_HEAP(instruction_state_pool);
-   PRINT_HEAP(dynamic_state_db_pool);
-   PRINT_HEAP(descriptor_buffer_pool);
+   PRINT_HEAP(shader_heap);
+   PRINT_HEAP(dynamic_state_pool);
+   PRINT_HEAP(dynamic_visible_pool);
    PRINT_HEAP(push_descriptor_buffer_pool);
+   PRINT_HEAP(null_initialized_heap);
    PRINT_HEAP(high_heap);
    PRINT_HEAP(trtt);
 }
@@ -99,17 +98,18 @@ anv_physical_device_init_va_ranges(struct anv_physical_device *device)
    uint64_t _1Gb = 1ull * 1024 * 1024 * 1024;
    uint64_t _4Gb = 4ull * 1024 * 1024 * 1024;
 
-   uint64_t address = 0x000000200000ULL; /* 2MiB */
+   uint64_t address = 0;
+
+   address = va_add(&device->va.first_2mb, address, 2 * _1Mb);
 
    address = va_add(&device->va.general_state_pool, address,
-                    _1Gb - address);
+                    2 * _1Gb - address);
 
    address = va_add(&device->va.low_heap, address, _1Gb);
 
    /* The binding table pool has to be located directly in front of the
     * surface states.
     */
-   address += _1Gb;
    address = va_add(&device->va.binding_table_pool, address, _1Gb);
    address = va_add(&device->va.internal_surface_state_pool, address, 1 * _1Gb);
    assert(device->va.internal_surface_state_pool.addr ==
@@ -119,14 +119,6 @@ anv_physical_device_init_va_ranges(struct anv_physical_device *device)
          device->va.internal_surface_state_pool.addr,
          8 * _1Mb);
    address = va_add(&device->va.bindless_surface_state_pool, address, 2 * _1Gb);
-
-
-   /* PRMs & simulation disagrees on the actual size of this heap. Take the
-    * smallest (simulation) so that it works everywhere.
-    */
-   address = align64(address, _4Gb);
-   address = va_add(&device->va.dynamic_state_pool, address, _1Gb);
-   address = va_add(&device->va.sampler_state_pool, address, 2 * _1Gb);
 
    if (device->indirect_descriptors) {
       /* With indirect descriptors, descriptor buffers can go anywhere, they
@@ -140,24 +132,22 @@ anv_physical_device_init_va_ranges(struct anv_physical_device *device)
 
    /* We use a trick to compute constant data offsets in the shaders to avoid
     * unnecessary 64bit address computations (see lower_load_constant() in
-    * anv_nir_apply_pipeline_layout.c). This assumes the instruction pool is
+    * anv_nir_apply_pipeline_layout.c). This assumes the shader heap is
     * located at an address with the lower 32bits at 0.
     */
    address = align64(address, _4Gb);
-   address = va_add(&device->va.instruction_state_pool, address, 2 * _1Gb);
+   address = va_add(&device->va.shader_heap, address, 3 * _1Gb);
 
-   address += 1 * _1Gb;
-   address = va_add(&device->va.dynamic_state_db_pool, address, _1Gb);
-   address = va_add(&device->va.descriptor_buffer_pool, address, 2 *_1Gb);
-   assert(device->va.descriptor_buffer_pool.addr % _4Gb == 0);
+   address = va_add(&device->va.dynamic_state_pool, address, _1Gb);
+   address = va_add(&device->va.dynamic_visible_pool, address,
+                    device->info.verx10 >= 125 ? (2 * _1Gb) : (3 * _1Gb - 4096));
+   assert(device->va.dynamic_visible_pool.addr % _4Gb == 0);
    if (device->info.verx10 >= 125)
       address = va_add(&device->va.push_descriptor_buffer_pool, address, _1Gb - 4096);
 
-   assert(device->va.descriptor_buffer_pool.addr ==
-          align64(device->va.descriptor_buffer_pool.addr, 4 * _1Gb));
-
-   address = align64(address, device->info.mem_alignment);
+   address = align64(address, _1Gb);
    address = va_add(&device->va.aux_tt_pool, address, 2 * _1Gb);
+   address = va_add(&device->va.null_initialized_heap, address, _1Gb * 8);
 
    /* What's left to do for us is to set va.high_heap and va.trtt without
     * overlap, but there are a few things to be considered:

@@ -3279,7 +3279,8 @@ enum {
 #   define R500_US_CODE_RANGE_ADDR(x)			((x) << 0)
 #   define R500_US_CODE_RANGE_SIZE(x)			((x) << 16)
 #define R500_US_CONFIG					0x4600
-#   define R500_ZERO_TIMES_ANYTHING_EQUALS_ZERO		(1 << 1)
+#   define R500_ZERO_TIMES_ANYTHING_EQUALS_ZERO_DEFAULT	(0 << 1)
+#   define R500_ZERO_TIMES_ANYTHING_EQUALS_ZERO_LEGACY	(1 << 1)
 #define R500_US_FC_ADDR_0				0xa000
 #   define R500_FC_BOOL_ADDR(x)				((x) << 0)
 #   define R500_FC_INT_ADDR(x)				((x) << 8)
@@ -3484,6 +3485,8 @@ enum {
  * 2. CLEAR_VALUE: Value to write into HIZ RAM.
  */
 #define R300_PACKET3_3D_CLEAR_HIZ           0x00003700
+/* 3D_CLEAR_HIZ COUNT field width (COUNT[13:0]). */
+#define R300_CLEAR_HIZ_COUNT_MAX            0x3fff
 #define R300_PACKET3_3D_CLEAR_CMASK         0x00003800
 
 /* Draws a set of primitives using vertex buffers pointed by the state data.

@@ -1,22 +1,5 @@
 # Copyright © 2018 Rob Clark
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 inc_freedreno = include_directories(['.', './registers', './registers/adreno', './common'])
 inc_freedreno_rnn = include_directories('rnn')
@@ -25,10 +8,7 @@ rnn_src_path = dir_source_root + '/src/freedreno/registers'
 rnn_install_path = get_option('datadir') + '/freedreno/registers'
 rnn_path = rnn_src_path + ':' + get_option('prefix') + '/' + rnn_install_path
 
-dep_lua = dependency('lua54', 'lua53', 'lua52', 'lua', required: false,
-                     allow_fallback: true, version: '>=5.2')
-
-dep_libarchive = dependency('libarchive', allow_fallback: true, required: false)
+dep_libarchive = dependency('libarchive', allow_fallback: true, required: false, disabler : true)
 dep_libxml2 = dependency('libxml-2.0', allow_fallback: true, required: false)
 prog_gzip = find_program('gzip', required: false)
 
@@ -52,7 +32,7 @@ if system_has_kms_drm
   subdir('computerator')
 endif
 
-if with_perfetto and (with_datasources.contains('freedreno') or with_datasources.contains('auto'))
+if system_has_kms_drm and with_perfetto and (with_datasources.contains('freedreno') or with_datasources.contains('auto'))
   subdir('ds')
 endif
 
@@ -60,7 +40,7 @@ endif
 if dep_libxml2.found() and with_tools.contains('freedreno')
   subdir('rnn')
   subdir('decode')
-  subdir('afuc')
+  subdir('qrisc')
 elif with_tools.contains('freedreno')
   message('libxml2 not found, skipping tools that depend on it')
 endif
@@ -72,3 +52,23 @@ endif
 if with_freedreno_vk
   subdir('vulkan')
 endif
+
+# 77 is a convention used by Meson and other build systems to skip tests.
+SKIP_RETURN_CODE = 77
+
+check_xml_includes = run_command(
+  prog_python,
+  files('tests/check_xml_includes.py'),
+  check: false
+)
+if check_xml_includes.returncode() == SKIP_RETURN_CODE
+  message('Skipped checking freedreno XML includes.')
+elif check_xml_includes.returncode() != 0
+  error('XML include check found errors:\n' + check_xml_includes.stdout())
+endif
+
+test('check-xml-includes',
+  prog_python,
+  args : files('tests/check_xml_includes.py'),
+  suite : ['freedreno'],
+)

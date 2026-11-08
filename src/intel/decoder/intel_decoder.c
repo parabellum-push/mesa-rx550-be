@@ -147,6 +147,8 @@ static void
 get_array_offset_count(const char **atts, uint32_t *offset, uint32_t *count,
                        uint32_t *size, bool *variable)
 {
+   *offset = 0;
+
    for (int i = 0; atts[i]; i += 2) {
       char *p;
 
@@ -154,13 +156,14 @@ get_array_offset_count(const char **atts, uint32_t *offset, uint32_t *count,
          *count = strtoul(atts[i + 1], &p, 0);
          if (*count == 0)
             *variable = true;
-      } else if (strcmp(atts[i], "start") == 0) {
-         *offset = strtoul(atts[i + 1], &p, 0);
+      } else if (strcmp(atts[i], "dword") == 0) {
+         *offset += 32 * strtoul(atts[i + 1], &p, 0);
+      } else if (strcmp(atts[i], "offset_bits") == 0) {
+         *offset += strtoul(atts[i + 1], &p, 0);
       } else if (strcmp(atts[i], "size") == 0) {
          *size = strtoul(atts[i + 1], &p, 0);
       }
    }
-   return;
 }
 
 static struct intel_group *
@@ -336,6 +339,13 @@ create_field(struct parser_context *ctx, const char **atts)
    field = rzalloc(ctx->group, struct intel_field);
    field->parent = ctx->group;
 
+   uint32_t dword = 0;
+   uint32_t bits_start = 0;
+   uint32_t bits_end = 0;
+
+   bool has_default = false;
+   uint32_t default_value = 0;
+
    for (int i = 0; atts[i]; i += 2) {
       char *p;
 
@@ -344,17 +354,28 @@ create_field(struct parser_context *ctx, const char **atts)
          if (strcmp(field->name, "DWord Length") == 0) {
             field->parent->dword_length_field = field;
          }
-      } else if (strcmp(atts[i], "start") == 0) {
-         field->start = strtoul(atts[i + 1], &p, 0);
-      } else if (strcmp(atts[i], "end") == 0) {
-         field->end = strtoul(atts[i + 1], &p, 0);
+      } else if (strcmp(atts[i], "dword") == 0) {
+         dword = strtoul(atts[i + 1], &p, 10);
+      } else if (strcmp(atts[i], "bits") == 0) {
+         const char *bits_str = atts[i + 1];
+         const char *colon = strchr(bits_str, ':');
+         assert(colon);
+         bits_end = strtoul(bits_str, NULL, 10);
+         bits_start = strtoul(colon+1, NULL, 10);
       } else if (strcmp(atts[i], "type") == 0) {
          field->type = string_to_type(ctx, atts[i + 1]);
-      } else if (strcmp(atts[i], "default") == 0 &&
-               field->start >= 16 && field->end <= 31) {
-         field->has_default = true;
-         field->default_value = strtoul(atts[i + 1], &p, 0);
+      } else if (strcmp(atts[i], "default") == 0) {
+         has_default = true;
+         default_value = strtoul(atts[i + 1], &p, 0);
       }
+   }
+
+   field->start = dword * 32 + bits_start;
+   field->end = dword * 32 + bits_end;
+
+   if (has_default && field->start >= 16 && field->end <= 31) {
+      field->has_default = true;
+      field->default_value = default_value;
    }
 
    return field;
@@ -730,6 +751,7 @@ static uint32_t zlib_inflate(const void *compressed_data,
       case Z_OK:
          break;
       default:
+         free(out);
          inflateEnd(&zstream);
          return 0;
       }
@@ -841,26 +863,39 @@ static bool
 get_embedded_xml_data_by_name(const char *filename,
                               void **data, size_t *data_len)
 {
-   int filename_len = strlen(filename);
-   if (filename_len < 8 || filename_len > 10)
-      return false;
+   static const struct {
+      const char *filename;
+      int verx10;
+   } filename_to_verx10[] = {
+      { "gen40.xml",     40 },
+      { "gen45.xml",     45 },
+      { "gen50.xml",     50 },
+      { "gen60.xml",     60 },
+      { "gen70.xml",     70 },
+      { "gen75.xml",     75 },
+      { "gen80.xml",     80 },
+      { "gen90.xml",     90 },
+      { "gen110.xml",   110 },
+      { "gen120.xml",   120 },
+      { "gen125.xml",   125 },
+      { "xe2.xml",      200 },
+      { "xe3.xml",      300 },
+      { "xe3p.xml",     350 },
+   };
 
-   if (strncmp(filename, "gen", 3) != 0 ||
-       strcmp(filename + filename_len - 4, ".xml") != 0)
-      return false;
-
-   char *numstr = strndup(filename + 3, filename_len - 7);
-   char *endptr;
-   long num = strtol(numstr, &endptr, 10);
-   if (*endptr != '\0') {
-      free(numstr);
-      return false;
+   int num = -1;
+   for (int i = 0; i < ARRAY_SIZE(filename_to_verx10); i++) {
+      if (strcmp(filename, filename_to_verx10[i].filename) == 0) {
+         num = filename_to_verx10[i].verx10;
+         break;
+      }
    }
-   /* convert ver numbers to verx10 */
-   if (num < 45)
-      num = num * 10;
 
-   free(numstr);
+   assert(num >= 40);
+
+   if (num < 0)
+      return false;
+
    return get_embedded_xml_data(num, data, data_len);
 }
 
@@ -1051,7 +1086,9 @@ intel_group_get_length(const struct intel_group *group, const uint32_t *p)
          else
             return -1;
       case 2: {
-         if (opcode == 0)
+         if (whole_opcode == 0x73A2 /* HCP_PAK_INSERT_OBJECT */)
+            return field_value(h, 0, 11) + 2;
+         else if (opcode == 0)
             return field_value(h, 0, 7) + 2;
          else if (opcode < 3)
             return field_value(h, 0, 15) + 2;
@@ -1073,7 +1110,7 @@ intel_group_get_length(const struct intel_group *group, const uint32_t *p)
 }
 
 static const char *
-intel_get_enum_name(struct intel_enum *e, uint64_t value)
+intel_get_enum_name(const struct intel_enum *e, uint64_t value)
 {
    for (int i = 0; i < e->nvalues; i++) {
       if (e->values[i]->value == value) {
@@ -1354,7 +1391,7 @@ iter_decode_field(struct intel_field_iterator *iter)
 
 void
 intel_field_iterator_init(struct intel_field_iterator *iter,
-                          struct intel_group *group,
+                          const struct intel_group *group,
                           const uint32_t *p, int p_bit,
                           bool print_colors)
 {
@@ -1410,7 +1447,7 @@ print_dword_header(FILE *outfile,
 }
 
 bool
-intel_field_is_header(struct intel_field *field)
+intel_field_is_header(const struct intel_field *field)
 {
    uint32_t bits;
 
@@ -1426,7 +1463,8 @@ intel_field_is_header(struct intel_field *field)
 }
 
 void
-intel_print_group_custom_spacing(FILE *outfile, struct intel_group *group, uint64_t offset,
+intel_print_group_custom_spacing(FILE *outfile,
+                                 const struct intel_group *group, uint64_t offset,
                                  const uint32_t *p, int p_bit, bool color,
                                  const char *spacing_reg, const char *spacing_dword)
 {
@@ -1454,7 +1492,8 @@ intel_print_group_custom_spacing(FILE *outfile, struct intel_group *group, uint6
 }
 
 void
-intel_print_group(FILE *outfile, struct intel_group *group, uint64_t offset,
+intel_print_group(FILE *outfile,
+                  const struct intel_group *group, uint64_t offset,
                   const uint32_t *p, int p_bit, bool color)
 {
    const char *spacing_reg = "    ";

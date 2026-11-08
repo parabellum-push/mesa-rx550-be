@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2008-2022 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "util/compiler.h"
 #include "util/u_inlines.h"
@@ -271,7 +253,7 @@ draw_vgpu9(struct svga_hwtnl *hwtnl)
 
    SVGA_DBG(DEBUG_DMA, "draw to sid %p, %d prims\n",
             svga->curr.framebuffer.cbufs[0] ?
-            svga_surface(svga->curr.framebuffer.cbufs[0])->handle : NULL,
+            svga->curr.framebuffer.cbufs[0]->handle : NULL,
             hwtnl->cmd.prim_count);
 
    ret = SVGA3D_BeginDrawPrimitives(swc,
@@ -351,17 +333,17 @@ enum pipe_error
 svga_validate_sampler_resources(struct svga_context *svga,
                                 enum svga_pipe_type pipe_type)
 {
-   enum pipe_shader_type shader, first_shader, last_shader;
+   mesa_shader_stage shader, first_shader, last_shader;
 
    assert(svga_have_vgpu10(svga));
 
    if (pipe_type == SVGA_PIPE_GRAPHICS) {
-      first_shader = PIPE_SHADER_VERTEX;
-      last_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_VERTEX;
+      last_shader = MESA_SHADER_COMPUTE;
    }
    else {
       assert(svga_have_gl43(svga));
-      first_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_COMPUTE;
       last_shader = first_shader+1;
    }
 
@@ -393,7 +375,7 @@ svga_validate_sampler_resources(struct svga_context *svga,
          }
       }
 
-      if (shader == PIPE_SHADER_FRAGMENT &&
+      if (shader == MESA_SHADER_FRAGMENT &&
           svga->curr.rast->templ.poly_stipple_enable) {
          const unsigned unit =
             svga_fs_variant(svga->state.hw_draw.fs)->pstipple_sampler_unit;
@@ -434,17 +416,17 @@ enum pipe_error
 svga_validate_constant_buffers(struct svga_context *svga,
                                enum svga_pipe_type pipe_type)
 {
-   enum pipe_shader_type shader, first_shader, last_shader;
+   mesa_shader_stage shader, first_shader, last_shader;
 
    assert(svga_have_vgpu10(svga));
 
    if (pipe_type == SVGA_PIPE_GRAPHICS) {
-      first_shader = PIPE_SHADER_VERTEX;
-      last_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_VERTEX;
+      last_shader = MESA_SHADER_COMPUTE;
    }
    else {
       assert(svga_have_gl43(svga));
-      first_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_COMPUTE;
       last_shader = first_shader + 1;
    }
 
@@ -534,18 +516,18 @@ enum pipe_error
 svga_validate_image_views(struct svga_context *svga,
                           enum svga_pipe_type pipe_type)
 {
-   enum pipe_shader_type shader, first_shader, last_shader;
+   mesa_shader_stage shader, first_shader, last_shader;
    bool rebind = svga->rebind.flags.images;
    enum pipe_error ret;
 
    assert(svga_have_gl43(svga));
 
    if (pipe_type == SVGA_PIPE_GRAPHICS) {
-      first_shader = PIPE_SHADER_VERTEX;
-      last_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_VERTEX;
+      last_shader = MESA_SHADER_COMPUTE;
    }
    else {
-      first_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_COMPUTE;
       last_shader = first_shader + 1;
    }
 
@@ -573,18 +555,18 @@ enum pipe_error
 svga_validate_shader_buffers(struct svga_context *svga,
                              enum svga_pipe_type pipe_type)
 {
-   enum pipe_shader_type shader, first_shader, last_shader;
+   mesa_shader_stage shader, first_shader, last_shader;
    bool rebind = svga->rebind.flags.shaderbufs;
    enum pipe_error ret;
 
    assert(svga_have_gl43(svga));
 
    if (pipe_type == SVGA_PIPE_GRAPHICS) {
-      first_shader = PIPE_SHADER_VERTEX;
-      last_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_VERTEX;
+      last_shader = MESA_SHADER_COMPUTE;
    }
    else {
-      first_shader = PIPE_SHADER_COMPUTE;
+      first_shader = MESA_SHADER_COMPUTE;
       last_shader = first_shader + 1;
    }
 

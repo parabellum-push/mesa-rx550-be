@@ -29,8 +29,13 @@
 #include "util/slab.h"
 #include "d3d12_descriptor_pool.h"
 
+#include "util/list.h"
+#include "util/set.h"
+#ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+#include "compiler/glsl_types.h"
 #include "nir.h"
 #include "dxil_versions.h"
+#endif // HAVE_GALLIUM_D3D12_GRAPHICS
 
 #include "d3d12_common.h"
 
@@ -54,8 +59,12 @@ enum resource_dimension
 };
 
 struct d3d12_memory_info {
-   uint64_t usage;
-   uint64_t budget;
+   uint64_t usage_local;
+   uint64_t budget_local;
+   uint64_t usage_nonlocal;
+   uint64_t budget_nonlocal;
+   uint64_t usage;    // local + nonlocal
+   uint64_t budget;   // local + nonlocal
 };
 
 struct d3d12_screen {
@@ -68,6 +77,7 @@ struct d3d12_screen {
    util_dl_library *d3d12_mod;
    ID3D12Device3 *dev;
    ID3D12Device10 *dev10;
+   ID3D12Device15 *dev15;
    ID3D12CommandQueue *cmdqueue;
    bool (*init)(struct d3d12_screen *screen);
    void (*deinit)(struct d3d12_screen *screen);
@@ -77,9 +87,18 @@ struct d3d12_screen {
    ID3D12Fence *fence;
    uint64_t fence_value;
 
+   mtx_t pending_free_lock;
+   struct list_head pending_free_list;
+
    struct list_head residency_list;
    ID3D12Fence *residency_fence;
    uint64_t residency_fence_value;
+   unsigned num_evictions;
+   uint64_t total_bytes_evicted;
+
+   /* Periodic trim notification residency */
+   uint64_t periodic_trim_notification_index;      /* Incremented each callback invocation. */
+   DWORD    periodic_trim_callback_cookie;         /* Cookie returned at registration. DWORD_MAX indicates no callback registered. */
 
    struct list_head context_list;
    unsigned context_id_list[16];
@@ -112,7 +131,10 @@ struct d3d12_screen {
 
    /* capabilities */
    D3D_FEATURE_LEVEL max_feature_level;
+#ifdef HAVE_GALLIUM_D3D12_GRAPHICS
    enum dxil_shader_model max_shader_model;
+   nir_shader_compiler_options nir_options;
+#endif // HAVE_GALLIUM_D3D12_GRAPHICS
    D3D12_FEATURE_DATA_ARCHITECTURE architecture;
    D3D12_FEATURE_DATA_D3D12_OPTIONS opts;
    D3D12_FEATURE_DATA_D3D12_OPTIONS1 opts1;
@@ -125,19 +147,19 @@ struct d3d12_screen {
    D3D12_FEATURE_DATA_D3D12_OPTIONS19 opts19;
 #endif
 
-   nir_shader_compiler_options nir_options;
-
    /* description */
    uint32_t vendor_id;
    uint32_t device_id;
    uint32_t subsys_id;
    uint32_t revision;
    uint64_t driver_version;
-   uint64_t memory_size_megabytes;
+   uint64_t memory_device_size_megabytes;
+   uint64_t memory_system_size_megabytes;
    float timestamp_multiplier;
    bool have_load_at_vertex;
    bool support_shader_images;
    bool support_create_not_resident;
+   bool supports_dynamic_queue_priority;
 
 #ifdef _GAMING_XBOX
    UINT64 frame_token;

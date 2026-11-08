@@ -1,24 +1,6 @@
 /*
  * Copyright © 2019 Red Hat
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "compiler/nir/nir_builder.h"
@@ -31,8 +13,7 @@
  * We need to set the (ei) "end input" flag on the last varying fetch.
  * And we want to ensure that all threads execute the instruction that
  * sets (ei).  The easiest way to ensure this is to move all varying
- * fetches into the start block.  Which is something we used to get for
- * free by using lower_all_io_to_temps=true.
+ * fetches into the start block.
  *
  * This may come at the cost of additional register usage.  OTOH setting
  * the (ei) flag earlier probably frees up more VS to run.
@@ -61,7 +42,7 @@ static void move_instruction_to_start_block(state *state, nir_instr *instr);
 static bool
 check_precondition_src(nir_src *src, void *state)
 {
-   check_precondition_instr(state, src->ssa->parent_instr);
+   check_precondition_instr(state, nir_def_instr(src->ssa));
    return true;
 }
 
@@ -124,7 +105,7 @@ check_precondition_block(precond_state *state, nir_block *block)
 static bool
 move_src(nir_src *src, void *state)
 {
-   move_instruction_to_start_block(state, src->ssa->parent_instr);
+   move_instruction_to_start_block(state, nir_def_instr(src->ssa));
    return true;
 }
 
@@ -219,10 +200,7 @@ ir3_nir_move_varying_inputs(nir_shader *shader)
          progress |= move_varying_inputs_block(&state, block);
       }
 
-      if (progress) {
-         nir_metadata_preserve(
-            function->impl, nir_metadata_block_index | nir_metadata_dominance);
-      }
+      nir_progress(progress, function->impl, nir_metadata_control_flow);
    }
 
    return progress;

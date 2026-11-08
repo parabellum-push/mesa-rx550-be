@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2009-2015 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2009-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 
 #include "vmw_screen.h"
@@ -156,6 +138,7 @@ vmw_winsys_create( int fd )
       goto out_no_ioctl;
 
    vws->base.have_gb_dma = !vws->force_coherent;
+   vws->base.max_mob_memory_mib = vws->ioctl.max_mob_memory >> 20;
    vws->base.need_to_rebind_resources = false;
    vws->base.have_transfer_from_buffer_cmd = vws->base.have_vgpu10;
    vws->base.have_constant_buffer_offset_cmd =
@@ -164,13 +147,13 @@ vmw_winsys_create( int fd )
    vws->base.have_rasterizer_state_v2_cmd =
       vws->ioctl.have_drm_2_20 && vws->base.have_sm5;
 
-   getenv_val = getenv("SVGA_FORCE_KERNEL_UNMAPS");
+   getenv_val = os_get_option("SVGA_FORCE_KERNEL_UNMAPS");
    vws->cache_maps = !getenv_val || strcmp(getenv_val, "0") == 0;
    vws->fence_ops = vmw_fence_ops_create(vws);
    if (!vws->fence_ops)
       goto out_no_fence_ops;
 
-   if(!vmw_pools_init(vws))
+   if (!vmw_pools_init(vws))
       goto out_no_pools;
 
    if (!vmw_winsys_screen_init_svga(vws))
@@ -202,6 +185,8 @@ void
 vmw_winsys_destroy(struct vmw_winsys_screen *vws)
 {
    if (--vws->open_count == 0) {
+      if (vws->swc)
+         vmw_swc_unref(vws->swc);
       _mesa_hash_table_remove_key(dev_hash, &vws->device);
       vmw_pools_cleanup(vws);
       vws->fence_ops->destroy(vws->fence_ops);

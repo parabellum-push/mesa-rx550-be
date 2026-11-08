@@ -12,15 +12,17 @@
 #include "util/macros.h"
 #include "util/u_math.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <functional>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <type_traits>
 #include <unordered_map>
-#include <vector>
+#include <unordered_set>
 
 namespace aco {
 
@@ -220,6 +222,217 @@ private:
 };
 
 /*
+ * Light-weight memory resource which allows to sequentially allocate from
+ * a buffer. Both, the release() method and the destructor release all managed
+ * memory.
+ *
+ * The memory resource is not thread-safe.
+ * This class mimics std::pmr::monotonic_buffer_resource
+ */
+class monotonic_buffer_resource final {
+public:
+   explicit monotonic_buffer_resource(size_t size = initial_size)
+   {
+      /* The size parameter refers to the total size of the buffer.
+       * The usable data_size is size - sizeof(Buffer).
+       */
+      size = MAX2(size, minimum_size);
+      buffer = (Buffer*)malloc(size);
+      buffer->next = nullptr;
+      buffer->data_size = size - sizeof(Buffer);
+      buffer->current_idx = 0;
+   }
+
+   ~monotonic_buffer_resource()
+   {
+      release();
+      free(buffer);
+   }
+
+   /* Move-constructor and -assignment */
+   monotonic_buffer_resource(monotonic_buffer_resource&& other) : monotonic_buffer_resource()
+   {
+      *this = std::move(other);
+   }
+   monotonic_buffer_resource& operator=(monotonic_buffer_resource&& other)
+   {
+      release();
+      std::swap(buffer, other.buffer);
+      return *this;
+   }
+
+   /* Delete copy-constructor and -assignment to avoid double free() */
+   monotonic_buffer_resource(const monotonic_buffer_resource&) = delete;
+   monotonic_buffer_resource& operator=(const monotonic_buffer_resource&) = delete;
+
+   void* allocate(size_t size, size_t alignment)
+   {
+      buffer->current_idx = align(buffer->current_idx, alignment);
+      if (buffer->current_idx + size <= buffer->data_size) {
+         uint8_t* ptr = &buffer->data[buffer->current_idx];
+         buffer->current_idx += size;
+         return ptr;
+      }
+
+      /* create new larger buffer */
+      size_t total_size = buffer->data_size + sizeof(Buffer);
+      do {
+         total_size *= 2;
+      } while (total_size - sizeof(Buffer) < size);
+      Buffer* next = buffer;
+      buffer = (Buffer*)malloc(total_size);
+      buffer->next = next;
+      buffer->data_size = total_size - sizeof(Buffer);
+      buffer->current_idx = 0;
+
+      return allocate(size, alignment);
+   }
+
+   void release()
+   {
+      while (buffer->next) {
+         Buffer* next = buffer->next;
+         free(buffer);
+         buffer = next;
+      }
+      buffer->current_idx = 0;
+   }
+
+   /* Release all memory, with the expectation that a similar amount will be allocated again. */
+   void release_reallocate()
+   {
+      size_t size = 0;
+      for (Buffer* buf = buffer; buf; buf = buf->next)
+         size += buf->current_idx;
+
+      if (buffer->data_size >= size) {
+         Buffer* buf = buffer->next;
+         while (buf) {
+            Buffer* next = buf->next;
+            free(buf);
+            buf = next;
+         }
+         buffer->next = NULL;
+         buffer->current_idx = 0;
+         return;
+      }
+
+      release();
+      free(buffer);
+
+      size_t total_size = initial_size;
+      do {
+         total_size *= 2;
+      } while (total_size - sizeof(Buffer) < size);
+      buffer = (Buffer*)malloc(total_size);
+      buffer->next = NULL;
+      buffer->data_size = total_size - sizeof(Buffer);
+      buffer->current_idx = 0;
+   }
+
+   bool operator==(const monotonic_buffer_resource& other) const { return buffer == other.buffer; }
+
+private:
+   struct Buffer {
+      Buffer* next;
+      size_t current_idx;
+      size_t data_size;
+      uint8_t data[];
+   };
+
+   Buffer* buffer;
+   static constexpr size_t initial_size = 4096;
+   static constexpr size_t minimum_size = 128;
+   static_assert(minimum_size > sizeof(Buffer));
+};
+
+/*
+ * Small memory allocator which wraps monotonic_buffer_resource
+ * in order to implement <allocator_traits>.
+ *
+ * This class mimics std::pmr::polymorphic_allocator with monotonic_buffer_resource
+ * as memory resource. The advantage of this specialization is the absence of
+ * virtual function calls and the propagation on swap, copy- and move assignment.
+ */
+template <typename T> class monotonic_allocator {
+public:
+   monotonic_allocator() = delete;
+   monotonic_allocator(monotonic_buffer_resource& m) : memory_resource(m) {}
+   template <typename U>
+   explicit monotonic_allocator(const monotonic_allocator<U>& rhs)
+       : memory_resource(rhs.memory_resource)
+   {}
+
+   /* Memory Allocation */
+   T* allocate(size_t size)
+   {
+      size_t bytes = sizeof(T) * size;
+      return (T*)memory_resource.get().allocate(bytes, alignof(T));
+   }
+
+   /* Memory will be freed on destruction of memory_resource */
+   void deallocate(T* ptr, size_t size) {}
+
+   /* Implement <allocator_traits> */
+   using value_type = T;
+   template <class U> struct rebind {
+      using other = monotonic_allocator<U>;
+   };
+
+   typedef std::true_type propagate_on_container_copy_assignment;
+   typedef std::true_type propagate_on_container_move_assignment;
+   typedef std::true_type propagate_on_container_swap;
+
+   template <typename> friend class monotonic_allocator;
+   template <typename X, typename Y>
+   friend bool operator==(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b);
+   template <typename X, typename Y>
+   friend bool operator!=(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b);
+
+private:
+   std::reference_wrapper<monotonic_buffer_resource> memory_resource;
+};
+
+/* Necessary for <allocator_traits>. */
+template <typename X, typename Y>
+inline bool
+operator==(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b)
+{
+   return a.memory_resource.get() == b.memory_resource.get();
+}
+template <typename X, typename Y>
+inline bool
+operator!=(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b)
+{
+   return !(a == b);
+}
+
+/*
+ * aco::map - alias for std::map with monotonic_allocator
+ *
+ * This template specialization mimics std::pmr::map.
+ */
+template <class Key, class T, class Compare = std::less<Key>>
+using map = std::map<Key, T, Compare, aco::monotonic_allocator<std::pair<const Key, T>>>;
+
+/*
+ * aco::unordered_map - alias for std::unordered_map with monotonic_allocator
+ *
+ * This template specialization mimics std::pmr::unordered_map.
+ */
+template <class Key, class T, class Hash = std::hash<Key>, class Pred = std::equal_to<Key>>
+using unordered_map =
+   std::unordered_map<Key, T, Hash, Pred, aco::monotonic_allocator<std::pair<const Key, T>>>;
+
+/*
+ * aco::unordered_set - alias for std::unordered_set with monotonic_allocator
+ *
+ * This template specialization mimics std::pmr::unordered_set.
+ */
+template <class T, class Hash = std::hash<T>, class Pred = std::equal_to<T>>
+using unordered_set = std::unordered_set<T, Hash, Pred, aco::monotonic_allocator<T>>;
+
+/*
  * Cache-friendly set of 32-bit IDs with fast insert/erase/lookup and
  * the ability to efficiently iterate over contained elements.
  *
@@ -235,7 +448,7 @@ struct IDSet {
 
    struct Iterator {
       const IDSet* set;
-      std::map<uint32_t, block_t>::const_iterator block;
+      aco::map<uint32_t, block_t>::const_iterator block;
       uint32_t id;
 
       Iterator& operator++();
@@ -284,9 +497,11 @@ struct IDSet {
       bool inserted = false;
 
       for (auto it = other.words.begin(); it != other.words.end(); ++it) {
-         block_t& dst = words[it->first];
          const block_t& src = it->second;
+         if (src == block_t{0})
+            continue;
 
+         block_t& dst = words[it->first];
          for (unsigned j = 0; j < src.size(); j++) {
             uint64_t new_bits = src[j] & ~dst[j];
             if (new_bits) {
@@ -352,6 +567,26 @@ struct IDSet {
 
    bool empty() const { return !size(); }
 
+   explicit IDSet(monotonic_buffer_resource& m) : words(m) {}
+   explicit IDSet(const IDSet& other, monotonic_buffer_resource& m) : words(other.words, m) {}
+
+   bool operator==(const IDSet& other) const
+   {
+      auto it = words.begin();
+      for (auto block : other.words) {
+         if (block.second == block_t{0})
+            continue;
+         while (it != words.end() && it->second == block_t{0})
+            it++;
+         if (it == words.end() || block != *it)
+            return false;
+         it++;
+      }
+
+      return true;
+   }
+   bool operator!=(const IDSet& other) const { return !(*this == other); }
+
 private:
    static uint32_t get_first_set(const block_t& words)
    {
@@ -362,7 +597,7 @@ private:
       return UINT32_MAX;
    }
 
-   std::map<uint32_t, block_t> words;
+   aco::map<uint32_t, block_t> words;
 };
 
 inline IDSet::Iterator&
@@ -412,165 +647,6 @@ IDSet::Iterator::operator*() const
 {
    return id;
 }
-
-/*
- * Light-weight memory resource which allows to sequentially allocate from
- * a buffer. Both, the release() method and the destructor release all managed
- * memory.
- *
- * The memory resource is not thread-safe.
- * This class mimics std::pmr::monotonic_buffer_resource
- */
-class monotonic_buffer_resource final {
-public:
-   explicit monotonic_buffer_resource(size_t size = initial_size)
-   {
-      /* The size parameter refers to the total size of the buffer.
-       * The usable data_size is size - sizeof(Buffer).
-       */
-      size = MAX2(size, minimum_size);
-      buffer = (Buffer*)malloc(size);
-      buffer->next = nullptr;
-      buffer->data_size = size - sizeof(Buffer);
-      buffer->current_idx = 0;
-   }
-
-   ~monotonic_buffer_resource()
-   {
-      release();
-      free(buffer);
-   }
-
-   /* Delete copy-constructor and -assignment to avoid double free() */
-   monotonic_buffer_resource(const monotonic_buffer_resource&) = delete;
-   monotonic_buffer_resource& operator=(const monotonic_buffer_resource&) = delete;
-
-   void* allocate(size_t size, size_t alignment)
-   {
-      buffer->current_idx = align(buffer->current_idx, alignment);
-      if (buffer->current_idx + size <= buffer->data_size) {
-         uint8_t* ptr = &buffer->data[buffer->current_idx];
-         buffer->current_idx += size;
-         return ptr;
-      }
-
-      /* create new larger buffer */
-      uint32_t total_size = buffer->data_size + sizeof(Buffer);
-      do {
-         total_size *= 2;
-      } while (total_size - sizeof(Buffer) < size);
-      Buffer* next = buffer;
-      buffer = (Buffer*)malloc(total_size);
-      buffer->next = next;
-      buffer->data_size = total_size - sizeof(Buffer);
-      buffer->current_idx = 0;
-
-      return allocate(size, alignment);
-   }
-
-   void release()
-   {
-      while (buffer->next) {
-         Buffer* next = buffer->next;
-         free(buffer);
-         buffer = next;
-      }
-      buffer->current_idx = 0;
-   }
-
-   bool operator==(const monotonic_buffer_resource& other) { return buffer == other.buffer; }
-
-private:
-   struct Buffer {
-      Buffer* next;
-      uint32_t current_idx;
-      uint32_t data_size;
-      uint8_t data[];
-   };
-
-   Buffer* buffer;
-   static constexpr size_t initial_size = 4096;
-   static constexpr size_t minimum_size = 128;
-   static_assert(minimum_size > sizeof(Buffer));
-};
-
-/*
- * Small memory allocator which wraps monotonic_buffer_resource
- * in order to implement <allocator_traits>.
- *
- * This class mimics std::pmr::polymorphic_allocator with monotonic_buffer_resource
- * as memory resource. The advantage of this specialization is the absence of
- * virtual function calls and the propagation on swap, copy- and move assignment.
- */
-template <typename T> class monotonic_allocator {
-public:
-   monotonic_allocator() = delete;
-   monotonic_allocator(monotonic_buffer_resource& m) : memory_resource(m) {}
-   template <typename U>
-   explicit monotonic_allocator(const monotonic_allocator<U>& rhs)
-       : memory_resource(rhs.memory_resource)
-   {}
-
-   /* Memory Allocation */
-   T* allocate(size_t size)
-   {
-      uint32_t bytes = sizeof(T) * size;
-      return (T*)memory_resource.get().allocate(bytes, alignof(T));
-   }
-
-   /* Memory will be freed on destruction of memory_resource */
-   void deallocate(T* ptr, size_t size) {}
-
-   /* Implement <allocator_traits> */
-   using value_type = T;
-   template <class U> struct rebind {
-      using other = monotonic_allocator<U>;
-   };
-
-   typedef std::true_type propagate_on_container_copy_assignment;
-   typedef std::true_type propagate_on_container_move_assignment;
-   typedef std::true_type propagate_on_container_swap;
-
-   template <typename> friend class monotonic_allocator;
-   template <typename X, typename Y>
-   friend bool operator==(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b);
-   template <typename X, typename Y>
-   friend bool operator!=(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b);
-
-private:
-   std::reference_wrapper<monotonic_buffer_resource> memory_resource;
-};
-
-/* Necessary for <allocator_traits>. */
-template <typename X, typename Y>
-inline bool
-operator==(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b)
-{
-   return a.memory_resource.get() == b.memory_resource.get();
-}
-template <typename X, typename Y>
-inline bool
-operator!=(monotonic_allocator<X> const& a, monotonic_allocator<Y> const& b)
-{
-   return !(a == b);
-}
-
-/*
- * aco::map - alias for std::map with monotonic_allocator
- *
- * This template specialization mimics std::pmr::map.
- */
-template <class Key, class T, class Compare = std::less<Key>>
-using map = std::map<Key, T, Compare, aco::monotonic_allocator<std::pair<const Key, T>>>;
-
-/*
- * aco::unordered_map - alias for std::unordered_map with monotonic_allocator
- *
- * This template specialization mimics std::pmr::unordered_map.
- */
-template <class Key, class T, class Hash = std::hash<Key>, class Pred = std::equal_to<Key>>
-using unordered_map =
-   std::unordered_map<Key, T, Hash, Pred, aco::monotonic_allocator<std::pair<const Key, T>>>;
 
 /*
  * Helper class for a integer/bool (access_type) packed into
@@ -759,7 +835,7 @@ template <typename T> struct bit_reference {
 
    constexpr bit_reference& operator&=(bool val)
    {
-      storage &= T(val) << bit;
+      storage &= ~(T(!val) << bit);
       return *this;
    }
 
@@ -1012,6 +1088,7 @@ template <typename T, unsigned offset, unsigned size>
 using bitfield_array64 = bitfield_array<T, offset, size, uint64_t>;
 
 using bitarray8 = bitfield_array<uint8_t, 0, 8, uint8_t>;
+using bitarray32 = bitfield_array<uint32_t, 0, 32, uint32_t>;
 
 /*
  * Resizable array optimized for small lengths. If it's smaller than Size, the elements will be
@@ -1019,7 +1096,7 @@ using bitarray8 = bitfield_array<uint8_t, 0, 8, uint8_t>;
  */
 template <typename T, uint32_t Size> class small_vec {
 public:
-   static_assert(std::is_trivially_copyable<T>::value);
+   /* We could support destructors with some effort, but currently there's no use case. */
    static_assert(std::is_trivially_destructible<T>::value);
 
    using value_type = T;
@@ -1035,8 +1112,8 @@ public:
    using difference_type = std::ptrdiff_t;
 
    constexpr small_vec() = default;
-   constexpr small_vec(const small_vec&) = delete;
-   constexpr small_vec(small_vec&& other) { *this = std::move(other); }
+   constexpr small_vec(const small_vec& other) { *this = other; }
+   constexpr small_vec(small_vec&& other) noexcept { *this = std::move(other); }
 
    ~small_vec()
    {
@@ -1044,20 +1121,39 @@ public:
          free(data);
    }
 
-   constexpr small_vec& operator=(const small_vec&) = delete;
-   constexpr small_vec& operator=(small_vec&& other)
+   constexpr small_vec& operator=(const small_vec& other)
    {
+      if (&other == this)
+         return *this;
       clear();
-      void* ptr = this;
-      memcpy(ptr, &other, sizeof(*this));
+      reserve(other.capacity);
+      length = other.length;
+      std::uninitialized_copy(other.begin(), other.end(), begin());
+      return *this;
+   }
+
+   constexpr small_vec& operator=(small_vec&& other) noexcept
+   {
+      if (&other == this)
+         return *this;
+      clear();
+      length = other.length;
+      capacity = other.capacity;
+      if (capacity > Size)
+         data = other.data;
+      else
+         std::uninitialized_move(other.begin(), other.end(), begin());
       other.length = 0;
       other.capacity = Size;
       return *this;
    }
 
-   constexpr iterator begin() noexcept { return capacity > Size ? data : inline_data; }
+   constexpr iterator begin() noexcept { return capacity > Size ? data : (T*)inline_data; }
 
-   constexpr const_iterator begin() const noexcept { return capacity > Size ? data : inline_data; }
+   constexpr const_iterator begin() const noexcept
+   {
+      return capacity > Size ? data : (T*)inline_data;
+   }
 
    constexpr iterator end() noexcept { return std::next(begin(), length); }
 
@@ -1140,13 +1236,18 @@ public:
    constexpr void reserve(size_type n)
    {
       if (n > capacity) {
-         if (capacity > Size) {
-            data = (T*)realloc(data, sizeof(T) * n);
-         } else {
-            T* ptr = (T*)malloc(sizeof(T) * n);
-            memcpy(ptr, inline_data, sizeof(T) * length);
-            data = ptr;
+         if constexpr (std::is_trivial<T>::value) {
+            if (capacity > Size) {
+               data = (T*)realloc(data, sizeof(T) * n);
+               capacity = n;
+               return;
+            }
          }
+         T* ptr = (T*)malloc(sizeof(T) * n);
+         std::uninitialized_move(begin(), end(), ptr);
+         if (capacity > Size)
+            free(data);
+         data = ptr;
          capacity = n;
       }
    }
@@ -1156,7 +1257,7 @@ public:
       if (length == capacity)
          reserve(2 * capacity);
 
-      *std::next(begin(), length++) = val;
+      new (std::next(begin(), length++)) T(val);
    }
 
    template <typename... Args> constexpr void emplace_back(Args... args) noexcept
@@ -1164,7 +1265,43 @@ public:
       if (length == capacity)
          reserve(2 * capacity);
 
-      *std::next(begin(), length++) = T(args...);
+      new (std::next(begin(), length++)) T(args...);
+   }
+
+   constexpr void insert(const_iterator it, const value_type& val) noexcept
+   {
+      size_t idx = it - begin();
+      assert(idx <= size());
+
+      if (length == capacity)
+         reserve(2 * capacity);
+
+      if (idx == length) {
+         new (end()) T(val);
+      } else {
+         /* We can't do this one as part of move_backward because end() is uninitialized. */
+         new (end()) T(std::move(*(end() - 1)));
+         std::move_backward(std::next(begin(), idx), std::prev(end(), 1), end());
+         *std::next(begin(), idx) = val;
+      }
+      length++;
+   }
+
+   constexpr void erase(const_iterator it) noexcept
+   {
+      std::move(iterator(it) + 1, end(), iterator(it));
+      length--;
+   }
+
+   constexpr void resize(uint32_t new_size) noexcept
+   {
+      if (new_size > capacity)
+         reserve(new_size);
+
+      for (uint32_t i = length; i < new_size; i++)
+         new (std::next(begin(), i)) T();
+
+      length = new_size;
    }
 
    constexpr void clear() noexcept
@@ -1191,7 +1328,7 @@ private:
    uint32_t capacity = Size;
    union {
       T* data = NULL;
-      T inline_data[Size];
+      alignas(T) uint8_t inline_data[sizeof(T) * Size];
    };
 };
 

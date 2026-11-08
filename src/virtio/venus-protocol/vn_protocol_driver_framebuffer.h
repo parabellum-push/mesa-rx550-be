@@ -166,7 +166,7 @@ vn_sizeof_VkFramebufferCreateInfo_pnext(const void *val)
         case VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO:
             size += vn_sizeof_simple_pointer(pnext);
             size += vn_sizeof_VkStructureType(&pnext->sType);
-            size += vn_sizeof_VkFramebufferCreateInfo_pnext(pnext->pNext);
+            size += vn_sizeof_VkFramebufferCreateInfo_pnext(((const VkFramebufferAttachmentsCreateInfo *)pnext)->pNext);
             size += vn_sizeof_VkFramebufferAttachmentsCreateInfo_self((const VkFramebufferAttachmentsCreateInfo *)pnext);
             return size;
         default:
@@ -187,7 +187,7 @@ vn_sizeof_VkFramebufferCreateInfo_self(const VkFramebufferCreateInfo *val)
     size += vn_sizeof_VkFlags(&val->flags);
     size += vn_sizeof_VkRenderPass(&val->renderPass);
     size += vn_sizeof_uint32_t(&val->attachmentCount);
-    if (val->pAttachments) {
+    if (!(val->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT)) {
         size += vn_sizeof_array_size(val->attachmentCount);
         for (uint32_t i = 0; i < val->attachmentCount; i++)
             size += vn_sizeof_VkImageView(&val->pAttachments[i]);
@@ -222,7 +222,7 @@ vn_encode_VkFramebufferCreateInfo_pnext(struct vn_cs_encoder *enc, const void *v
         case VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO:
             vn_encode_simple_pointer(enc, pnext);
             vn_encode_VkStructureType(enc, &pnext->sType);
-            vn_encode_VkFramebufferCreateInfo_pnext(enc, pnext->pNext);
+            vn_encode_VkFramebufferCreateInfo_pnext(enc, ((const VkFramebufferAttachmentsCreateInfo *)pnext)->pNext);
             vn_encode_VkFramebufferAttachmentsCreateInfo_self(enc, (const VkFramebufferAttachmentsCreateInfo *)pnext);
             return;
         default:
@@ -242,7 +242,7 @@ vn_encode_VkFramebufferCreateInfo_self(struct vn_cs_encoder *enc, const VkFrameb
     vn_encode_VkFlags(enc, &val->flags);
     vn_encode_VkRenderPass(enc, &val->renderPass);
     vn_encode_uint32_t(enc, &val->attachmentCount);
-    if (val->pAttachments) {
+    if (!(val->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT)) {
         vn_encode_array_size(enc, val->attachmentCount);
         for (uint32_t i = 0; i < val->attachmentCount; i++)
             vn_encode_VkImageView(enc, &val->pAttachments[i]);
@@ -449,19 +449,6 @@ static inline void vn_async_vkCreateFramebuffer(struct vn_ring *vn_ring, VkDevic
 {
     struct vn_ring_submit_command submit;
     vn_submit_vkCreateFramebuffer(vn_ring, 0, device, pCreateInfo, pAllocator, pFramebuffer, &submit);
-}
-
-static inline void vn_call_vkDestroyFramebuffer(struct vn_ring *vn_ring, VkDevice device, VkFramebuffer framebuffer, const VkAllocationCallbacks* pAllocator)
-{
-    VN_TRACE_FUNC();
-
-    struct vn_ring_submit_command submit;
-    vn_submit_vkDestroyFramebuffer(vn_ring, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, framebuffer, pAllocator, &submit);
-    struct vn_cs_decoder *dec = vn_ring_get_command_reply(vn_ring, &submit);
-    if (dec) {
-        vn_decode_vkDestroyFramebuffer_reply(dec, device, framebuffer, pAllocator);
-        vn_ring_free_command_reply(vn_ring, &submit);
-    }
 }
 
 static inline void vn_async_vkDestroyFramebuffer(struct vn_ring *vn_ring, VkDevice device, VkFramebuffer framebuffer, const VkAllocationCallbacks* pAllocator)

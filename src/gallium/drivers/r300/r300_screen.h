@@ -35,6 +35,11 @@ struct r300_screen {
     /* The MSAA texture with CMASK access; */
     struct pipe_resource *cmask_resource;
     mtx_t cmask_mutex;
+
+    struct {
+#define OPT_BOOL(name, dflt, description) bool name : 1;
+#include "r300_debug_options.h"
+    } options;
 };
 
 
@@ -46,6 +51,14 @@ static inline struct r300_screen* r300_screen(struct pipe_screen* screen) {
 static inline struct radeon_winsys *
 radeon_winsys(struct pipe_screen *screen) {
     return r300_screen(screen)->rws;
+}
+
+static inline unsigned
+r300_hyperz_pipe_count(const struct r300_screen *screen)
+{
+   if (screen->caps.family == CHIP_RV530)
+      return screen->info.r300_num_z_pipes;
+   return screen->info.r300_num_gb_pipes;
 }
 
 /* Debug functionality. */
@@ -87,6 +100,9 @@ radeon_winsys(struct pipe_screen *screen) {
 #define DBG_NO_HIZ      (1 << 22)
 #define DBG_NO_CMASK    (1 << 23)
 #define DBG_NO_TCL      (1 << 25)
+#define DBG_IEEEMATH    (1 << 26)
+#define DBG_FFMATH      (1 << 27)
+#define DBG_DUMMYSH     (1 << 28)
 /*@}*/
 static inline bool SCREEN_DBG_ON(struct r300_screen * screen, unsigned flags)
 {

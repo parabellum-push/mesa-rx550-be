@@ -1,22 +1,5 @@
 # Copyright © 2020 Igalia S.L
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 freedreno_devices_h = custom_target(
   'freedreno_devices.h',
@@ -27,6 +10,7 @@ freedreno_devices_h = custom_target(
     '-p', join_paths(meson.project_build_root(), 'src/freedreno/registers/adreno/')
   ],
   depends: freedreno_py_header_files,
+  depend_files: [files('freedreno_dev_info.py')],
   capture: true,
 )
 
@@ -43,13 +27,15 @@ libfreedreno_common = static_library(
     'freedreno_uuid.c',
     'freedreno_uuid.h',
     'freedreno_guardband.h',
+    'freedreno_vrs.h',
     freedreno_devices_h,
+    freedreno_pm4_xml_header_file,
     sha1_h,
     'redump.h'
   ],
   include_directories : [inc_freedreno, inc_include, inc_src],
-  c_args : [no_override_init_args],
-  build_by_default : true,
+  c_args : [no_override_init_args, soong_compat_c_args],
+  build_by_default : false,
   dependencies: [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
 )

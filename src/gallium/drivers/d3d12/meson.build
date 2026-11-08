@@ -1,25 +1,31 @@
 # Copyright © Microsoft Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice (including the next
-# paragraph) shall be included in all copies or substantial portions of the
-# Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 libd3d12_compiler_args = []
+
+libd3d12_compiler_args += cc.get_supported_arguments([
+    '/we4267',
+    '/we4996',
+    '/we4146',
+    '/we4244',
+    '/we4389',
+    '/we4838',
+    '/we4302',
+    '/we4018',
+    '/we4056',
+    '/we4305',
+    '/we4351',
+    '/we4756',
+    '/we4800',
+    '/we4291',
+    '/we4624',
+    '/we4309',
+    '/we5105',
+    '/we4020',
+    '/we4024',
+    '/we4189',
+  ])
+
 _with_gallium_d3d12_graphics = get_option('gallium-d3d12-graphics')
 with_gallium_d3d12_graphics = false
 if not _with_gallium_d3d12_graphics.disabled()
@@ -142,17 +148,22 @@ if is_xbox == false
   files_libd3d12 += files('d3d12_dxcore_screen.cpp')
 endif
 
+libd3d12_deps = [dep_dxheaders, idep_mesautil]
+if with_gallium_d3d12_graphics
+  libd3d12_deps += [idep_nir_headers, idep_libdxil_compiler]
+endif
+
 libd3d12 = static_library(
   'd3d12',
   [files_libd3d12, sha1_h],
   gnu_symbol_visibility : 'hidden',
-  include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
-  dependencies: [idep_nir_headers, idep_libdxil_compiler, dep_dxheaders],
+  include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],
+  dependencies: libd3d12_deps,
   c_args: libd3d12_compiler_args,
   cpp_args: libd3d12_compiler_args,
 )
 
 driver_d3d12 = declare_dependency(
   compile_args : '-DGALLIUM_D3D12',
-  link_with : [libd3d12, libgalliumvl],
+  link_with : [libd3d12],
 )

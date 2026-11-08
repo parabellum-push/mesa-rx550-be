@@ -1,22 +1,5 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 inc_compiler = include_directories('.')
 inc_glsl = include_directories('glsl')
@@ -28,6 +11,7 @@ builtin_types_h = custom_target(
   output : 'builtin_types.h',
   command : [prog_python, '@INPUT@', '@OUTPUT@'],
   depend_files : files('builtin_types.py'),
+  depends : u_format_gen_h,
 )
 
 builtin_types_c = custom_target(
@@ -41,10 +25,12 @@ builtin_types_c = custom_target(
 float64_glsl_file = files('glsl/float64.glsl')
 
 astc_decoder_glsl_file = files('glsl/astc_decoder.glsl')
+float32_glsl_file = files('glsl/float32.glsl')
 
 files_libcompiler = files(
   'glsl_types.c',
   'glsl_types.h',
+  'list.h',
   'shader_enums.c',
   'shader_enums.h',
   'shader_info.h',
@@ -62,7 +48,7 @@ libcompiler = static_library(
   'compiler',
   [files_libcompiler, ir_expression_operation_h, builtin_types_h, builtin_types_c],
   include_directories : [inc_compiler, inc_include, inc_src],
-  c_args : [c_msvc_compat_args, no_override_init_args],
+  c_args : [c_msvc_compat_args, soong_compat_c_args, no_override_init_args],
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
   dependencies : [dep_valgrind],
@@ -86,3 +72,7 @@ if with_gallium
   subdir('glsl')
 endif
 subdir('isaspec')
+
+if with_nouveau_vk or with_tools.contains('etnaviv') or with_panfrost_rust
+  subdir('rust')
+endif

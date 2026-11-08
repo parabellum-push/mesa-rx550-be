@@ -29,6 +29,7 @@
 
 #include "kopper_interface.h"
 #include "util/u_queue.h"
+#include "util/set.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,17 +49,21 @@ struct kopper_swapchain_image {
    struct zink_resource *acquired;
    struct pipe_resource *readback;
    VkSemaphore acquire;
+   VkSemaphore present; // waited on by the last present, free once the image is acquired again
    VkImageLayout layout;
+
+   struct set surface_cache;
 };
 
 struct kopper_swapchain {
    struct kopper_swapchain *next;
    VkSwapchainKHR swapchain;
 
+   simple_mtx_t lock;
+
    unsigned last_present;
    unsigned num_images;
-   uint32_t last_present_prune;
-   struct hash_table *presents;
+   uint32_t present_batch; // wait for this batch before destroying the swapchain
    VkSwapchainCreateInfoKHR scci;
    unsigned num_acquires;
    unsigned max_acquires;
@@ -89,6 +94,8 @@ struct kopper_displaytarget
    struct kopper_swapchain *old_swapchain;
 
    struct kopper_loader_info info;
+
+   bool async; // True if submits should go through zink_screen::flush_queue
 
    VkSurfaceCapabilitiesKHR caps;
    VkImageFormatListCreateInfo format_list;
@@ -134,6 +141,13 @@ zink_kopper_acquired(const struct kopper_displaytarget *cdt, uint32_t idx)
    return idx != UINT32_MAX && cdt->swapchain->images[idx].acquired;
 }
 
+static inline struct pipe_screen * kopper_get_zink_screen(struct pipe_screen *screen)
+{
+   struct pipe_screen *pscreen = screen->get_driver_pipe_screen ?
+      screen->get_driver_pipe_screen(screen) : screen;
+   return pscreen;
+}
+
 void
 zink_kopper_update_last_written(struct zink_resource *res);
 
@@ -171,7 +185,7 @@ zink_kopper_fixup_depth_buffer(struct zink_context *ctx);
 bool
 zink_kopper_check(struct pipe_resource *pres);
 void
-zink_kopper_set_swap_interval(struct pipe_screen *pscreen, struct pipe_resource *pres, int interval);
+zink_kopper_set_swap_interval(struct pipe_context *pctx, struct pipe_resource *pres, int interval);
 int
 zink_kopper_query_buffer_age(struct pipe_context *pctx, struct pipe_resource *pres);
 void

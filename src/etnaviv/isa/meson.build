@@ -1,7 +1,5 @@
-#
 # Copyright © 2023 Igalia S.L.
 # SPDX-License-Identifier: MIT
-#
 
 isa_depend_files = [
   'etnaviv.xml',
@@ -47,13 +45,18 @@ idep_libetnaviv_decode = declare_dependency(
   sources : [etnaviv_isa],
 )
 
-enums_h = custom_target(
+prog_enums_h = files('enums.h.py')
+etnaviv_enums_h = custom_target(
   'enums.h',
-  input: ['enums.h.py', 'etnaviv.xml'],
+  input: 'etnaviv.xml',
   output: 'enums.h',
-  command: [prog_python, '@INPUT@'],
-  capture: true,
-  depend_files: isa_depend_files,
+  command: [prog_python, prog_enums_h, '--xml', '@INPUT@', '--output', '@OUTPUT@'],
+  depend_files: [isa_depend_files, prog_enums_h],
+)
+
+idep_etnaviv_enums_h = declare_dependency(
+  sources : [etnaviv_enums_h],
+  include_directories : include_directories('.'),
 )
 
 encode_h = custom_target(
@@ -67,7 +70,7 @@ encode_h = custom_target(
 )
 
 encode_files = [
-  enums_h,
+  etnaviv_enums_h,
   encode_h,
   'encode.c',
 ]
@@ -91,5 +94,104 @@ disasm = executable(
   ],
   install: false,
 )
+
+if with_tools.contains('etnaviv')
+  isa_bindings_rs = rust.bindgen(
+    input : [ 'bindings.h', etnaviv_enums_h ],
+    output : 'isa_bindings.rs',
+    include_directories : [inc_src],
+    args : [
+      bindgen_output_args,
+      '--disable-header-comment',
+      '--ignore-functions',
+      '--allowlist-type', 'etna_asm_result',
+      '--allowlist-type', 'etna_inst',
+      '--allowlist-type', 'isa_swiz',
+      '--default-enum-style', 'rust',
+      '--with-derive-default',
+    ],
+  )
+
+  _libetnaviv_isa_bindings_gen = static_library(
+    'isa_bindings',
+    isa_bindings_rs,
+    gnu_symbol_visibility : 'hidden',
+    rust_abi : 'rust',
+  )
+
+  dep_indexmap = dependency('indexmap',
+    version : '>= 2.2.6',
+    fallback : ['indexmap-2-rs', 'dep_indexmap'],
+    required : true,
+  )
+
+  dep_roxmltree = dependency('roxmltree',
+    version : '>= 0.20.roxmltree',
+    fallback : ['roxmltree-0.20-rs', 'dep_roxmltree'],
+    required : true,
+  )
+
+  dep_syn = dependency('syn',
+    version : '>= 2.0.15',
+    fallback : ['syn-2-rs', 'dep_syn'],
+    required : true,
+  )
+
+  dep_pest_generator = dependency('pest_generator',
+    version: '>= 2.7.6',
+    fallback: ['pest_generator-2-rs', 'dep_pest_generator'],
+    required: true,
+  )
+
+  dep_pest = dependency('pest',
+    version: '>= 2.7.6',
+    fallback: ['pest-2-rs', 'dep_pest'],
+    required: true,
+  )
+
+  _libetnaviv_isa_proc_rs = rust.proc_macro(
+    'etnaviv_isa_proc',
+    files('isa_proc.rs', 'isa.rs'),
+    dependencies : [dep_indexmap, dep_roxmltree, dep_syn, dep_pest_generator],
+    rust_args : rust_global_args,
+  )
+
+  if with_tests
+    # triggers a bug in meson
+    # rust.test('isa', _libetnaviv_isa_proc_rs, suite : ['etnaviv'])
+  endif
+
+  libetnaviv_isa_rs = static_library(
+    'etnaviv_isa_rs',
+    files('lib.rs'),
+    gnu_symbol_visibility : 'hidden',
+    rust_abi : 'c',
+    rust_args : rust_global_args,
+    dependencies: [
+      dep_indexmap,
+      dep_roxmltree,
+      dep_pest,
+      idep_compiler_rs,
+    ],
+    link_with: [_libetnaviv_isa_bindings_gen, _libetnaviv_isa_proc_rs],
+  )
+
+  etnaviv_assembler = executable(
+    'etnaviv-assembler',
+    ['assembler.c'],
+    gnu_symbol_visibility: 'hidden',
+    dependencies: [
+      idep_nir,
+      idep_libetnaviv_decode,
+      idep_etnaviv_enums_h
+    ],
+    link_with: [libetnaviv_encode, libetnaviv_isa_rs],
+  )
+else
+  pre_args += '-DHAVE_ETNAVIV_NO_PEST'
+
+  # dummy link_with entry for etnaviv_isa_disasm test
+  libetnaviv_isa_rs = []
+endif
 
 subdir('tests')

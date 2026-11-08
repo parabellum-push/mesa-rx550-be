@@ -176,8 +176,10 @@ struct gl_extensions
    GLboolean EXT_memory_object;
    GLboolean EXT_memory_object_fd;
    GLboolean EXT_memory_object_win32;
+   GLboolean EXT_mesh_shader;
    GLboolean EXT_multisampled_render_to_texture;
    GLboolean EXT_packed_float;
+   GLboolean EXT_protected_textures;
    GLboolean EXT_provoking_vertex;
    GLboolean EXT_render_snorm;
    GLboolean EXT_semaphore;
@@ -186,11 +188,15 @@ struct gl_extensions
    GLboolean EXT_shader_image_load_formatted;
    GLboolean EXT_shader_image_load_store;
    GLboolean EXT_shader_integer_mix;
+   GLboolean EXT_shader_pixel_local_storage;
+   GLboolean EXT_shader_realtime_clock;
    GLboolean EXT_shader_samples_identical;
    GLboolean EXT_sRGB;
    GLboolean EXT_stencil_two_side;
+   GLboolean EXT_shadow_samplers;
    GLboolean EXT_texture_array;
    GLboolean EXT_texture_buffer_object;
+   GLboolean EXT_texture_compression_astc_decode_mode;
    GLboolean EXT_texture_compression_latc;
    GLboolean EXT_texture_compression_s3tc;
    GLboolean EXT_texture_compression_s3tc_srgb;
@@ -221,6 +227,9 @@ struct gl_extensions
    GLboolean OES_texture_cube_map_array;
    GLboolean OES_texture_view;
    GLboolean OES_viewport_array;
+   GLboolean OVR_multiview;
+   GLboolean OVR_multiview2;
+   GLboolean OVR_multiview_multisampled_render_to_texture;
    /* vendor extensions */
    GLboolean AMD_compressed_ATC_texture;
    GLboolean AMD_framebuffer_multisample_advanced;
@@ -247,6 +256,7 @@ struct gl_extensions
    GLboolean KHR_blend_equation_advanced;
    GLboolean KHR_blend_equation_advanced_coherent;
    GLboolean KHR_robustness;
+   GLboolean KHR_shader_subgroup;
    GLboolean KHR_texture_compression_astc_hdr;
    GLboolean KHR_texture_compression_astc_ldr;
    GLboolean KHR_texture_compression_astc_sliced_3d;
@@ -272,13 +282,14 @@ struct gl_extensions
    GLboolean NV_texture_barrier;
    GLboolean NV_texture_env_combine4;
    GLboolean NV_texture_rectangle;
-   GLboolean NV_vdpau_interop;
    GLboolean NV_conservative_raster;
    GLboolean NV_conservative_raster_dilate;
    GLboolean NV_conservative_raster_pre_snap_triangles;
    GLboolean NV_conservative_raster_pre_snap;
    GLboolean NV_viewport_array2;
    GLboolean NV_viewport_swizzle;
+   GLboolean NV_timeline_semaphore;
+   GLboolean NV_representative_fragment_test;
    GLboolean NVX_gpu_memory_info;
    GLboolean TDFX_texture_compression_FXT1;
    GLboolean OES_EGL_image;
@@ -304,67 +315,6 @@ struct gl_extensions
     * while meta is in progress.
     */
    GLubyte Version;
-};
-
-/**
- * Compiler options for a single GLSL shaders type
- */
-struct gl_shader_compiler_options
-{
-   /** Driver-selectable options: */
-   GLboolean EmitNoCont;                  /**< Emit CONT opcode? */
-   GLboolean EmitNoMainReturn;            /**< Emit CONT/RET opcodes? */
-   GLbitfield LowerBuiltinVariablesXfb;   /**< Which builtin variables should
-                                           * be lowered for transform feedback
-                                           **/
-
-   /**
-    * If we can lower the precision of variables based on precision
-    * qualifiers
-    */
-   GLboolean LowerPrecisionFloat16;
-   GLboolean LowerPrecisionInt16;
-   GLboolean LowerPrecisionDerivatives;
-   GLboolean LowerPrecisionFloat16Uniforms;
-
-   /**
-    * This enables lowering of 16b constants.  Some drivers may not
-    * to lower constants to 16b (ie. if the hw can do automatic
-    * narrowing on constant load)
-    */
-   GLboolean LowerPrecisionConstants;
-
-   /**
-    * \name Forms of indirect addressing the driver cannot do.
-    */
-   /*@{*/
-   GLboolean EmitNoIndirectInput;   /**< No indirect addressing of inputs */
-   GLboolean EmitNoIndirectOutput;  /**< No indirect addressing of outputs */
-   GLboolean EmitNoIndirectTemp;    /**< No indirect addressing of temps */
-   GLboolean EmitNoIndirectUniform; /**< No indirect addressing of constants */
-   /*@}*/
-
-   GLuint MaxIfDepth;               /**< Maximum nested IF blocks */
-
-   /**
-    * Optimize code for array of structures backends.
-    *
-    * This is a proxy for:
-    *   - preferring DP4 instructions (rather than MUL/MAD) for
-    *     matrix * vector operations, such as position transformation.
-    */
-   GLboolean OptimizeForAOS;
-
-   /** Clamp UBO and SSBO block indices so they don't go out-of-bounds. */
-   GLboolean ClampBlockIndicesToArrayBounds;
-
-   /** (driconf) Force gl_Position to be considered invariant */
-   GLboolean PositionAlwaysInvariant;
-
-   /** (driconf) Force gl_Position to be considered precise */
-   GLboolean PositionAlwaysPrecise;
-
-   const struct nir_shader_compiler_options *NirOptions;
 };
 
 /**
@@ -394,15 +344,6 @@ struct gl_program_constants
    GLuint MaxParameters;
    GLuint MaxLocalParams;
    GLuint MaxEnvParams;
-   /* native/hardware limits */
-   GLuint MaxNativeInstructions;
-   GLuint MaxNativeAluInstructions;
-   GLuint MaxNativeTexInstructions;
-   GLuint MaxNativeTexIndirections;
-   GLuint MaxNativeAttribs;
-   GLuint MaxNativeTemps;
-   GLuint MaxNativeAddressRegs;
-   GLuint MaxNativeParameters;
    /* For shaders */
    GLuint MaxUniformComponents;  /**< Usually == MaxParameters * 4 */
 
@@ -459,7 +400,6 @@ struct gl_constants
     */
    GLbitfield DriverSupportedPrimMask;
 
-   GLuint MaxTextureMbytes;      /**< Max memory per image, in MB */
    GLuint MaxTextureSize;        /**< Max 1D/2D texture size, in pixels*/
    GLuint Max3DTextureLevels;    /**< Max mipmap levels for 3D textures */
    GLuint MaxCubeTextureLevels;  /**< Max mipmap levels for cube textures */
@@ -499,7 +439,7 @@ struct gl_constants
    } ViewportBounds;                         /**< GL_ARB_viewport_array */
    GLuint MaxWindowRectangles;               /**< GL_EXT_window_rectangles */
 
-   struct gl_program_constants Program[MESA_SHADER_STAGES];
+   struct gl_program_constants Program[MESA_SHADER_MESH_STAGES];
    GLuint MaxProgramMatrices;
    GLuint MaxProgramMatrixStackDepth;
 
@@ -520,6 +460,9 @@ struct gl_constants
       GLuint ComputeInvocations;
       GLuint ClInPrimitives;
       GLuint ClOutPrimitives;
+      GLuint TsInvocations;
+      GLuint MsInvocations;
+      GLuint MeshPrimitivesGenerated;
    } QueryCounterBits;
 
    GLuint MaxDrawBuffers;    /**< GL_ARB_draw_buffers */
@@ -599,6 +542,12 @@ struct gl_constants
    GLboolean AllowGLSL120SubsetIn110;
 
    /**
+    * Allow a embedded structure declarations which were allowed in GLSL 1.10
+    * but are no longer allowed in GLSL 1.20+
+    */
+   GLboolean AllowGLSLEmbeddedStructureDeclarations;
+
+   /**
     * Allow builtins as part of constant expressions. This was not allowed
     * until GLSL 1.20 this allows it everywhere.
     */
@@ -670,11 +619,6 @@ struct gl_constants
     *        function out variables are now initialized.
     */
    GLchar GLSLZeroInit;
-
-   /**
-    * Force GL names reuse. Needed by SPECviewperf13.
-    */
-   GLboolean ForceGLNamesReuse;
 
    /**
     * Treat integer textures using GL_LINEAR filters as GL_NEAREST.
@@ -911,7 +855,11 @@ struct gl_constants
    /** GL_KHR_context_flush_control */
    GLenum16 ContextReleaseBehavior;
 
-   struct gl_shader_compiler_options ShaderCompilerOptions[MESA_SHADER_STAGES];
+   /** (driconf) Force gl_Position to be considered invariant */
+   GLboolean VSPositionAlwaysInvariant;
+
+   /** (driconf) Force gl_Position to be considered precise */
+   GLboolean TESPositionAlwaysPrecise;
 
    /** GL_ARB_tessellation_shader */
    GLuint MaxPatchVertices;
@@ -926,14 +874,17 @@ struct gl_constants
    /** GL_ARB_sparse_buffer */
    GLuint SparseBufferPageSize;
 
-   /** Used as an input for sha1 generation in the on-disk shader cache */
-   unsigned char *dri_config_options_sha1;
+   /** Used as an input for blake3 generation in the on-disk shader cache */
+   unsigned char *dri_config_options_blake3;
 
    /** When drivers are OK with mapped buffers during draw and other calls. */
    bool AllowMappedBuffersDuringExecution;
 
    /** Override GL_MAP_UNSYNCHRONIZED_BIT */
    bool ForceMapBufferSynchronized;
+
+   /** Override GL_DEPTH_COMPONENT type from unsigned short to unsigned int */
+   bool ForceDepthComponentTypeInt;
 
    /** GL_ARB_get_program_binary */
    GLuint NumProgramBinaryFormats;
@@ -952,11 +903,6 @@ struct gl_constants
    bool PackedDriverUniformStorage;
 
    bool HasFBFetch;
-
-   /** Whether the backend supports reading from outputs */
-   bool SupportsReadingOutputs;
-
-   bool CombinedClipCullDistanceArrays;
 
    bool PointSizeFixed;
 
@@ -982,12 +928,10 @@ struct gl_constants
     */
    bool PrimitiveRestartFixedIndex;
 
-   /** GL_ARB_gl_spirv */
-   struct spirv_supported_capabilities SpirVCapabilities;
-
    /** GL_ARB_spirv_extensions */
    struct spirv_supported_extensions *SpirVExtensions;
 
+   char *ForceExplicitUniformLocZero;
    char *VendorOverride;
    char *RendererOverride;
 
@@ -1007,6 +951,9 @@ struct gl_constants
     */
    bool GLThreadNopCheckFramebufferStatus;
 
+   /** (driconf) Initialize outputs of vertex program to a default value vec4(0, 0, 0, 1) */
+   GLboolean VertexProgramDefaultOut;
+
    /** GL_ARB_sparse_texture */
    GLuint MaxSparseTextureSize;
    GLuint MaxSparse3DTextureSize;
@@ -1021,6 +968,15 @@ struct gl_constants
 
    /** Whether pipe_context::draw_vertex_state is supported. */
    bool HasDrawVertexState;
+
+   /* NV_timeline_semaphore */
+   GLuint64 MaxTimelineSemaphoreValueDifference;
+
+   /** GL_KHR_shader_subgroup */
+   GLuint ShaderSubgroupSize;
+   GLuint ShaderSubgroupSupportedStages;
+   GLuint ShaderSubgroupSupportedFeatures;
+   bool ShaderSubgroupQuadAllStages;
 };
 
 #endif

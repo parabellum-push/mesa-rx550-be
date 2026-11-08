@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -52,7 +34,7 @@ tex_clamp(unsigned wrap, bool *needs_border)
    case PIPE_TEX_WRAP_MIRROR_CLAMP:
    case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER:
       /* these two we could perhaps emulate, but we currently
-       * just don't advertise PIPE_CAP_TEXTURE_MIRROR_CLAMP
+       * just don't advertise pipe_caps.texture_mirror_clamp
        */
    default:
       DBG("invalid wrap: %u", wrap);
@@ -171,7 +153,9 @@ fd5_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
    }
 
    if (cso->target == PIPE_BUFFER) {
-      unsigned elements = cso->u.buf.size / util_format_get_blocksize(format);
+      unsigned elements = fd_clamp_buffer_size(format, cso->u.buf.size,
+                                               A4XX_MAX_TEXEL_BUFFER_ELEMENTS_UINT) /
+                          util_format_get_blocksize(format);
 
       lvl = 0;
       so->texconst1 = A5XX_TEX_CONST_1_WIDTH(elements & MASK(15)) |

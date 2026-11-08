@@ -24,6 +24,7 @@
 #include "compiler/glsl_types.h"
 #include "ir.h"
 #include "glsl_parser_extras.h"
+#include "linker_util.h"
 #include "main/errors.h"
 
 typedef enum {
@@ -52,11 +53,12 @@ get_param_type(const ir_instruction *inst)
  * \see matching_signature()
  */
 static parameter_list_match_t
-parameter_lists_match(_mesa_glsl_parse_state *state,
-                      const exec_list *list_a, const exec_list *list_b)
+parameter_lists_match(bool has_implicit_conversions,
+                      bool has_implicit_int_to_uint_conversion,
+                      const ir_exec_list *list_a, const ir_exec_list *list_b)
 {
-   const exec_node *node_a = list_a->get_head_raw();
-   const exec_node *node_b = list_b->get_head_raw();
+   const ir_exec_node *node_a = list_a->get_head_raw();
+   const ir_exec_node *node_b = list_b->get_head_raw();
 
    /* This is set to true if there is an inexact match requiring an implicit
     * conversion. */
@@ -99,12 +101,16 @@ parameter_lists_match(_mesa_glsl_parse_state *state,
       case ir_var_const_in:
       case ir_var_function_in:
          if (param->data.implicit_conversion_prohibited ||
-             !_mesa_glsl_can_implicitly_convert(actual_type, param->type, state))
+             !_mesa_glsl_can_implicitly_convert(actual_type, param->type,
+                                                has_implicit_conversions,
+                                                has_implicit_int_to_uint_conversion))
             return PARAMETER_LIST_NO_MATCH;
 	 break;
 
       case ir_var_function_out:
-	 if (!_mesa_glsl_can_implicitly_convert(param->type, actual_type, state))
+	 if (!_mesa_glsl_can_implicitly_convert(param->type, actual_type,
+                                                has_implicit_conversions,
+                                                has_implicit_int_to_uint_conversion))
 	    return PARAMETER_LIST_NO_MATCH;
 	 break;
 
@@ -213,7 +219,7 @@ is_better_parameter_match(parameter_match_t a_match,
 
 
 static bool
-is_best_inexact_overload(const exec_list *actual_parameters,
+is_best_inexact_overload(const ir_exec_list *actual_parameters,
                          ir_function_signature **matches,
                          int num_matches,
                          ir_function_signature *sig)
@@ -238,9 +244,9 @@ is_best_inexact_overload(const exec_list *actual_parameters,
       if (*other == sig)
          continue;
 
-      const exec_node *node_a = sig->parameters.get_head_raw();
-      const exec_node *node_b = (*other)->parameters.get_head_raw();
-      const exec_node *node_p = actual_parameters->get_head_raw();
+      const ir_exec_node *node_a = sig->parameters.get_head_raw();
+      const ir_exec_node *node_b = (*other)->parameters.get_head_raw();
+      const ir_exec_node *node_p = actual_parameters->get_head_raw();
 
       bool better_for_some_parameter = false;
 
@@ -274,9 +280,9 @@ is_best_inexact_overload(const exec_list *actual_parameters,
 
 static ir_function_signature *
 choose_best_inexact_overload(_mesa_glsl_parse_state *state,
-                             const exec_list *actual_parameters,
-                             ir_function_signature **matches,
-                             int num_matches)
+                             const ir_exec_list *actual_parameters,
+                             ir_function_signature **matches, int num_matches,
+                             bool has_choose_best_inexact_overload)
 {
    if (num_matches == 0)
       return NULL;
@@ -284,14 +290,7 @@ choose_best_inexact_overload(_mesa_glsl_parse_state *state,
    if (num_matches == 1)
       return *matches;
 
-   /* Without GLSL 4.0, ARB_gpu_shader5, or MESA_shader_integer_functions,
-    * there is no overload resolution among multiple inexact matches. Note
-    * that state may be NULL here if called from the linker; in that case we
-    * assume everything supported in any GLSL version is available.
-    */
-   if (!state || state->is_version(400, 0) || state->ARB_gpu_shader5_enable ||
-       state->MESA_shader_integer_functions_enable ||
-       state->EXT_shader_implicit_conversions_enable) {
+   if (has_choose_best_inexact_overload) {
       for (ir_function_signature **sig = matches; sig < matches + num_matches; sig++) {
          if (is_best_inexact_overload(actual_parameters, matches, num_matches, *sig))
             return *sig;
@@ -304,17 +303,22 @@ choose_best_inexact_overload(_mesa_glsl_parse_state *state,
 
 ir_function_signature *
 ir_function::matching_signature(_mesa_glsl_parse_state *state,
-                                const exec_list *actual_parameters,
+                                const ir_exec_list *actual_parameters,
+                                bool has_implicit_conversions,
+                                bool has_implicit_int_to_uint_conversion,
                                 bool allow_builtins)
 {
    bool is_exact;
-   return matching_signature(state, actual_parameters, allow_builtins,
-                             &is_exact);
+   return matching_signature(state, actual_parameters, has_implicit_conversions,
+                             has_implicit_int_to_uint_conversion,
+                             allow_builtins, &is_exact);
 }
 
 ir_function_signature *
 ir_function::matching_signature(_mesa_glsl_parse_state *state,
-                                const exec_list *actual_parameters,
+                                const ir_exec_list *actual_parameters,
+                                bool has_implicit_conversions,
+                                bool has_implicit_int_to_uint_conversion,
                                 bool allow_builtins,
                                 bool *is_exact)
 {
@@ -333,13 +337,15 @@ ir_function::matching_signature(_mesa_glsl_parse_state *state,
     *  multiple ways to apply these conversions to the actual arguments of a
     *  call such that the call can be made to match multiple signatures."
     */
-   foreach_in_list(ir_function_signature, sig, &this->signatures) {
+   ir_foreach_in_list(ir_function_signature, sig, &this->signatures) {
       /* Skip over any built-ins that aren't available in this shader. */
       if (sig->is_builtin() && (!allow_builtins ||
                                 !sig->is_builtin_available(state)))
          continue;
 
-      switch (parameter_lists_match(state, & sig->parameters, actual_parameters)) {
+      switch (parameter_lists_match(has_implicit_conversions,
+                                    has_implicit_int_to_uint_conversion,
+                                    &sig->parameters, actual_parameters)) {
       case PARAMETER_LIST_EXACT_MATCH:
          *is_exact = true;
          free(inexact_matches);
@@ -378,7 +384,8 @@ ir_function::matching_signature(_mesa_glsl_parse_state *state,
    *is_exact = false;
 
    match = choose_best_inexact_overload(state, actual_parameters,
-                                        inexact_matches, num_inexact_matches);
+                                        inexact_matches, num_inexact_matches,
+                                        has_implicit_int_to_uint_conversion);
 
    free(inexact_matches);
    return match;
@@ -386,10 +393,10 @@ ir_function::matching_signature(_mesa_glsl_parse_state *state,
 
 
 static bool
-parameter_lists_match_exact(const exec_list *list_a, const exec_list *list_b)
+parameter_lists_match_exact(const ir_exec_list *list_a, const ir_exec_list *list_b)
 {
-   const exec_node *node_a = list_a->get_head_raw();
-   const exec_node *node_b = list_b->get_head_raw();
+   const ir_exec_node *node_a = list_a->get_head_raw();
+   const ir_exec_node *node_b = list_b->get_head_raw();
 
    for (/* empty */
 	; !node_a->is_tail_sentinel() && !node_b->is_tail_sentinel()
@@ -412,9 +419,9 @@ parameter_lists_match_exact(const exec_list *list_a, const exec_list *list_b)
 
 ir_function_signature *
 ir_function::exact_matching_signature(_mesa_glsl_parse_state *state,
-                                      const exec_list *actual_parameters)
+                                      const ir_exec_list *actual_parameters)
 {
-   foreach_in_list(ir_function_signature, sig, &this->signatures) {
+   ir_foreach_in_list(ir_function_signature, sig, &this->signatures) {
       /* Skip over any built-ins that aren't available in this shader. */
       if (sig->is_builtin() && !sig->is_builtin_available(state))
          continue;

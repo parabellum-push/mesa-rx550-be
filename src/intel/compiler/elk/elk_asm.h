@@ -1,29 +1,9 @@
 /*
  * Copyright © 2018 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
-#ifndef ELK_ASM_H
-#define ELK_ASM_H
+#pragma once
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -72,6 +52,7 @@ struct options {
    unsigned access_mode:1;
    unsigned compression_control:2;
    unsigned thread_control:2;
+   unsigned branch_control:1;
    unsigned no_dd_check:1; // Dependency control
    unsigned no_dd_clear:1; // Dependency control
    unsigned mask_control:1;
@@ -108,5 +89,3 @@ struct target_label {
    char *name;
    int offset;
 };
-
-#endif /* ELK_ASM_H */

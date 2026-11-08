@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -86,23 +68,28 @@ fd5_emit_shader_obj(struct fd_context *ctx, struct fd_ringbuffer *ring,
                     const struct ir3_shader_variant *so,
                     uint32_t shader_obj_reg)
 {
-   ir3_get_private_mem(ctx, so);
+   struct fd_screen *screen = ctx->screen;
+
+   fd_screen_lock(screen);
+   ir3_get_private_mem(screen, so);
 
    OUT_PKT4(ring, shader_obj_reg, 6);
-   OUT_RELOC(ring, so->bo, 0, 0, 0); /* SP_VS_OBJ_START_LO/HI */
+   OUT_RELOC(ring, so->bo, 0, 0, 0); /* SP_VS_OBJ_START */
 
-   uint32_t per_sp_size = ctx->pvtmem[so->pvtmem_per_wave].per_sp_size;
+   uint32_t per_sp_size = screen->pvtmem[so->pvtmem_per_wave].per_sp_size;
    OUT_RING(ring, A5XX_SP_VS_PVT_MEM_PARAM_MEMSIZEPERITEM(
-                     ctx->pvtmem[so->pvtmem_per_wave].per_fiber_size) |
+                     screen->pvtmem[so->pvtmem_per_wave].per_fiber_size) |
                      A5XX_SP_VS_PVT_MEM_PARAM_HWSTACKOFFSET(per_sp_size));
    if (so->pvtmem_size > 0) { /* SP_xS_PVT_MEM_ADDR */
-      OUT_RELOC(ring, ctx->pvtmem[so->pvtmem_per_wave].bo, 0, 0, 0);
-      fd_ringbuffer_attach_bo(ring, ctx->pvtmem[so->pvtmem_per_wave].bo);
+      OUT_RELOC(ring, screen->pvtmem[so->pvtmem_per_wave].bo, 0, 0, 0);
+      fd_ringbuffer_attach_bo(ring, screen->pvtmem[so->pvtmem_per_wave].bo);
    } else {
       OUT_RING(ring, 0);
       OUT_RING(ring, 0);
    }
    OUT_RING(ring, A5XX_SP_VS_PVT_MEM_SIZE_TOTALPVTMEMSIZE(per_sp_size));
+
+   fd_screen_unlock(screen);
 }
 
 /* TODO maybe some of this we could pre-compute once rather than having
@@ -120,7 +107,7 @@ emit_stream_out(struct fd_ringbuffer *ring, const struct ir3_shader_variant *v,
 
    for (unsigned i = 0; i < strmout->num_outputs; i++) {
       const struct ir3_stream_output *out = &strmout->output[i];
-      unsigned k = out->register_index;
+      gl_varying_slot slot = out->location;
       unsigned idx;
 
       ncomp[out->output_buffer] += out->num_components;
@@ -129,7 +116,7 @@ emit_stream_out(struct fd_ringbuffer *ring, const struct ir3_shader_variant *v,
        * a bit less ideal here..
        */
       for (idx = 0; idx < l->cnt; idx++)
-         if (l->var[idx].slot == v->outputs[k].slot)
+         if (l->var[idx].slot == slot)
             break;
 
       assert(idx < l->cnt);
@@ -268,7 +255,7 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    uint32_t ij_regid[IJ_COUNT], vertex_regid, instance_regid, clip0_regid,
       clip1_regid;
    enum a3xx_threadsize fssz;
-   uint8_t psize_loc = ~0;
+   uint8_t psize_loc = ~0, pos_loc = 0;
    int i, j;
 
    setup_stages(emit, s);
@@ -447,6 +434,7 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    ir3_link_stream_out(&l, s[VS].v);
 
    /* a5xx appends pos/psize to end of the linkage map: */
+   pos_loc = l.max_loc;
    if (VALIDREG(pos_regid))
       ir3_link_add(&l, VARYING_SLOT_POS, pos_regid, 0xf, l.max_loc);
 
@@ -511,7 +499,7 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
       OUT_RING(ring, reg);
    }
 
-   fd5_emit_shader_obj(ctx, ring, s[VS].v, REG_A5XX_SP_VS_OBJ_START_LO);
+   fd5_emit_shader_obj(ctx, ring, s[VS].v, REG_A5XX_SP_VS_OBJ_START);
 
    if (s[VS].instrlen)
       fd5_emit_shader(ring, s[VS].v);
@@ -531,11 +519,11 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    fd5_context(ctx)->max_loc = l.max_loc;
 
    if (emit->binning_pass) {
-      OUT_PKT4(ring, REG_A5XX_SP_FS_OBJ_START_LO, 2);
+      OUT_PKT4(ring, REG_A5XX_SP_FS_OBJ_START, 2);
       OUT_RING(ring, 0x00000000); /* SP_FS_OBJ_START_LO */
       OUT_RING(ring, 0x00000000); /* SP_FS_OBJ_START_HI */
    } else {
-      fd5_emit_shader_obj(ctx, ring, s[FS].v, REG_A5XX_SP_FS_OBJ_START_LO);
+      fd5_emit_shader_obj(ctx, ring, s[FS].v, REG_A5XX_SP_FS_OBJ_START);
    }
 
    OUT_PKT4(ring, REG_A5XX_HLSQ_CONTROL_0_REG, 5);
@@ -553,7 +541,7 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
          A5XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_PIXEL(ij_regid[IJ_LINEAR_PIXEL]) |
          A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(
             ij_regid[IJ_PERSP_CENTROID]) |
-         A5XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(
+         A5XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_CENTROID(
             ij_regid[IJ_LINEAR_CENTROID]));
    OUT_RING(
       ring,
@@ -634,7 +622,7 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    }
 
    OUT_PKT4(ring, REG_A5XX_VPC_PACK, 1);
-   OUT_RING(ring, A5XX_VPC_PACK_NUMNONPOSVAR(s[FS].v->total_in) |
+   OUT_RING(ring, A5XX_VPC_PACK_NUMNONPOSVAR(pos_loc) |
                      A5XX_VPC_PACK_PSIZELOC(psize_loc));
 
    if (!emit->binning_pass) {

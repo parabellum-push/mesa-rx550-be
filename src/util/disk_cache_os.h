@@ -25,6 +25,7 @@
 #define DISK_CACHE_OS_H
 
 #include "util/u_queue.h"
+#include "util/disk_cache.h"
 
 #if DETECT_OS_WINDOWS
 
@@ -75,7 +76,8 @@ struct disk_cache {
 
    /* A pointer to the mmapped index file within the cache directory. */
    uint8_t *index_mmap;
-   size_t index_mmap_size;
+   uint8_t *index_reserve;
+   size_t index_reserve_size;
 
    /* Pointer to total size of all objects in cache (within index_mmap) */
    p_atomic_uint64_t *size;
@@ -127,13 +129,21 @@ struct disk_cache_put_job {
    struct cache_item_metadata cache_item_metadata;
 };
 
-char *
+const char *
 disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
                               const char *driver_id,
-                              enum disk_cache_type cache_type);
+                              const char *cache_dir_name_custom,
+                              enum disk_cache_type cache_type,
+                              bool mkdir);
+
+bool
+disk_cache_evict_lru_item(struct disk_cache *cache);
+
+bool
+disk_cache_size_is_valid(struct disk_cache *cache);
 
 void
-disk_cache_evict_lru_item(struct disk_cache *cache);
+disk_cache_recompute_size(struct disk_cache *cache);
 
 void
 disk_cache_evict_item(struct disk_cache *cache, char *filename);
@@ -165,8 +175,7 @@ void
 disk_cache_touch_cache_user_marker(char *path);
 
 bool
-disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache,
-                            char *path);
+disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache);
 
 void
 disk_cache_destroy_mmap(struct disk_cache *cache);
@@ -180,6 +189,9 @@ disk_cache_db_write_item_to_disk(struct disk_cache_put_job *dc_job);
 
 bool
 disk_cache_db_load_cache_index(void *mem_ctx, struct disk_cache *cache);
+
+void
+disk_cache_delete_old_cache(void);
 
 #ifdef __cplusplus
 }

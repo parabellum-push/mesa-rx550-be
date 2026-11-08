@@ -42,7 +42,17 @@ enum mesa_log_level {
    MESA_LOG_WARN,
    MESA_LOG_INFO,
    MESA_LOG_DEBUG,
+
+   MESA_NUM_LOG_LEVELS,
 };
+
+#if MESA_DEBUG
+#define MESA_DEFAULT_LOG_LEVEL MESA_LOG_DEBUG
+#else
+#define MESA_DEFAULT_LOG_LEVEL MESA_LOG_INFO
+#endif
+
+#define MAX_LOG_MESSAGE_LENGTH 4096
 
 FILE *
 mesa_log_get_file(void);
@@ -53,6 +63,15 @@ mesa_log(enum mesa_log_level, const char *tag, const char *format, ...);
 void
 mesa_log_v(enum mesa_log_level, const char *tag, const char *format,
             va_list va);
+
+void
+_mesa_log(const char *fmtString, ...) PRINTFLIKE(1, 2);
+
+void
+_mesa_log_direct(const char *string);
+
+void
+mesa_log_if_debug(enum mesa_log_level level, const char *outputString);
 
 #define mesa_loge(fmt, ...) mesa_log(MESA_LOG_ERROR, (MESA_LOG_TAG), (fmt), ##__VA_ARGS__)
 #define mesa_logw(fmt, ...) mesa_log(MESA_LOG_WARN, (MESA_LOG_TAG), (fmt), ##__VA_ARGS__)

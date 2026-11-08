@@ -55,7 +55,8 @@ set_discard_global(nir_builder *b, nir_variable *discarded,
 {
    nir_deref_instr *lhs = nir_build_deref_var(b, discarded);
    nir_def *rhs;
-   if (intrin->intrinsic == nir_intrinsic_discard_if) {
+   if (intrin->intrinsic == nir_intrinsic_terminate_if ||
+       intrin->intrinsic == nir_intrinsic_demote_if) {
       /* discarded <- condition, use  discarded as the condition */
       rhs = intrin->src[0].ssa;
       nir_src_rewrite(&intrin->src[0], &lhs->def);
@@ -70,9 +71,7 @@ static void
 generate_discard_break(nir_builder *b, nir_variable *discarded)
 {
    nir_deref_instr *condition = nir_build_deref_var(b, discarded);
-   nir_if *nif = nir_push_if(b, nir_load_deref(b, condition));
-   nir_jump(b, nir_jump_break);
-   nir_pop_if(b, nif);
+   nir_break_if(b, nir_load_deref(b, condition));
 }
 
 static void
@@ -91,8 +90,10 @@ lower_discard_flow(nir_builder *b, nir_cf_node *cf_node,
             }
          } else if (instr->type == nir_instr_type_intrinsic) {
             nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic == nir_intrinsic_discard_if ||
-                intrin->intrinsic == nir_intrinsic_discard) {
+            if (intrin->intrinsic == nir_intrinsic_terminate_if ||
+                intrin->intrinsic == nir_intrinsic_terminate ||
+                intrin->intrinsic == nir_intrinsic_demote_if ||
+                intrin->intrinsic == nir_intrinsic_demote) {
                b->cursor = nir_before_instr(instr);
                set_discard_global(b, discarded, intrin);
             }
@@ -125,7 +126,7 @@ lower_discard_flow(nir_builder *b, nir_cf_node *cf_node,
       return;
    }
    default:
-      unreachable("unknown cf node type");
+      UNREACHABLE("unknown cf node type");
    }
 }
 
@@ -134,8 +135,8 @@ gl_nir_lower_discard_flow(nir_shader *shader)
 {
    nir_function_impl *main = nir_shader_get_entrypoint(shader);
 
-   nir_variable *discarded = rzalloc(shader, nir_variable);
-   discarded->name = ralloc_strdup(discarded, "discarded");
+   nir_variable *discarded = nir_variable_create_zeroed(shader);
+   nir_variable_set_name(shader, discarded, "discarded");
    discarded->type = glsl_bool_type();
    discarded->data.mode = nir_var_shader_temp;
 

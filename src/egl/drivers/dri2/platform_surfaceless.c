@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "pipe/p_screen.h"
 #include "util/libdrm.h"
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -38,24 +39,23 @@
 #include "kopper_interface.h"
 #include "loader.h"
 #include "loader_dri_helper.h"
+#include "dri_util.h"
+#include "dri_screen.h"
 
-static __DRIimage *
+static struct dri_image *
 surfaceless_alloc_image(struct dri2_egl_display *dri2_dpy,
                         struct dri2_egl_surface *dri2_surf)
 {
-   return dri2_dpy->image->createImage(
+   return dri_create_image(
       dri2_dpy->dri_screen_render_gpu, dri2_surf->base.Width,
-      dri2_surf->base.Height, dri2_surf->visual, 0, NULL);
+      dri2_surf->base.Height, dri2_surf->visual, NULL, 0, 0, NULL);
 }
 
 static void
 surfaceless_free_images(struct dri2_egl_surface *dri2_surf)
 {
-   struct dri2_egl_display *dri2_dpy =
-      dri2_egl_display(dri2_surf->base.Resource.Display);
-
    if (dri2_surf->front) {
-      dri2_dpy->image->destroyImage(dri2_surf->front);
+      dri2_destroy_image(dri2_surf->front);
       dri2_surf->front = NULL;
    }
 
@@ -64,7 +64,7 @@ surfaceless_free_images(struct dri2_egl_surface *dri2_surf)
 }
 
 static int
-surfaceless_image_get_buffers(__DRIdrawable *driDrawable, unsigned int format,
+surfaceless_image_get_buffers(struct dri_drawable *driDrawable, unsigned int format,
                               uint32_t *stamp, void *loaderPrivate,
                               uint32_t buffer_mask,
                               struct __DRIimageList *buffers)
@@ -93,8 +93,11 @@ surfaceless_image_get_buffers(__DRIdrawable *driDrawable, unsigned int format,
 
    if (buffer_mask & __DRI_IMAGE_BUFFER_FRONT) {
 
-      if (!dri2_surf->front)
+      if (!dri2_surf->front) {
          dri2_surf->front = surfaceless_alloc_image(dri2_dpy, dri2_surf);
+         if (!dri2_surf->front)
+            return 0;
+      }
 
       buffers->image_mask |= __DRI_IMAGE_BUFFER_FRONT;
       buffers->front = dri2_surf->front;
@@ -110,7 +113,7 @@ dri2_surfaceless_create_surface(_EGLDisplay *disp, EGLint type,
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
    struct dri2_egl_surface *dri2_surf;
-   const __DRIconfig *config;
+   const struct dri_config *config;
 
    /* Make sure to calloc so all pointers
     * are originally NULL.
@@ -151,12 +154,11 @@ cleanup_surface:
 static EGLBoolean
 surfaceless_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
 {
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
 
    surfaceless_free_images(dri2_surf);
 
-   dri2_dpy->core->destroyDrawable(dri2_surf->dri_drawable);
+   driDestroyDrawable(dri2_surf->dri_drawable);
 
    dri2_fini_surface(surf);
    free(dri2_surf);
@@ -179,7 +181,7 @@ static const struct dri2_egl_display_vtbl dri2_surfaceless_display_vtbl = {
 };
 
 static void
-surfaceless_flush_front_buffer(__DRIdrawable *driDrawable, void *loaderPrivate)
+surfaceless_flush_front_buffer(struct dri_drawable *driDrawable, void *loaderPrivate)
 {
 }
 
@@ -190,16 +192,12 @@ surfaceless_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
    switch (cap) {
    case DRI_LOADER_CAP_FP16:
       return 1;
+   case DRI_LOADER_CAP_RGBA_ORDERING:
+      return 1;
    default:
       return 0;
    }
 }
-
-static const __DRIkopperLoaderExtension kopper_loader_extension = {
-   .base = {__DRI_KOPPER_LOADER, 1},
-
-   .SetSurfaceCreateInfo = NULL,
-};
 
 static const __DRIimageLoaderExtension image_loader_extension = {
    .base = {__DRI_IMAGE_LOADER, 2},
@@ -209,15 +207,17 @@ static const __DRIimageLoaderExtension image_loader_extension = {
 };
 
 static const __DRIextension *image_loader_extensions[] = {
-   &image_loader_extension.base,  &image_lookup_extension.base,
-   &use_invalidate.base,          &background_callable_extension.base,
-   &kopper_loader_extension.base, NULL,
+   &image_loader_extension.base,  &image_lookup_extension.base, NULL,
 };
 
 static const __DRIextension *swrast_loader_extensions[] = {
    &swrast_pbuffer_loader_extension.base, &image_loader_extension.base,
-   &image_lookup_extension.base,          &use_invalidate.base,
-   &kopper_loader_extension.base,         NULL,
+   &image_lookup_extension.base, NULL,
+};
+
+static const __DRIextension *kopper_loader_extensions[] = {
+   &kopper_pbuffer_loader_extension.base, &image_lookup_extension.base,
+   &image_lookup_extension.base, NULL,
 };
 
 static bool
@@ -246,9 +246,31 @@ surfaceless_probe_device(_EGLDisplay *disp, bool swrast, bool zink)
       if (dri2_dpy->fd_render_gpu < 0)
          goto next;
 
-      disp->Device = dev_list;
+#ifdef HAVE_WAYLAND_PLATFORM
+      loader_get_user_preferred_fd(&dri2_dpy->fd_render_gpu,
+                                   &dri2_dpy->fd_display_gpu);
 
+      if (dri2_dpy->fd_render_gpu != dri2_dpy->fd_display_gpu) {
+         free(dri2_dpy->device_name);
+         dri2_dpy->device_name =
+            loader_get_device_name_for_fd(dri2_dpy->fd_render_gpu);
+         if (!dri2_dpy->device_name) {
+            _eglError(EGL_BAD_ALLOC, "surfaceless-egl: failed to get device name "
+                                     "for requested GPU");
+            goto retry;
+         }
+      }
+
+      /* we have to do the check now, because loader_get_user_preferred_fd
+       * will return a render-node when the requested gpu is different
+       * to the server, but also if the client asks for the same gpu than
+       * the server by requesting its pci-id */
+      dri2_dpy->is_render_node =
+         drmGetNodeTypeFromFd(dri2_dpy->fd_render_gpu) == DRM_NODE_RENDER;
+#endif
       char *driver_name = loader_get_driver_for_fd(dri2_dpy->fd_render_gpu);
+
+      disp->Device = dev_list;
       if (swrast) {
          /* Use kms swrast only with vgem / virtio_gpu.
           * virtio-gpu fallbacks to software rendering when 3D features
@@ -264,16 +286,46 @@ surfaceless_probe_device(_EGLDisplay *disp, bool swrast, bool zink)
          dri2_dpy->driver_name = driver_name;
       }
 
-      if (dri2_dpy->driver_name && dri2_load_driver_dri3(disp)) {
-         if (swrast || zink)
+      if (dri2_dpy->driver_name) {
+         dri2_detect_swrast_kopper(disp);
+         if (dri2_dpy->kopper)
+            dri2_dpy->loader_extensions = kopper_loader_extensions;
+         else if (swrast)
             dri2_dpy->loader_extensions = swrast_loader_extensions;
          else
             dri2_dpy->loader_extensions = image_loader_extensions;
+
+         if (!dri2_create_screen(disp)) {
+            _eglLog(_EGL_WARNING, "DRI2: failed to create screen");
+            goto retry;
+         }
+
+         if (!dri2_dpy->dri_screen_render_gpu->base.screen->caps.graphics) {
+
+            _eglLog(_EGL_DEBUG, "DRI2: Driver %s doesn't support graphics, skipping.", dri2_dpy->driver_name);
+
+            if (dri2_dpy->dri_screen_display_gpu != dri2_dpy->dri_screen_render_gpu) {
+               driDestroyScreen(dri2_dpy->dri_screen_display_gpu);
+               dri2_dpy->dri_screen_display_gpu = NULL;
+            }
+
+            driDestroyScreen(dri2_dpy->dri_screen_render_gpu);
+            dri2_dpy->dri_screen_render_gpu = NULL;
+
+            dri2_dpy->own_dri_screen = false;
+
+            goto retry;
+         }
+
          break;
       }
 
+   retry:
       free(dri2_dpy->driver_name);
       dri2_dpy->driver_name = NULL;
+      if (dri2_dpy->fd_display_gpu != dri2_dpy->fd_render_gpu)
+         close(dri2_dpy->fd_display_gpu);
+      dri2_dpy->fd_display_gpu = -1;
       close(dri2_dpy->fd_render_gpu);
       dri2_dpy->fd_render_gpu = -1;
 
@@ -306,13 +358,22 @@ surfaceless_probe_device_sw(_EGLDisplay *disp)
    if (!dri2_dpy->driver_name)
       return false;
 
-   if (!dri2_load_driver_swrast(disp)) {
+   dri2_detect_swrast_kopper(disp);
+
+   if (dri2_dpy->kopper)
+      dri2_dpy->loader_extensions = kopper_loader_extensions;
+   else
+      dri2_dpy->loader_extensions = swrast_loader_extensions;
+
+   dri2_dpy->fd_display_gpu = dri2_dpy->fd_render_gpu;
+
+   if (!dri2_create_screen(disp)) {
+      _eglLog(_EGL_WARNING, "DRI2: failed to create screen");
       free(dri2_dpy->driver_name);
       dri2_dpy->driver_name = NULL;
       return false;
    }
 
-   dri2_dpy->loader_extensions = swrast_loader_extensions;
    return true;
 }
 
@@ -321,11 +382,7 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
 {
    const char *err;
    bool driver_loaded = false;
-   struct dri2_egl_display *dri2_dpy = dri2_display_create();
-   if (!dri2_dpy)
-      return EGL_FALSE;
-
-   disp->DriverData = (void *)dri2_dpy;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
    /* When ForceSoftware is false, we try the HW driver.  When ForceSoftware
     * is true, we try kms_swrast and swrast in order.
@@ -342,22 +399,12 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
       goto cleanup;
    }
 
-   dri2_dpy->fd_display_gpu = dri2_dpy->fd_render_gpu;
-
-   if (!dri2_create_screen(disp)) {
-      err = "DRI2: failed to create screen";
-      goto cleanup;
-   }
-
-   if (!dri2_setup_extensions(disp)) {
-      err = "DRI2: failed to find required DRI extensions";
-      goto cleanup;
-   }
-
    dri2_setup_screen(disp);
 #ifdef HAVE_WAYLAND_PLATFORM
-   dri2_dpy->device_name =
-      loader_get_device_name_for_fd(dri2_dpy->fd_render_gpu);
+   if (dri2_dpy->fd_render_gpu >= 0) {
+      dri2_dpy->device_name =
+         loader_get_device_name_for_fd(dri2_dpy->fd_render_gpu);
+   }
 #endif
    dri2_set_WL_bind_wayland_display(disp);
 
@@ -371,6 +418,5 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
    return EGL_TRUE;
 
 cleanup:
-   dri2_display_destroy(disp);
    return _eglError(EGL_NOT_INITIALIZED, err);
 }

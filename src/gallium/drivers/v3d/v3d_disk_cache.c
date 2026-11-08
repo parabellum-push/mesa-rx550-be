@@ -26,6 +26,7 @@
  */
 
 #include "v3d_context.h"
+#include "v3d_screen.h"
 
 #include "util/blob.h"
 #include "util/u_upload_mgr.h"
@@ -33,7 +34,7 @@
 #ifdef ENABLE_SHADER_CACHE
 
 static uint32_t
-v3d_key_size(gl_shader_stage stage)
+v3d_key_size(mesa_shader_stage stage)
 {
         static const int key_size[] = {
                 [MESA_SHADER_VERTEX] = sizeof(struct v3d_vs_key),
@@ -51,27 +52,19 @@ v3d_key_size(gl_shader_stage stage)
 
 void v3d_disk_cache_init(struct v3d_screen *screen)
 {
-        char *renderer;
-
-        ASSERTED int len =
-                asprintf(&renderer, "V3D %d.%d",
-                         screen->devinfo.ver / 10,
-                         screen->devinfo.ver % 10);
-        assert(len > 0);
-
         const struct build_id_note *note =
                 build_id_find_nhdr_for_addr(v3d_disk_cache_init);
-        assert(note && build_id_length(note) == 20);
+        assert(note && build_id_length(note) == BUILD_ID_EXPECTED_HASH_LENGTH);
 
         const uint8_t *id_sha1 = build_id_data(note);
         assert(id_sha1);
 
-        char timestamp[41];
+        char timestamp[BLAKE3_HEX_LEN];
         _mesa_sha1_format(timestamp, id_sha1);
 
-        screen->disk_cache = disk_cache_create(renderer, timestamp, v3d_mesa_debug);
-
-        free(renderer);
+        screen->disk_cache =
+                disk_cache_create(v3d_screen_get_name((struct pipe_screen *) screen),
+                                  timestamp, v3d_mesa_debug);
 }
 
 static void
@@ -92,7 +85,7 @@ v3d_disk_cache_compute_key(struct disk_cache *cache,
         struct blob blob;
         blob_init(&blob);
         blob_write_bytes(&blob, ckey, ckey_size);
-        blob_write_bytes(&blob, uncompiled->sha1, 20);
+        blob_write_bytes(&blob, uncompiled->blake3, BLAKE3_KEY_LEN);
 
         disk_cache_compute_key(cache, blob.data, blob.size, cache_key);
 
@@ -121,11 +114,11 @@ v3d_disk_cache_retrieve(struct v3d_context *v3d,
         void *buffer = disk_cache_get(cache, cache_key, &buffer_size);
 
         if (V3D_DBG(CACHE)) {
-                char sha1[41];
-                _mesa_sha1_format(sha1, cache_key);
-                fprintf(stderr, "[v3d on-disk cache] %s %s\n",
-                        buffer ? "hit" : "miss",
-                        sha1);
+                char blake3[BLAKE3_HEX_LEN];
+                _mesa_blake3_format(blake3, cache_key);
+                mesa_logd("[v3d on-disk cache] %s %s",
+                          buffer ? "hit" : "miss",
+                          blake3);
         }
 
         if (!buffer)
@@ -138,24 +131,24 @@ v3d_disk_cache_retrieve(struct v3d_context *v3d,
         uint32_t prog_data_size = v3d_prog_data_size(nir->info.stage);
         const void *prog_data = blob_read_bytes(&blob, prog_data_size);
         if (blob.overrun)
-                return NULL;
+                goto fail;
 
         uint32_t ulist_count = blob_read_uint32(&blob);
         uint32_t ulist_contents_size = ulist_count * sizeof(enum quniform_contents);
         const void *ulist_contents = blob_read_bytes(&blob, ulist_contents_size);
         if (blob.overrun)
-                return NULL;
+                goto fail;
 
         uint32_t ulist_data_size = ulist_count * sizeof(uint32_t);
         const void *ulist_data = blob_read_bytes(&blob, ulist_data_size);
         if (blob.overrun)
-                return NULL;
+                goto fail;
 
         uint32_t qpu_size = blob_read_uint32(&blob);
         const void *qpu_insts =
                 blob_read_bytes(&blob, qpu_size);
         if (blob.overrun)
-                return NULL;
+                goto fail;
 
         /* Assemble data */
         struct v3d_compiled_shader *shader = rzalloc(NULL, struct v3d_compiled_shader);
@@ -173,12 +166,18 @@ v3d_disk_cache_retrieve(struct v3d_context *v3d,
                 ralloc_array(shader->prog_data.base, uint32_t, ulist_count);
         memcpy(shader->prog_data.base->uniforms.data, ulist_data, ulist_data_size);
 
-        u_upload_data(v3d->state_uploader, 0, qpu_size, 8,
+        u_upload_data_ref(v3d->state_uploader, 0, qpu_size, 8,
                       qpu_insts, &shader->offset, &shader->resource);
+
+        shader->qpu_size = qpu_size;
 
         free(buffer);
 
         return shader;
+
+fail:
+        free(buffer);
+        return NULL;
 }
 
 void
@@ -202,9 +201,9 @@ v3d_disk_cache_store(struct v3d_context *v3d,
         v3d_disk_cache_compute_key(cache, key, cache_key, uncompiled);
 
         if (V3D_DBG(CACHE)) {
-                char sha1[41];
-                _mesa_sha1_format(sha1, cache_key);
-                fprintf(stderr, "[v3d on-disk cache] storing %s\n", sha1);
+                char blake3[BLAKE3_HEX_LEN];
+                _mesa_blake3_format(blake3, cache_key);
+                mesa_logd("[v3d on-disk cache] storing %s", blake3);
         }
 
         struct blob blob;

@@ -28,6 +28,7 @@
 #include "anv_measure.h"
 #include "vk_format.h"
 #include "vk_render_pass.h"
+#include "vk_synchronization.h"
 #include "vk_util.h"
 #include "util/fast_idiv_by_const.h"
 
@@ -35,7 +36,7 @@
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 #include "common/intel_guardband.h"
-#include "compiler/elk/elk_prim.h"
+#include "compiler/intel_prim.h"
 
 #include "nir/nir_xfb_info.h"
 
@@ -414,18 +415,33 @@ anv_can_hiz_clear_ds_view(struct anv_device *device,
                               VK_IMAGE_ASPECT_DEPTH_BIT,
                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                               layout);
-   if (!blorp_can_hiz_clear_depth(device->info,
-                                  &iview->image->planes[0].primary_surface.isl,
-                                  clear_aux_usage,
-                                  iview->planes[0].isl.base_level,
-                                  iview->planes[0].isl.base_array_layer,
-                                  render_area.offset.x,
-                                  render_area.offset.y,
-                                  render_area.offset.x +
-                                  render_area.extent.width,
-                                  render_area.offset.y +
-                                  render_area.extent.height))
+   if (!isl_aux_usage_has_fast_clears(clear_aux_usage))
       return false;
+
+   assert(GFX_VER == 8);
+   assert(iview->vk.format != VK_FORMAT_D16_UNORM_S8_UINT);
+   if (iview->vk.format == VK_FORMAT_D16_UNORM) {
+      /* From the BDW PRM, Vol 7, "Depth Buffer Clear":
+       *
+       *   The following restrictions apply only if the depth buffer surface
+       *   type is D16_UNORM and software does not use the “full surf clear”:
+       *
+       *   If Number of Multisamples is NUMSAMPLES_1, the rectangle must be
+       *   aligned to an 8x4 pixel block relative to the upper left corner of
+       *   the depth buffer, and contain an integer number of these pixel
+       *   blocks, and all 8x4 pixels must be lit.
+       *
+       * Simply disable partial clears for D16 on BDW.
+       */
+      if (render_area.offset.x > 0 ||
+          render_area.offset.y > 0 ||
+          render_area.extent.width !=
+          u_minify(iview->vk.extent.width, iview->vk.base_mip_level) ||
+          render_area.extent.height !=
+          u_minify(iview->vk.extent.height, iview->vk.base_mip_level)) {
+         return false;
+      }
+   }
 
    if (depth_clear_value != ANV_HZ_FC_VAL)
       return false;
@@ -725,7 +741,7 @@ anv_cmd_predicated_mcs_resolve(struct anv_cmd_buffer *cmd_buffer,
    anv_image_mcs_op(cmd_buffer, image, format, swizzle, aspect,
                     array_layer, 1, resolve_op, NULL, true);
 #else
-   unreachable("MCS resolves are unsupported on Ivybridge and Bay Trail");
+   UNREACHABLE("MCS resolves are unsupported on Ivybridge and Bay Trail");
 #endif
 }
 
@@ -743,38 +759,53 @@ genX(cmd_buffer_mark_image_written)(struct anv_cmd_buffer *cmd_buffer,
 }
 
 static void
-init_fast_clear_color(struct anv_cmd_buffer *cmd_buffer,
+set_image_clear_color(struct anv_cmd_buffer *cmd_buffer,
                       const struct anv_image *image,
-                      VkImageAspectFlagBits aspect)
+                      const VkImageAspectFlags aspect,
+                      const union isl_color_value clear_color)
 {
-   assert(cmd_buffer && image);
-   assert(image->vk.aspects & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV);
+   uint32_t plane = anv_image_aspect_to_plane(image, aspect);
+   enum isl_format format = image->planes[plane].primary_surface.isl.format;
 
-   set_image_fast_clear_state(cmd_buffer, image, aspect,
-                              ANV_FAST_CLEAR_NONE);
-
-   /* Initialize the struct fields that are accessed for fast-clears so that
-    * the HW restrictions on the field values are satisfied.
-    */
    struct anv_address addr =
       anv_image_get_clear_color_addr(cmd_buffer->device, image, aspect);
+   assert(!anv_address_is_null(addr));
 
    anv_batch_emit(&cmd_buffer->batch, GENX(MI_STORE_DATA_IMM), sdi) {
       sdi.Address = addr;
       if (GFX_VERx10 >= 75) {
-         /* Pre-SKL, the dword containing the clear values also contains
-          * other fields, so we need to initialize those fields to match the
-          * values that would be in a color attachment.
+         /* On HSW+, the RENDER_SURFACE_STATE dword containing the clear
+          * values also contains other fields. The dword constructed here
+          * will later be copied onto a surface state as-is. So, initialize
+          * those fields to match the values that we typically expect in a
+          * surface.
+          *
+          * XXX: Handle other values for ShaderChannelSelect and
+          *      ResourceMinLOD.
           */
          sdi.ImmediateData = ISL_CHANNEL_SELECT_RED   << 25 |
                              ISL_CHANNEL_SELECT_GREEN << 22 |
                              ISL_CHANNEL_SELECT_BLUE  << 19 |
                              ISL_CHANNEL_SELECT_ALPHA << 16;
-      } else if (GFX_VER == 7) {
-         /* On IVB, the dword containing the clear values also contains
-          * other fields that must be zero or can be zero.
-          */
-         sdi.ImmediateData = 0;
+      }
+      if (isl_format_has_int_channel(format)) {
+         for (unsigned i = 0; i < 4; i++) {
+            assert(clear_color.u32[i] == 0 ||
+                   clear_color.u32[i] == 1);
+         }
+         sdi.ImmediateData |= (clear_color.u32[0] != 0) << 31;
+         sdi.ImmediateData |= (clear_color.u32[1] != 0) << 30;
+         sdi.ImmediateData |= (clear_color.u32[2] != 0) << 29;
+         sdi.ImmediateData |= (clear_color.u32[3] != 0) << 28;
+      } else {
+         for (unsigned i = 0; i < 4; i++) {
+            assert(clear_color.f32[i] == 0.0f ||
+                   clear_color.f32[i] == 1.0f);
+         }
+         sdi.ImmediateData |= (clear_color.f32[0] != 0.0f) << 31;
+         sdi.ImmediateData |= (clear_color.f32[1] != 0.0f) << 30;
+         sdi.ImmediateData |= (clear_color.f32[2] != 0.0f) << 29;
+         sdi.ImmediateData |= (clear_color.f32[3] != 0.0f) << 28;
       }
    }
 }
@@ -898,6 +929,16 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
       ? isl_drm_modifier_get_info(image->vk.drm_format_mod)
       : NULL;
 
+   /**
+    * Vulkan 1.4.313, 7.7.4. Queue Family Ownership Transfer:
+    *
+    *    If the values of srcQueueFamilyIndex and dstQueueFamilyIndex are equal,
+    *    no ownership transfer is performed, and the barrier operates as if they
+    *    were both set to VK_QUEUE_FAMILY_IGNORED.
+    */
+   if (src_queue_family == dst_queue_family)
+      src_queue_family = dst_queue_family = VK_QUEUE_FAMILY_IGNORED;
+
    const bool src_queue_external =
       src_queue_family == VK_QUEUE_FAMILY_FOREIGN_EXT ||
       src_queue_family == VK_QUEUE_FAMILY_EXTERNAL;
@@ -995,8 +1036,12 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
    }
 
    if (must_init_fast_clear_state) {
-      if (base_level == 0 && base_layer == 0)
-         init_fast_clear_color(cmd_buffer, image, aspect);
+      if (base_level == 0 && base_layer == 0) {
+         const union isl_color_value zero_color = {};
+         set_image_clear_color(cmd_buffer, image, aspect, zero_color);
+         set_image_fast_clear_state(cmd_buffer, image, aspect,
+                                    ANV_FAST_CLEAR_NONE);
+      }
    }
 
    if (must_init_aux_surface) {
@@ -1468,7 +1513,9 @@ genX(EndCommandBuffer)(
 
    emit_isp_disable(cmd_buffer);
 
-   trace_intel_end_cmd_buffer(&cmd_buffer->trace, cmd_buffer->vk.level);
+   trace_intel_end_cmd_buffer(&cmd_buffer->trace,
+                              (uintptr_t)(vk_command_buffer_to_handle(&cmd_buffer->vk)),
+                              cmd_buffer->vk.level);
 
    anv_cmd_buffer_end_batch_buffer(cmd_buffer);
 
@@ -2250,7 +2297,9 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                             "descriptor does not have NonReadable "
                             "set and the image does not have a "
                             "corresponding SPIR-V format enum.");
-                  vk_debug_report(&cmd_buffer->device->physical->instance->vk,
+                  struct vk_instance *instance =
+                     &cmd_buffer->device->physical->instance->vk;
+                  vk_debug_report(&instance->debug_report,
                                   VK_DEBUG_REPORT_ERROR_BIT_EXT,
                                   &desc->image_view->vk.base,
                                   __LINE__, 0, "anv",
@@ -2351,8 +2400,7 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
             break;
 
          default:
-            assert(!"Invalid descriptor type");
-            continue;
+            UNREACHABLE("Invalid descriptor type");
          }
          assert(surface_state.map);
          bt_map[s] = surface_state.offset + state_offset;
@@ -2420,7 +2468,7 @@ flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer,
       if (!shaders[i])
          continue;
 
-      gl_shader_stage stage = shaders[i]->stage;
+      mesa_shader_stage stage = shaders[i]->stage;
       VkShaderStageFlags vk_stage = mesa_to_vk_shader_stage(stage);
       if ((vk_stage & dirty) == 0)
          continue;
@@ -2459,7 +2507,7 @@ flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer,
          if (!shaders[i])
             continue;
 
-         gl_shader_stage stage = shaders[i]->stage;
+         mesa_shader_stage stage = shaders[i]->stage;
 
          result = emit_samplers(cmd_buffer, pipe_state, shaders[i],
                                 &cmd_buffer->state.samplers[stage]);
@@ -2620,7 +2668,7 @@ get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
       return (range->start + range->length) * 32;
 
    case ANV_DESCRIPTOR_SET_SHADER_CONSTANTS:
-      return ALIGN(shader->prog_data->const_data_size, ANV_UBO_ALIGNMENT);
+      return align(shader->prog_data->const_data_size, ANV_UBO_ALIGNMENT);
 
    default: {
       assert(range->set < MAX_SETS);
@@ -2667,7 +2715,7 @@ get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
 
 static void
 cmd_buffer_emit_push_constant(struct anv_cmd_buffer *cmd_buffer,
-                              gl_shader_stage stage,
+                              mesa_shader_stage stage,
                               struct anv_address *buffers,
                               unsigned buffer_count)
 {
@@ -2944,8 +2992,8 @@ cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
       };
 
       /* Fix depth test misrenderings by lowering translated depth range */
-      if (instance->lower_depth_range_rate != 1.0f)
-         sfv.ViewportMatrixElementm32 *= instance->lower_depth_range_rate;
+      if (instance->drirc.quality.lower_depth_range_rate != 1.0f)
+         sfv.ViewportMatrixElementm32 *= instance->drirc.quality.lower_depth_range_rate;
 
       const uint32_t fb_size_max = 1 << 14;
       uint32_t x_min = 0, x_max = fb_size_max;
@@ -3030,6 +3078,11 @@ cmd_buffer_emit_depth_viewport(struct anv_cmd_buffer *cmd_buffer,
        */
       float min_depth = MIN2(vp->minDepth, vp->maxDepth);
       float max_depth = MAX2(vp->minDepth, vp->maxDepth);
+
+      if (dyn->vp.depth_clamp_mode == VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT) {
+         min_depth = dyn->vp.depth_clamp_range.minDepthClamp;
+         max_depth = dyn->vp.depth_clamp_range.maxDepthClamp;
+      }
 
       struct GENX(CC_VIEWPORT) cc_viewport = {
          .MinimumDepth = depth_clamp_enable ? min_depth : 0.0f,
@@ -3570,7 +3623,7 @@ void genX(CmdDraw)(
 
    update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, SEQUENTIAL);
 
-   trace_intel_end_draw(&cmd_buffer->trace, count);
+   trace_intel_end_draw(&cmd_buffer->trace, count, 0, 0);
 }
 
 void genX(CmdDrawMultiEXT)(
@@ -3621,7 +3674,7 @@ void genX(CmdDrawMultiEXT)(
 
    update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, SEQUENTIAL);
 
-   trace_intel_end_draw_multi(&cmd_buffer->trace, count);
+   trace_intel_end_draw_multi(&cmd_buffer->trace, count, 0, 0);
 }
 
 void genX(CmdDrawIndexed)(
@@ -3676,7 +3729,7 @@ void genX(CmdDrawIndexed)(
 
    update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, RANDOM);
 
-   trace_intel_end_draw_indexed(&cmd_buffer->trace, count);
+   trace_intel_end_draw_indexed(&cmd_buffer->trace, count, 0, 0);
 }
 
 void genX(CmdDrawMultiIndexedEXT)(
@@ -3786,7 +3839,7 @@ void genX(CmdDrawMultiIndexedEXT)(
 
    update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, RANDOM);
 
-   trace_intel_end_draw_indexed_multi(&cmd_buffer->trace, count);
+   trace_intel_end_draw_indexed_multi(&cmd_buffer->trace, count, 0, 0);
 }
 
 /* Auto-Draw / Indirect Registers */
@@ -3867,7 +3920,7 @@ void genX(CmdDrawIndirectByteCountEXT)(
    update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, SEQUENTIAL);
 
    trace_intel_end_draw_indirect_byte_count(&cmd_buffer->trace,
-      instanceCount * pipeline->instance_multiplier);
+      instanceCount * pipeline->instance_multiplier, 0, 0);
 #endif /* GFX_VERx10 >= 75 */
 }
 
@@ -3965,7 +4018,7 @@ void genX(CmdDrawIndirect)(
       offset += stride;
    }
 
-   trace_intel_end_draw_indirect(&cmd_buffer->trace, drawCount);
+   trace_intel_end_draw_indirect(&cmd_buffer->trace, drawCount, 0, 0);
 }
 
 void genX(CmdDrawIndexedIndirect)(
@@ -4023,18 +4076,14 @@ void genX(CmdDrawIndexedIndirect)(
       offset += stride;
    }
 
-   trace_intel_end_draw_indexed_indirect(&cmd_buffer->trace, drawCount);
+   trace_intel_end_draw_indexed_indirect(&cmd_buffer->trace, drawCount, 0, 0);
 }
 
 static struct mi_value
 prepare_for_draw_count_predicate(struct anv_cmd_buffer *cmd_buffer,
                                  struct mi_builder *b,
-                                 struct anv_buffer *count_buffer,
-                                 uint64_t countBufferOffset)
+                                 struct anv_address count_address)
 {
-   struct anv_address count_address =
-         anv_address_add(count_buffer->address, countBufferOffset);
-
    struct mi_value ret = mi_imm(0);
 
    if (cmd_buffer->state.conditional_render_enabled) {
@@ -4160,9 +4209,10 @@ void genX(CmdDrawIndirectCount)(
 
    struct mi_builder b;
    mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
+   struct anv_address count_address =
+      anv_address_add(count_buffer->address, countBufferOffset);
    struct mi_value max =
-      prepare_for_draw_count_predicate(cmd_buffer, &b,
-                                       count_buffer, countBufferOffset);
+      prepare_for_draw_count_predicate(cmd_buffer, &b, count_address);
 
    for (uint32_t i = 0; i < maxDrawCount; i++) {
       struct anv_address draw = anv_address_add(buffer->address, offset);
@@ -4196,7 +4246,8 @@ void genX(CmdDrawIndirectCount)(
 
    mi_value_unref(&b, max);
 
-   trace_intel_end_draw_indirect_count(&cmd_buffer->trace, maxDrawCount);
+   trace_intel_end_draw_indirect_count(&cmd_buffer->trace,
+                                       anv_address_utrace(count_address), 0, 0);
 }
 
 void genX(CmdDrawIndexedIndirectCount)(
@@ -4228,9 +4279,10 @@ void genX(CmdDrawIndexedIndirectCount)(
 
    struct mi_builder b;
    mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
+   struct anv_address count_address =
+      anv_address_add(count_buffer->address, countBufferOffset);
    struct mi_value max =
-      prepare_for_draw_count_predicate(cmd_buffer, &b,
-                                       count_buffer, countBufferOffset);
+      prepare_for_draw_count_predicate(cmd_buffer, &b, count_address);
 
    for (uint32_t i = 0; i < maxDrawCount; i++) {
       struct anv_address draw = anv_address_add(buffer->address, offset);
@@ -4265,8 +4317,8 @@ void genX(CmdDrawIndexedIndirectCount)(
 
    mi_value_unref(&b, max);
 
-   trace_intel_end_draw_indexed_indirect_count(&cmd_buffer->trace, maxDrawCount);
-
+   trace_intel_end_draw_indexed_indirect_count(&cmd_buffer->trace,
+                                               anv_address_utrace(count_address), 0, 0);
 }
 
 void genX(CmdBeginTransformFeedbackEXT)(
@@ -4599,12 +4651,9 @@ void genX(CmdDispatchBase)(
                   groupCountY, groupCountZ);
 
    trace_intel_end_compute(&cmd_buffer->trace,
-                           groupCountX, groupCountY, groupCountZ);
+                           groupCountX, groupCountY, groupCountZ,
+                           0);
 }
-
-#define GPGPU_DISPATCHDIMX 0x2500
-#define GPGPU_DISPATCHDIMY 0x2504
-#define GPGPU_DISPATCHDIMZ 0x2508
 
 void genX(CmdDispatchIndirect)(
     VkCommandBuffer                             commandBuffer,
@@ -4651,9 +4700,9 @@ void genX(CmdDispatchIndirect)(
    struct mi_value size_y = mi_mem32(anv_address_add(addr, 4));
    struct mi_value size_z = mi_mem32(anv_address_add(addr, 8));
 
-   mi_store(&b, mi_reg32(GPGPU_DISPATCHDIMX), size_x);
-   mi_store(&b, mi_reg32(GPGPU_DISPATCHDIMY), size_y);
-   mi_store(&b, mi_reg32(GPGPU_DISPATCHDIMZ), size_z);
+   mi_store(&b, mi_reg32(GENX(GPGPU_DISPATCHDIMX_num)), size_x);
+   mi_store(&b, mi_reg32(GENX(GPGPU_DISPATCHDIMY_num)), size_y);
+   mi_store(&b, mi_reg32(GENX(GPGPU_DISPATCHDIMZ_num)), size_z);
 
 #if GFX_VER <= 7
    /* predicate = (compute_dispatch_indirect_x_size == 0); */
@@ -4707,8 +4756,7 @@ void genX(CmdDispatchIndirect)(
 #endif
 
    emit_cs_walker(cmd_buffer, pipeline, true, prog_data, 0, 0, 0);
-
-   trace_intel_end_compute(&cmd_buffer->trace, 0, 0, 0);
+   trace_intel_end_compute(&cmd_buffer->trace, 0, 0, 0, 0);
 }
 
 static void
@@ -5163,6 +5211,9 @@ void genX(CmdBeginRendering)(
             base_clear_layer++;
             clear_layer_count--;
 
+            set_image_clear_color(cmd_buffer, iview->image,
+                                  VK_IMAGE_ASPECT_COLOR_BIT, clear_color);
+
             if (isl_color_value_is_zero(clear_color,
                                         iview->planes[0].isl.format)) {
                /* This image has the auxiliary buffer enabled. We can mark the
@@ -5191,7 +5242,7 @@ void genX(CmdBeginRendering)(
                                      iview->vk.base_array_layer + view, 1,
                                      render_area, clear_color);
             }
-         } else {
+         } else if (clear_layer_count > 0) {
             anv_image_clear_color(cmd_buffer, iview->image,
                                   VK_IMAGE_ASPECT_COLOR_BIT,
                                   aux_usage,
@@ -5529,84 +5580,6 @@ cmd_buffer_mark_attachment_written(struct anv_cmd_buffer *cmd_buffer,
    }
 }
 
-static enum blorp_filter
-vk_to_blorp_resolve_mode(VkResolveModeFlagBits vk_mode)
-{
-   switch (vk_mode) {
-   case VK_RESOLVE_MODE_SAMPLE_ZERO_BIT:
-      return BLORP_FILTER_SAMPLE_0;
-   case VK_RESOLVE_MODE_AVERAGE_BIT:
-      return BLORP_FILTER_AVERAGE;
-   case VK_RESOLVE_MODE_MIN_BIT:
-      return BLORP_FILTER_MIN_SAMPLE;
-   case VK_RESOLVE_MODE_MAX_BIT:
-      return BLORP_FILTER_MAX_SAMPLE;
-   default:
-      return BLORP_FILTER_NONE;
-   }
-}
-
-static void
-cmd_buffer_resolve_msaa_attachment(struct anv_cmd_buffer *cmd_buffer,
-                                   const struct anv_attachment *att,
-                                   VkImageLayout layout,
-                                   VkImageAspectFlagBits aspect)
-{
-   struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
-   const struct anv_image_view *src_iview = att->iview;
-   const struct anv_image_view *dst_iview = att->resolve_iview;
-
-   enum isl_aux_usage src_aux_usage =
-      anv_layout_to_aux_usage(cmd_buffer->device->info,
-                              src_iview->image, aspect,
-                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                              layout);
-
-   enum isl_aux_usage dst_aux_usage =
-      anv_layout_to_aux_usage(cmd_buffer->device->info,
-                              dst_iview->image, aspect,
-                              VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                              att->resolve_layout);
-
-   enum blorp_filter filter = vk_to_blorp_resolve_mode(att->resolve_mode);
-
-   const VkRect2D render_area = gfx->render_area;
-   if (gfx->view_mask == 0) {
-      anv_image_msaa_resolve(cmd_buffer,
-                             src_iview->image, src_aux_usage,
-                             src_iview->planes[0].isl.base_level,
-                             src_iview->planes[0].isl.base_array_layer,
-                             dst_iview->image, dst_aux_usage,
-                             dst_iview->planes[0].isl.base_level,
-                             dst_iview->planes[0].isl.base_array_layer,
-                             aspect,
-                             render_area.offset.x, render_area.offset.y,
-                             render_area.offset.x, render_area.offset.y,
-                             render_area.extent.width,
-                             render_area.extent.height,
-                             gfx->layer_count, filter);
-   } else {
-      uint32_t res_view_mask = gfx->view_mask;
-      while (res_view_mask) {
-         int i = u_bit_scan(&res_view_mask);
-
-         anv_image_msaa_resolve(cmd_buffer,
-                                src_iview->image, src_aux_usage,
-                                src_iview->planes[0].isl.base_level,
-                                src_iview->planes[0].isl.base_array_layer + i,
-                                dst_iview->image, dst_aux_usage,
-                                dst_iview->planes[0].isl.base_level,
-                                dst_iview->planes[0].isl.base_array_layer + i,
-                                aspect,
-                                render_area.offset.x, render_area.offset.y,
-                                render_area.offset.x, render_area.offset.y,
-                                render_area.extent.width,
-                                render_area.extent.height,
-                                1, filter);
-      }
-   }
-}
-
 void genX(CmdEndRendering)(
     VkCommandBuffer                             commandBuffer)
 {
@@ -5666,8 +5639,8 @@ void genX(CmdEndRendering)(
           (gfx->rendering_flags & VK_RENDERING_SUSPENDING_BIT))
          continue;
 
-      cmd_buffer_resolve_msaa_attachment(cmd_buffer, att, att->layout,
-                                         VK_IMAGE_ASPECT_COLOR_BIT);
+      anv_attachment_msaa_resolve(cmd_buffer, att, att->layout,
+                                  VK_IMAGE_ASPECT_COLOR_BIT);
    }
 
    if (gfx->depth_att.resolve_mode != VK_RESOLVE_MODE_NONE &&
@@ -5685,9 +5658,9 @@ void genX(CmdEndRendering)(
                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                               false /* will_full_fast_clear */);
 
-      cmd_buffer_resolve_msaa_attachment(cmd_buffer, &gfx->depth_att,
-                                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                         VK_IMAGE_ASPECT_DEPTH_BIT);
+      anv_attachment_msaa_resolve(cmd_buffer, &gfx->depth_att,
+                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  VK_IMAGE_ASPECT_DEPTH_BIT);
 
       /* Transition the source back to the original layout.  This seems a bit
        * inefficient but, since HiZ resolves aren't destructive, going from
@@ -5703,9 +5676,9 @@ void genX(CmdEndRendering)(
 
    if (gfx->stencil_att.resolve_mode != VK_RESOLVE_MODE_NONE &&
        !(gfx->rendering_flags & VK_RENDERING_SUSPENDING_BIT)) {
-      cmd_buffer_resolve_msaa_attachment(cmd_buffer, &gfx->stencil_att,
-                                         gfx->stencil_att.layout,
-                                         VK_IMAGE_ASPECT_STENCIL_BIT);
+      anv_attachment_msaa_resolve(cmd_buffer, &gfx->stencil_att,
+                                  gfx->stencil_att.layout,
+                                  VK_IMAGE_ASPECT_STENCIL_BIT);
    }
 
 #if GFX_VER == 7
@@ -5837,14 +5810,8 @@ void genX(CmdSetEvent2)(
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
    ANV_FROM_HANDLE(anv_event, event, _event);
 
-   VkPipelineStageFlags2 src_stages = 0;
-
-   for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++)
-      src_stages |= pDependencyInfo->pMemoryBarriers[i].srcStageMask;
-   for (uint32_t i = 0; i < pDependencyInfo->bufferMemoryBarrierCount; i++)
-      src_stages |= pDependencyInfo->pBufferMemoryBarriers[i].srcStageMask;
-   for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++)
-      src_stages |= pDependencyInfo->pImageMemoryBarriers[i].srcStageMask;
+   VkPipelineStageFlags2 src_stages =
+      vk_collect_dependency_info_src_stages(pDependencyInfo);
 
    cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
@@ -5933,14 +5900,15 @@ static uint32_t vk_to_intel_index_type(VkIndexType type)
    case VK_INDEX_TYPE_UINT32:
       return INDEX_DWORD;
    default:
-      unreachable("invalid index type");
+      UNREACHABLE("invalid index type");
    }
 }
 
-void genX(CmdBindIndexBuffer)(
+void genX(CmdBindIndexBuffer2KHR)(
     VkCommandBuffer                             commandBuffer,
     VkBuffer                                    _buffer,
     VkDeviceSize                                offset,
+	 VkDeviceSize                                size,
     VkIndexType                                 indexType)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
@@ -5950,7 +5918,7 @@ void genX(CmdBindIndexBuffer)(
    cmd_buffer->state.gfx.index_buffer = buffer;
    cmd_buffer->state.gfx.index_type = vk_to_intel_index_type(indexType);
    cmd_buffer->state.gfx.index_offset = offset;
-
+   cmd_buffer->state.gfx.index_size = buffer ? vk_buffer_range(&buffer->vk, offset, size) : 0;
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_INDEX_BUFFER;
 }
 
@@ -5983,7 +5951,7 @@ VkResult genX(CmdSetPerformanceOverrideINTEL)(
       break;
 
    default:
-      unreachable("Invalid override");
+      UNREACHABLE("Invalid override");
    }
 
    return VK_SUCCESS;
@@ -6030,6 +5998,17 @@ void genX(cmd_emit_timestamp)(struct anv_batch *batch,
       break;
 
    default:
-      unreachable("invalid");
+      UNREACHABLE("invalid");
    }
+}
+
+void genX(cmd_capture_data)(struct anv_batch *batch,
+                            struct anv_device *device,
+                            struct anv_address dst_addr,
+                            struct anv_address src_addr,
+                            uint32_t size_B)
+{
+   struct mi_builder b;
+   mi_builder_init(&b, device->info, batch);
+   mi_memcpy(&b, dst_addr, src_addr, size_B);
 }

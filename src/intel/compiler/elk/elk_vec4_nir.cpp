@@ -1,24 +1,6 @@
 /*
  * Copyright © 2015 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "elk_nir.h"
@@ -83,7 +65,7 @@ vec4_visitor::nir_emit_cf_list(exec_list *list)
          break;
 
       default:
-         unreachable("Invalid CFG node block");
+         UNREACHABLE("Invalid CFG node block");
       }
    }
 }
@@ -160,7 +142,7 @@ vec4_visitor::nir_emit_instr(nir_instr *instr)
       break;
 
    default:
-      unreachable("VS instruction not yet implemented by NIR->vec4");
+      UNREACHABLE("VS instruction not yet implemented by NIR->vec4");
    }
 }
 
@@ -275,8 +257,8 @@ vec4_visitor::get_indirect_offset(nir_intrinsic_instr *instr)
    nir_src *offset_src = nir_get_io_offset_src(instr);
 
    if (nir_src_is_const(*offset_src)) {
-      /* The only constant offset we should find is 0.  elk_nir.c's
-       * add_const_offset_to_base() will fold other constant offsets
+      /* The only constant offset we should find is 0.
+       * nir_opt_constant_folding will fold other constant offsets
        * into the base index.
        */
       assert(nir_src_as_uint(*offset_src) == 0);
@@ -568,7 +550,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       break;
 
    case nir_intrinsic_load_vertex_id:
-      unreachable("should be lowered by vertex_id_zero_based");
+      UNREACHABLE("should be lowered by vertex_id_zero_based");
 
    case nir_intrinsic_load_vertex_id_zero_base:
    case nir_intrinsic_load_base_vertex:
@@ -576,7 +558,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
    case nir_intrinsic_load_base_instance:
    case nir_intrinsic_load_draw_id:
    case nir_intrinsic_load_invocation_id:
-      unreachable("should be lowered by elk_nir_lower_vs_inputs()");
+      UNREACHABLE("should be lowered by elk_nir_lower_vs_inputs()");
 
    case nir_intrinsic_load_uniform: {
       /* Offsets are in bytes but they should always be multiples of 4 */
@@ -750,7 +732,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
    }
 
    default:
-      unreachable("Unknown intrinsic");
+      UNREACHABLE("Unknown intrinsic");
    }
 }
 
@@ -793,11 +775,10 @@ bool
 vec4_visitor::optimize_predicate(nir_alu_instr *instr,
                                  enum elk_predicate *predicate)
 {
-   if (instr->src[0].src.ssa->parent_instr->type != nir_instr_type_alu)
+   if (nir_def_instr(instr->src[0].src.ssa)->type != nir_instr_type_alu)
       return false;
 
-   nir_alu_instr *cmp_instr =
-      nir_instr_as_alu(instr->src[0].src.ssa->parent_instr);
+   nir_alu_instr *cmp_instr = nir_def_as_alu(instr->src[0].src.ssa);
 
    switch (cmp_instr->op) {
    case nir_op_b32any_fnequal2:
@@ -856,7 +837,7 @@ vec4_visitor::emit_conversion_from_double(dst_reg dst, src_reg src)
       op = ELK_VEC4_OPCODE_DOUBLE_TO_F32;
       break;
    default:
-      unreachable("Unknown conversion");
+      UNREACHABLE("Unknown conversion");
    }
 
    dst_reg temp = dst_reg(this, glsl_dvec4_type());
@@ -1006,7 +987,7 @@ try_immediate_source(const nir_alu_instr *instr, src_reg *op,
    }
 
    default:
-      unreachable("Non-32bit type.");
+      UNREACHABLE("Non-32bit type.");
    }
 
    /* If the instruction has more than one source, the instruction format only
@@ -1113,7 +1094,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
    case nir_op_vec2:
    case nir_op_vec3:
    case nir_op_vec4:
-      unreachable("not reached: should be handled by lower_vec_to_movs()");
+      UNREACHABLE("not reached: should be handled by lower_vec_to_movs()");
 
    case nir_op_i2f32:
    case nir_op_u2f32:
@@ -1122,7 +1103,9 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
 
    case nir_op_f2f32:
    case nir_op_f2i32:
+   case nir_op_f2i32_sat:
    case nir_op_f2u32:
+   case nir_op_f2u32_sat:
       if (nir_src_bit_size(instr->src[0].src) == 64)
          emit_conversion_from_double(dst, op[0]);
       else
@@ -1283,7 +1266,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
    }
 
    case nir_op_ldexp:
-      unreachable("not reached: should be handled by ldexp_to_arith()");
+      UNREACHABLE("not reached: should be handled by ldexp_to_arith()");
 
    case nir_op_fsqrt:
       inst = emit_math(ELK_SHADER_OPCODE_SQRT, dst, op[0]);
@@ -1354,30 +1337,6 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
       }
       break;
 
-   case nir_op_fquantize2f16: {
-      /* See also vec4_visitor::emit_pack_half_2x16() */
-      src_reg tmp16 = src_reg(this, glsl_uvec4_type());
-      src_reg tmp32 = src_reg(this, glsl_vec4_type());
-      src_reg zero = src_reg(this, glsl_vec4_type());
-
-      /* Check for denormal */
-      src_reg abs_src0 = op[0];
-      abs_src0.abs = true;
-      emit(CMP(dst_null_f(), abs_src0, elk_imm_f(ldexpf(1.0, -14)),
-               ELK_CONDITIONAL_L));
-      /* Get the appropriately signed zero */
-      emit(AND(retype(dst_reg(zero), ELK_REGISTER_TYPE_UD),
-               retype(op[0], ELK_REGISTER_TYPE_UD),
-               elk_imm_ud(0x80000000)));
-      /* Do the actual F32 -> F16 -> F32 conversion */
-      emit(F32TO16(dst_reg(tmp16), op[0]));
-      emit(F16TO32(dst_reg(tmp32), tmp16));
-      /* Select that or zero based on normal status */
-      inst = emit(ELK_OPCODE_SEL, dst, zero, tmp32);
-      inst->predicate = ELK_PREDICATE_NORMAL;
-      break;
-   }
-
    case nir_op_imin:
    case nir_op_umin:
       assert(instr->def.bit_size < 64);
@@ -1395,14 +1354,6 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
       try_immediate_source(instr, op, true);
       inst = emit_minmax(ELK_CONDITIONAL_GE, dst, op[0], op[1]);
       break;
-
-   case nir_op_fddx:
-   case nir_op_fddx_coarse:
-   case nir_op_fddx_fine:
-   case nir_op_fddy:
-   case nir_op_fddy_coarse:
-   case nir_op_fddy_fine:
-      unreachable("derivatives are not valid in vertex shaders");
 
    case nir_op_ilt32:
    case nir_op_ult32:
@@ -1515,19 +1466,17 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
       }
       break;
 
-   case nir_op_unpack_half_2x16_split_x:
-   case nir_op_unpack_half_2x16_split_y:
    case nir_op_pack_half_2x16_split:
-      unreachable("not reached: should not occur in vertex shader");
+      UNREACHABLE("not reached: should not occur in vertex shader");
 
    case nir_op_unpack_snorm_2x16:
    case nir_op_unpack_unorm_2x16:
    case nir_op_pack_snorm_2x16:
    case nir_op_pack_unorm_2x16:
-      unreachable("not reached: should be handled by lower_packing_builtins");
+      UNREACHABLE("not reached: should be handled by lower_packing_builtins");
 
    case nir_op_pack_uvec4_to_uint:
-      unreachable("not reached");
+      UNREACHABLE("not reached");
 
    case nir_op_pack_uvec2_to_uint: {
       dst_reg tmp1 = dst_reg(this, glsl_uint_type());
@@ -1654,7 +1603,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
 
    case nir_op_ubitfield_extract:
    case nir_op_ibitfield_extract:
-      unreachable("should have been lowered");
+      UNREACHABLE("should have been lowered");
    case nir_op_ubfe:
    case nir_op_ibfe:
       assert(instr->def.bit_size < 64);
@@ -1680,7 +1629,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
       break;
 
    case nir_op_bitfield_insert:
-      unreachable("not reached: should have been lowered");
+      UNREACHABLE("not reached: should have been lowered");
 
    case nir_op_fsign:
        if (type_sz(op[0].type) < 8) {
@@ -1699,37 +1648,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
          inst->predicate = ELK_PREDICATE_NORMAL;
          dst.type = ELK_REGISTER_TYPE_F;
       } else {
-         /* For doubles we do the same but we need to consider:
-          *
-          * - We use a MOV with conditional_mod instead of a CMP so that we can
-          *   skip loading a 0.0 immediate. We use a source modifier on the
-          *   source of the MOV so that we flush denormalized values to 0.
-          *   Since we want to compare against 0, this won't alter the result.
-          * - We need to extract the high 32-bit of each DF where the sign
-          *   is stored.
-          * - We need to produce a DF result.
-          */
-
-         /* Check for zero */
-         src_reg value = op[0];
-         value.abs = true;
-         inst = emit(MOV(dst_null_df(), value));
-         inst->conditional_mod = ELK_CONDITIONAL_NZ;
-
-         /* AND each high 32-bit channel with 0x80000000u */
-         dst_reg tmp = dst_reg(this, glsl_uvec4_type());
-         emit(ELK_VEC4_OPCODE_PICK_HIGH_32BIT, tmp, op[0]);
-         emit(AND(tmp, src_reg(tmp), elk_imm_ud(0x80000000u)));
-
-         /* Add 1.0 to each channel, predicated to skip the cases where the
-          * channel's value was 0
-          */
-         inst = emit(OR(tmp, src_reg(tmp), elk_imm_ud(0x3f800000u)));
-         inst->predicate = ELK_PREDICATE_NORMAL;
-
-         /* Now convert the result from float to double */
-         emit_conversion_to_double(dst, retype(src_reg(tmp),
-                                               ELK_REGISTER_TYPE_F));
+          UNREACHABLE("Should have been lowered by nir_opt_algebraic.");
       }
       break;
 
@@ -1814,17 +1733,17 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
       break;
 
    case nir_op_fdiv:
-      unreachable("not reached: should be lowered by lower_fdiv in the compiler");
+      UNREACHABLE("not reached: should be lowered by lower_fdiv in the compiler");
 
    case nir_op_fmod:
-      unreachable("not reached: should be lowered by lower_fmod in the compiler");
+      UNREACHABLE("not reached: should be lowered by lower_fmod in the compiler");
 
    case nir_op_fsub:
    case nir_op_isub:
-      unreachable("not reached: should be handled by ir_sub_to_add_neg");
+      UNREACHABLE("not reached: should be handled by ir_sub_to_add_neg");
 
    default:
-      unreachable("Unimplemented ALU operation");
+      UNREACHABLE("Unimplemented ALU operation");
    }
 
    /* If we need to do a boolean resolve, replace the result with -(x & 1)
@@ -1857,7 +1776,7 @@ vec4_visitor::nir_emit_jump(nir_jump_instr *instr)
    case nir_jump_return:
       FALLTHROUGH;
    default:
-      unreachable("unknown jump");
+      UNREACHABLE("unknown jump");
    }
 }
 
@@ -1971,13 +1890,13 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
       }
 
       case nir_tex_src_projector:
-         unreachable("Should be lowered by nir_lower_tex");
+         UNREACHABLE("Should be lowered by nir_lower_tex");
 
       case nir_tex_src_bias:
-         unreachable("LOD bias is not valid for vertex shaders.\n");
+         UNREACHABLE("LOD bias is not valid for vertex shaders.\n");
 
       default:
-         unreachable("unknown texture source");
+         UNREACHABLE("unknown texture source");
       }
    }
 
@@ -2027,9 +1946,9 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
    }
    case nir_texop_txb:
    case nir_texop_lod:
-      unreachable("Implicit LOD is only valid inside fragment shaders.");
+      UNREACHABLE("Implicit LOD is only valid inside fragment shaders.");
    default:
-      unreachable("Unrecognized tex op");
+      UNREACHABLE("Unrecognized tex op");
    }
 
    vec4_instruction *inst = new(mem_ctx) vec4_instruction(opcode, dest);

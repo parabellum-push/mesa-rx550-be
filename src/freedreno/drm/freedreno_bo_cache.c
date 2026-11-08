@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012-2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012-2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -36,11 +18,23 @@
       }                                                         \
    } while (0)
 
+#define BO_CACHE_INC(bucket, field) do {                        \
+      if (FD_BO_CACHE_STATS) {                                  \
+         (bucket)->field++;                                     \
+      }                                                         \
+   } while (0)
+
+#define BO_CACHE_DEC(bucket, field) do {                        \
+      if (FD_BO_CACHE_STATS) {                                  \
+         (bucket)->field++;                                     \
+      }                                                         \
+   } while (0)
+
 static void
 bo_remove_from_bucket(struct fd_bo_bucket *bucket, struct fd_bo *bo)
 {
    list_delinit(&bo->node);
-   bucket->count--;
+   BO_CACHE_DEC(bucket, count);
 }
 
 static void
@@ -171,7 +165,7 @@ fd_bo_cache_cleanup(struct fd_bo_cache *cache, time_t time)
 
          VG_BO_OBTAIN(bo);
          bo_remove_from_bucket(bucket, bo);
-         bucket->expired++;
+         BO_CACHE_INC(bucket, expired);
          list_addtail(&bo->node, &freelist);
          fd_alloc_log(bo, FD_ALLOC_CACHE, FD_ALLOC_NONE);
 
@@ -265,11 +259,11 @@ retry:
          }
          p_atomic_set(&bo->refcnt, 1);
          bo->reloc_flags = FD_RELOC_FLAGS_INIT;
-         bucket->hits++;
+         BO_CACHE_INC(bucket, hits);
          fd_alloc_log(bo, FD_ALLOC_CACHE, FD_ALLOC_ACTIVE);
          return bo;
       }
-      bucket->misses++;
+      BO_CACHE_INC(bucket, misses);
    }
 
    fd_bo_del_list_nocache(&freelist);
@@ -302,7 +296,7 @@ fd_bo_cache_free(struct fd_bo_cache *cache, struct fd_bo *bo)
 
       simple_mtx_lock(&cache->lock);
       list_addtail(&bo->node, &bucket->list);
-      bucket->count++;
+      BO_CACHE_INC(bucket, count);
       simple_mtx_unlock(&cache->lock);
 
       fd_alloc_log(bo, FD_ALLOC_ACTIVE, FD_ALLOC_CACHE);

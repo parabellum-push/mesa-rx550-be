@@ -828,18 +828,27 @@ _mesa_dest_buffer_exists(struct gl_context *ctx, GLenum format)
    return renderbuffer_exists(ctx, ctx->DrawBuffer, format, GL_FALSE);
 }
 
+static bool
+has_rtt_samples(const struct gl_renderbuffer_attachment *att)
+{
+   if (att->Type == GL_RENDERBUFFER)
+      return att->Renderbuffer->msrtt;
+   return att->NumSamples > 0;
+}
+
 extern bool
 _mesa_has_rtt_samples(const struct gl_framebuffer *fb)
 {
    /* If there are multiple attachments, all of them are guaranteed
-    * to have the same sample count. */
+    * to have the same sample count, and all or none of them have
+    * implicitly resolved samples. */
    if (fb->_ColorReadBufferIndex) {
       assert(fb->Attachment[fb->_ColorReadBufferIndex].Type != GL_NONE);
-      return fb->Attachment[fb->_ColorReadBufferIndex].NumSamples > 0;
+      return has_rtt_samples(&fb->Attachment[fb->_ColorReadBufferIndex]);
    } else if (fb->Attachment[BUFFER_DEPTH].Type != GL_NONE) {
-      return fb->Attachment[BUFFER_DEPTH].NumSamples > 0;
+      return has_rtt_samples(&fb->Attachment[BUFFER_DEPTH]);
    } else if (fb->Attachment[BUFFER_STENCIL].Type != GL_NONE) {
-      return fb->Attachment[BUFFER_STENCIL].NumSamples > 0;
+      return has_rtt_samples(&fb->Attachment[BUFFER_STENCIL]);
    }
 
    return true;
@@ -970,37 +979,7 @@ _mesa_get_color_read_type(struct gl_context *ctx,
    }
    else {
       const mesa_format format = fb->_ColorReadBuffer->Format;
-      GLenum data_type;
-      GLuint comps;
-
-      _mesa_uncompressed_format_to_type_and_comps(format, &data_type,
-                                                  &comps);
-      if (_mesa_is_gles(ctx)) {
-         /* GLES allows only a limited set of format/type combinations for
-            reading, namely the ones specified in table 8.2 of the GLES 3.2
-            spec. In particular *_REV types are not allowed.  The
-            EXT_read_format_bgra extension does add some *_REV types, but
-            only in conjunction with BGRA formats, and we return BGRA 
-            from _mesa_get_color_read_format for very few cases. Work
-            around that here.
-            Note that EXT_texture_type_2_10_10_10_REV does add support
-            for that texture type and RGBA, so exclude that from our test.
-         */
-         GLenum data_format = _mesa_get_color_read_format(ctx, fb, caller);
-         if (data_format == GL_RGBA) {
-            switch (data_type) {
-            case GL_UNSIGNED_SHORT_4_4_4_4_REV:
-               data_type = GL_UNSIGNED_SHORT_4_4_4_4;
-               break;
-            case GL_UNSIGNED_SHORT_1_5_5_5_REV:
-               data_type = GL_UNSIGNED_SHORT_5_5_5_1;
-               break;
-            default:
-               break;
-            }
-         }
-      }
-      return data_type;
+      return _mesa_uncompressed_format_to_type(format);
    }
 }
 /**
@@ -1086,6 +1065,6 @@ _mesa_is_multisample_enabled(const struct gl_context *ctx)
 bool
 _mesa_is_alpha_test_enabled(const struct gl_context *ctx)
 {
-   bool buffer0_is_integer = ctx->DrawBuffer->_IntegerBuffers & 0x1;
+   bool buffer0_is_integer = ctx->DrawBuffer->_IntegerDrawBuffers & 0x1;
    return (ctx->Color.AlphaEnabled && !buffer0_is_integer);
 }

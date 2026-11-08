@@ -83,8 +83,8 @@ lower_zs_emit(nir_block *block, bool force_early_z)
 static bool
 lower_discard(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
 {
-   if (intr->intrinsic != nir_intrinsic_discard &&
-       intr->intrinsic != nir_intrinsic_discard_if)
+   if (intr->intrinsic != nir_intrinsic_demote &&
+       intr->intrinsic != nir_intrinsic_demote_if)
       return false;
 
    b->cursor = nir_before_instr(&intr->instr);
@@ -93,11 +93,11 @@ lower_discard(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
    nir_def *no_samples = nir_imm_intN_t(b, 0, 16);
    nir_def *killed_samples = all_samples;
 
-   if (intr->intrinsic == nir_intrinsic_discard_if)
+   if (intr->intrinsic == nir_intrinsic_demote_if)
       killed_samples = nir_bcsel(b, intr->src[0].ssa, all_samples, no_samples);
 
    /* This will get lowered later as needed */
-   nir_discard_agx(b, killed_samples);
+   nir_demote_samples(b, killed_samples);
    nir_instr_remove(&intr->instr);
    return true;
 }
@@ -108,9 +108,8 @@ agx_nir_lower_discard(nir_shader *s)
    if (!s->info.fs.uses_discard)
       return false;
 
-   return nir_shader_intrinsics_pass(
-      s, lower_discard, nir_metadata_block_index | nir_metadata_dominance,
-      NULL);
+   return nir_shader_intrinsics_pass(s, lower_discard,
+                                     nir_metadata_control_flow, NULL);
 }
 
 static bool
@@ -130,14 +129,7 @@ agx_nir_lower_zs_emit(nir_shader *s)
          progress |= lower_zs_emit(block, s->info.fs.early_fragment_tests);
       }
 
-      if (progress) {
-         nir_metadata_preserve(
-            impl, nir_metadata_block_index | nir_metadata_dominance);
-      } else {
-         nir_metadata_preserve(impl, nir_metadata_all);
-      }
-
-      any_progress |= progress;
+      any_progress |= nir_progress(progress, impl, nir_metadata_control_flow);
    }
 
    return any_progress;

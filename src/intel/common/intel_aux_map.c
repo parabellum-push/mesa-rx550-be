@@ -145,10 +145,6 @@ struct aux_format_info {
     */
    uint64_t main_page_size;
    /**
-    * The ratio of main surface to an AUX entry.
-    */
-   uint64_t main_to_aux_ratio;
-   /**
     * Page size of level 1 page table. It must be power of 2.
     */
    uint64_t l1_page_size;
@@ -165,14 +161,12 @@ struct aux_format_info {
 static const struct aux_format_info aux_formats[] = {
    [INTEL_AUX_MAP_GFX12_64KB] = {
       .main_page_size = 64 * 1024,
-      .main_to_aux_ratio = 256,
       .l1_page_size = 8 * 1024,
       .l1_index_mask = 0xff,
       .l1_index_offset = 16,
    },
    [INTEL_AUX_MAP_GFX125_1MB] = {
       .main_page_size = 1024 * 1024,
-      .main_to_aux_ratio = 256,
       .l1_page_size = 2 * 1024,
       .l1_index_mask = 0xf,
       .l1_index_offset = 20,
@@ -225,7 +219,7 @@ get_page_mask(const uint64_t page_size)
 static inline uint64_t
 get_meta_page_size(const struct aux_format_info *info)
 {
-   return info->main_page_size / info->main_to_aux_ratio;
+   return info->main_page_size / INTEL_AUX_MAP_MAIN_SIZE_SCALEDOWN;
 }
 
 static inline uint64_t
@@ -242,16 +236,10 @@ intel_aux_get_meta_address_mask(struct intel_aux_map_context *ctx)
 }
 
 uint64_t
-intel_aux_get_main_to_aux_ratio(struct intel_aux_map_context *ctx)
-{
-   return ctx->format->main_to_aux_ratio;
-}
-
-uint64_t
 intel_aux_main_to_aux_offset(struct intel_aux_map_context *ctx,
                              uint64_t main_offset)
 {
-   return main_offset / ctx->format->main_to_aux_ratio;
+   return main_offset / INTEL_AUX_MAP_MAIN_SIZE_SCALEDOWN;
 }
 
 static const struct aux_format_info *
@@ -458,7 +446,7 @@ get_bpp_encoding(enum isl_format format)
       case ISL_FORMAT_PLANAR_420_10: return 1;
       case ISL_FORMAT_PLANAR_420_16: return 0;
       default:
-         unreachable("Unsupported format!");
+         UNREACHABLE("Unsupported format!");
          return 0;
       }
    } else {
@@ -469,7 +457,7 @@ get_bpp_encoding(enum isl_format format)
       case 64:  return 6;
       case 128: return 7;
       default:
-         unreachable("Unsupported bpp!");
+         UNREACHABLE("Unsupported bpp!");
          return 0;
       }
    }
@@ -495,16 +483,12 @@ intel_aux_map_format_bits(enum isl_tiling tiling, enum isl_format format,
               isl_format_get_aux_map_encoding(format));
 
    assert(tiling == ISL_TILING_ICL_Ys ||
-          tiling == ISL_TILING_ICL_Yf ||
           tiling == ISL_TILING_Y0);
 
    uint64_t format_bits =
       ((uint64_t)isl_format_get_aux_map_encoding(format) << 58) |
       ((uint64_t)(plane > 0) << 57) |
       ((uint64_t)get_bpp_encoding(format) << 54) |
-      /* TODO: We assume that Yf is not Tiled-Ys, but waiting on
-       *       clarification
-       */
       (tiling == ISL_TILING_ICL_Ys ? INTEL_AUX_MAP_ENTRY_Ys_TILED_BIT :
                                      INTEL_AUX_MAP_ENTRY_Y_TILED_BIT);
 
@@ -527,11 +511,12 @@ get_l1_addr_mask(struct intel_aux_map_context *ctx)
    return l1_addr & VALID_ADDRESS_MASK;
 }
 
-static void
+static bool
 get_aux_entry(struct intel_aux_map_context *ctx, uint64_t main_address,
               uint32_t *l1_index_out, uint64_t *l1_entry_addr_out,
               uint64_t **l1_entry_map_out,
-              struct intel_aux_level **l1_aux_level_out)
+              struct intel_aux_level **l1_aux_level_out,
+              bool create)
 {
    struct intel_aux_level *l3_level = ctx->l3_level;
    struct intel_aux_level *l2_level;
@@ -540,6 +525,8 @@ get_aux_entry(struct intel_aux_map_context *ctx, uint64_t main_address,
    uint32_t l3_index = (main_address >> 36) & 0xfff;
 
    if (l3_level->children[l3_index] == NULL) {
+      if (!create)
+         return false;
       l2_level =
          add_sub_table(ctx, ctx->l3_level, l3_index,
                        L3_L2_SUB_TABLE_LEN, L3_L2_SUB_TABLE_LEN);
@@ -548,7 +535,7 @@ get_aux_entry(struct intel_aux_map_context *ctx, uint64_t main_address,
             fprintf(stderr, "AUX-MAP L3[0x%x]: 0x%"PRIx64", map=%p\n",
                     l3_index, l2_level->address, l2_level->entries);
       } else {
-         unreachable("Failed to add L2 Aux-Map Page Table!");
+         UNREACHABLE("Failed to add L2 Aux-Map Page Table!");
       }
       l3_level->entries[l3_index] = (l2_level->address & L3_ENTRY_L2_ADDR_MASK) |
                                     INTEL_AUX_MAP_ENTRY_VALID_BIT;
@@ -558,13 +545,15 @@ get_aux_entry(struct intel_aux_map_context *ctx, uint64_t main_address,
    uint32_t l2_index = (main_address >> 24) & 0xfff;
    uint64_t l1_page_size = ctx->format->l1_page_size;
    if (l2_level->children[l2_index] == NULL) {
+      if (!create)
+         return false;
       l1_level = add_sub_table(ctx, l2_level, l2_index, l1_page_size, l1_page_size);
       if (l1_level != NULL) {
          if (aux_map_debug)
             fprintf(stderr, "AUX-MAP L2[0x%x]: 0x%"PRIx64", map=%p\n",
                     l2_index, l1_level->address, l1_level->entries);
       } else {
-         unreachable("Failed to add L1 Aux-Map Page Table!");
+         UNREACHABLE("Failed to add L1 Aux-Map Page Table!");
       }
       l2_level->entries[l2_index] = (l1_level->address & get_l1_addr_mask(ctx)) |
                                     INTEL_AUX_MAP_ENTRY_VALID_BIT;
@@ -581,6 +570,7 @@ get_aux_entry(struct intel_aux_map_context *ctx, uint64_t main_address,
       *l1_entry_map_out = &l1_level->entries[l1_index];
    if (l1_aux_level_out)
       *l1_aux_level_out = l1_level;
+   return true;
 }
 
 static bool
@@ -595,7 +585,8 @@ add_mapping(struct intel_aux_map_context *ctx, uint64_t main_address,
    uint32_t l1_index;
    uint64_t *l1_entry;
    struct intel_aux_level *l1_aux_level;
-   get_aux_entry(ctx, main_address, &l1_index, NULL, &l1_entry, &l1_aux_level);
+   get_aux_entry(ctx, main_address, &l1_index, NULL, &l1_entry,
+                 &l1_aux_level, true);
 
    const uint64_t l1_data =
       (aux_address & intel_aux_get_meta_address_mask(ctx)) |
@@ -646,7 +637,8 @@ intel_aux_map_get_entry(struct intel_aux_map_context *ctx,
 {
    pthread_mutex_lock(&ctx->mutex);
    uint64_t *l1_entry_map;
-   get_aux_entry(ctx, main_address, NULL, aux_entry_address, &l1_entry_map, NULL);
+   get_aux_entry(ctx, main_address, NULL, aux_entry_address, &l1_entry_map,
+                 NULL, true);
    pthread_mutex_unlock(&ctx->mutex);
 
    return l1_entry_map;
@@ -665,7 +657,9 @@ remove_l1_mapping_locked(struct intel_aux_map_context *ctx, uint64_t main_addres
    uint32_t l1_index;
    uint64_t *l1_entry;
    struct intel_aux_level *l1_aux_level;
-   get_aux_entry(ctx, main_address, &l1_index, NULL, &l1_entry, &l1_aux_level);
+   if (!get_aux_entry(ctx, main_address, &l1_index, NULL, &l1_entry,
+                 &l1_aux_level, false))
+      return;
 
    const uint64_t current_l1_data = *l1_entry;
    const uint64_t l1_data = current_l1_data & ~INTEL_AUX_MAP_ENTRY_VALID_BIT;
@@ -733,7 +727,7 @@ intel_aux_map_add_mapping(struct intel_aux_map_context *ctx, uint64_t main_addre
       aux_inc_addr = aux_inc_addr + aux_page_size;
    }
    bool success = main_inc_addr - main_address >= main_size_B;
-   if (!success && (main_inc_addr - main_address) > 0) {
+   if (!success && (main_inc_addr > main_address)) {
       /* If the mapping failed, remove the mapped portion. */
       remove_mapping_locked(ctx, main_address,
                             main_inc_addr - main_address,

@@ -164,13 +164,7 @@ v3d_nir_lower_line_smooth(nir_shader *s)
 
                 progress |= lower_line_smooth_func(&state, impl);
 
-                if (progress) {
-                        nir_metadata_preserve(impl,
-                                              nir_metadata_block_index |
-                                              nir_metadata_dominance);
-                } else {
-                        nir_metadata_preserve(impl, nir_metadata_all);
-                }
+                nir_progress(progress, impl, nir_metadata_control_flow);
         }
 
         return progress;

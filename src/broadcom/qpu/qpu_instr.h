@@ -161,6 +161,13 @@ enum v3d_qpu_add_op {
         V3D_QPU_A_FMIN,
         V3D_QPU_A_FMAX,
         V3D_QPU_A_VFMIN,
+        V3D_QPU_A_VFADD,
+        V3D_QPU_A_VFSUB,
+        V3D_QPU_A_VFCMP,
+        V3D_QPU_A_VFMOV,
+        V3D_QPU_A_VFABS,
+        V3D_QPU_A_VFNEG,
+        V3D_QPU_A_VFNAB,
         V3D_QPU_A_AND,
         V3D_QPU_A_OR,
         V3D_QPU_A_XOR,
@@ -242,12 +249,24 @@ enum v3d_qpu_add_op {
         V3D_QPU_A_ROTQ,
         V3D_QPU_A_ROT,
         V3D_QPU_A_SHUFFLE,
+        V3D_QPU_A_SETNNMODE_UU,
+        V3D_QPU_A_SETNNMODE_SU,
+        V3D_QPU_A_SETNNMODE_US,
+        V3D_QPU_A_SETNNMODE_SS,
 };
 
 enum v3d_qpu_mul_op {
         V3D_QPU_M_ADD,
         V3D_QPU_M_SUB,
+        /* UMUL24 is emitted together with MULTOP (which writes the RTOP register) to
+         * implement 32-bit multiplies.
+         */
         V3D_QPU_M_UMUL24,
+        /* UMUL24_RTOP0 is emitted to implement a regular 24-bit multiply with the
+         * implicit expectation that the RTOP register value is 0. This allows us to
+         * soften scheduling restrictions.
+         */
+        V3D_QPU_M_UMUL24_RTOP0,
         V3D_QPU_M_VFMUL,
         V3D_QPU_M_SMUL24,
         V3D_QPU_M_MULTOP,
@@ -261,8 +280,13 @@ enum v3d_qpu_mul_op {
         V3D_QPU_M_FTOSNORM16,
         V3D_QPU_M_VFTOUNORM8,
         V3D_QPU_M_VFTOSNORM8,
+        V3D_QPU_M_FUNPACKUNORMLO,
+        V3D_QPU_M_FUNPACKUNORMHI,
+        V3D_QPU_M_FUNPACKSNORMLO,
+        V3D_QPU_M_FUNPACKSNORMHI,
         V3D_QPU_M_VFTOUNORM10LO,
         V3D_QPU_M_VFTOUNORM10HI,
+        V3D_QPU_M_V8DOT,
 };
 
 enum v3d_qpu_output_pack {
@@ -292,6 +316,13 @@ enum v3d_qpu_input_unpack {
         V3D_QPU_UNPACK_L,
         /** Convert high 16 bits from 16-bit float to 32-bit float. */
         V3D_QPU_UNPACK_H,
+
+        /* Saturate 32-bit floating point to [0.0, 1.0] */
+        V3D71_QPU_UNPACK_SAT,
+        /* Saturate 32-bit floating point to [-1.0, 1.0] */
+        V3D71_QPU_UNPACK_NSAT,
+        /* Saturate 32-bit floating point to [0.0, +inf] */
+        V3D71_QPU_UNPACK_MAX0,
 
         /** Convert to 16f and replicate it to the high bits. */
         V3D_QPU_UNPACK_REPLICATE_32F_16,

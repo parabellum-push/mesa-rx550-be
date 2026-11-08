@@ -44,8 +44,16 @@ nir_def *nir_normalize(nir_builder *b, nir_def *vec);
 nir_def *nir_smoothstep(nir_builder *b, nir_def *edge0,
                         nir_def *edge1, nir_def *x);
 nir_def *nir_upsample(nir_builder *b, nir_def *hi, nir_def *lo);
+nir_def *nir_acos(nir_builder *b, nir_def *x);
+nir_def *nir_asin(nir_builder *b, nir_def *x);
 nir_def *nir_atan(nir_builder *b, nir_def *y_over_x);
 nir_def *nir_atan2(nir_builder *b, nir_def *y, nir_def *x);
+
+
+nir_def *
+nir_build_texture_query(nir_builder *b, nir_tex_instr *tex, nir_texop texop,
+                        unsigned components, nir_alu_type dest_type,
+                        bool include_coord, bool include_lod);
 
 nir_def *
 nir_get_texture_lod(nir_builder *b, nir_tex_instr *tex);
@@ -56,10 +64,10 @@ nir_get_texture_size(nir_builder *b, nir_tex_instr *tex);
 static inline nir_def *
 nir_fisnan(nir_builder *b, nir_def *x)
 {
-   bool old_exact = b->exact;
-   b->exact = true;
+   unsigned old_fp_math_ctrl = b->fp_math_ctrl;
+   b->fp_math_ctrl |= nir_fp_preserve_inf | nir_fp_preserve_nan;
    nir_def *res = nir_fneu(b, x, x);
-   b->exact = old_exact;
+   b->fp_math_ctrl = old_fp_math_ctrl;
    return res;
 }
 
@@ -139,13 +147,21 @@ nir_bitselect(nir_builder *b, nir_def *x, nir_def *y, nir_def *s)
 static inline nir_def *
 nir_copysign(nir_builder *b, nir_def *x, nir_def *y)
 {
-   uint64_t masks = 1ull << (x->bit_size - 1);
-   uint64_t maskv = ~masks;
+   if (b->shader->options->no_integers) {
+      /* Unlike the integer path, this is not signed zero correct. We assume
+       * integerless backends don't care.
+       */
+      nir_def *abs = nir_fabs(b, x);
+      return nir_bcsel(b, nir_flt_imm(b, y, 0.0), nir_fneg(b, abs), abs);
+   } else {
+      uint64_t masks = 1ull << (x->bit_size - 1);
+      uint64_t maskv = ~masks;
 
-   nir_def *s = nir_imm_intN_t(b, masks, x->bit_size);
-   nir_def *v = nir_imm_intN_t(b, maskv, x->bit_size);
+      nir_def *s = nir_imm_intN_t(b, masks, x->bit_size);
+      nir_def *v = nir_imm_intN_t(b, maskv, x->bit_size);
 
-   return nir_ior(b, nir_iand(b, x, v), nir_iand(b, y, s));
+      return nir_ior(b, nir_iand(b, x, v), nir_iand(b, y, s));
+   }
 }
 
 static inline nir_def *
@@ -175,12 +191,6 @@ static inline nir_def *
 nir_fast_normalize(nir_builder *b, nir_def *vec)
 {
    return nir_fdiv(b, vec, nir_fast_length(b, vec));
-}
-
-static inline nir_def *
-nir_fmad(nir_builder *b, nir_def *x, nir_def *y, nir_def *z)
-{
-   return nir_fadd(b, nir_fmul(b, x, y), z);
 }
 
 static inline nir_def *

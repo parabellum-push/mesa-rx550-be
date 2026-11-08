@@ -25,6 +25,7 @@
 #pragma once
 
 #include "vpe_types.h"
+#include "hw_shared.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,26 +37,31 @@ struct output_ctx;
 
 enum mpc_mpccid {
     MPC_MPCCID_0 = 0,
+    MPC_MPCCID_1 = 1,
     MPC_MPCCID_COUNT,
 };
 
 enum mpc_mux_topsel {
     MPC_MUX_TOPSEL_DPP0    = 0,
+    MPC_MUX_TOPSEL_DPP1 = 1,
     MPC_MUX_TOPSEL_DISABLE = 0x0f,
 };
 
 enum mpc_mux_botsel {
     MPC_MUX_BOTSEL_MPCC0   = 0,
+    MPC_MUX_BOTSEL_MPCC1 = 1,
     MPC_MUX_BOTSEL_DISABLE = 0x0f,
 };
 
 enum mpc_mux_outmux {
     MPC_MUX_OUTMUX_MPCC0   = 0,
+    MPC_MUX_OUTMUX_MPCC1 = 1,
     MPC_MUX_OUTMUX_DISABLE = 0x0f,
 };
 
 enum mpc_mux_oppid {
     MPC_MUX_OPPID_OPP0    = 0,
+    MPC_MUX_OPPID_OPP1 = 1,
     MPC_MUX_OPPID_DISABLE = 0x0f,
 };
 
@@ -63,13 +69,21 @@ enum mpcc_blend_mode {
     MPCC_BLEND_MODE_BYPASS,                // Direct digital bypass
     MPCC_BLEND_MODE_TOP_LAYER_PASSTHROUGH, // Top layer pass-through
     MPCC_BLEND_MODE_TOP_LAYER_ONLY,        // Top layer bleneded with background color
-    MPCC_BLEND_MODE_TOP_BOT_BLENDING       // Top and bottom blending
+    MPCC_BLEND_MODE_TOP_BOT_BLENDING,      // Top and bottom blending
 };
 
 enum mpcc_alpha_blend_mode {
     MPCC_ALPHA_BLEND_MODE_PER_PIXEL_ALPHA,
     MPCC_ALPHA_BLEND_MODE_PER_PIXEL_ALPHA_COMBINED_GLOBAL_GAIN,
-    MPCC_ALPHA_BLEND_MODE_GLOBAL_ALPHA
+    MPCC_ALPHA_BLEND_MODE_GLOBAL_ALPHA,
+    MPCC_ALPHA_BLEND_MODE_ALPHA_THROUGH_LUMA,
+};
+
+enum mpcc_gamut_remap_id {
+    VPE_MPC_GAMUT_REMAP,
+    VPE_MPC_RMCM_GAMUT_REMAP,
+    VPE_MPC_MCM_FIRST_GAMUT_REMAP,
+    VPE_MPC_MCM_SECOND_GAMUT_REMAP,
 };
 
 /*
@@ -79,8 +93,8 @@ struct mpcc_blnd_cfg {
     struct vpe_color           bg_color;             /* background color */
     enum mpcc_alpha_blend_mode alpha_mode;           /* alpha blend mode */
     bool                       pre_multiplied_alpha; /* alpha pre-multiplied mode flag */
-    uint8_t                    global_gain;
-    uint8_t                    global_alpha;
+    uint16_t                   global_gain;
+    uint16_t                   global_alpha;
     bool                       overlap_only;
 
     /* MPCC top/bottom gain settings */
@@ -89,6 +103,8 @@ struct mpcc_blnd_cfg {
     int top_gain;
     int bottom_inside_gain;
     int bottom_outside_gain;
+
+    enum mpcc_blend_mode blend_mode;
 };
 
 enum mpc_output_csc_mode {
@@ -106,7 +122,6 @@ struct mpc_denorm_clamp {
 };
 
 struct mpc_funcs {
-    // TODO finalize it
     void (*program_mpcc_mux)(struct mpc *mpc, enum mpc_mpccid mpcc_idx, enum mpc_mux_topsel topsel,
         enum mpc_mux_botsel botsel, enum mpc_mux_outmux outmux, enum mpc_mux_oppid oppid);
 
@@ -156,20 +171,36 @@ struct mpc_funcs {
 
     void (*set_output_transfer_func)(struct mpc *mpc, struct output_ctx *output_ctx);
 
-    void (*set_mpc_shaper_3dlut)(struct mpc *mpc, const struct transfer_func *func_shaper,
-        const struct vpe_3dlut *lut3d_func);
+    void (*set_mpc_shaper_3dlut)(
+        struct mpc *mpc, struct transfer_func *func_shaper, struct vpe_3dlut *lut3d_func);
 
-    void (*set_blend_lut)(struct mpc *mpc, const struct transfer_func *blend_tf);
+    void (*set_blend_lut)(struct mpc *mpc, struct transfer_func *blend_tf);
 
-    bool (*program_movable_cm)(struct mpc *mpc, const struct transfer_func *func_shaper,
-        const struct vpe_3dlut *lut3d_func, const struct transfer_func *blend_tf, bool afterblend);
+    bool (*program_movable_cm)(struct mpc *mpc, struct transfer_func *func_shaper,
+        struct vpe_3dlut *lut3d_func, struct transfer_func *blend_tf, bool afterblend);
     void (*program_crc)(struct mpc *mpc, bool enable);
+
+    void (*attach_3dlut_to_mpc_inst)(struct mpc *mpc, enum mpc_mpccid mpcc_idx);
+
+    void (*set_gamut_remap2)(struct mpc *mpc, struct colorspace_transform *gamut_remap,
+        enum mpcc_gamut_remap_id mpcc_gamut_remap_block_id);
+
+    void (*update_3dlut_fl_bias_scale)(struct mpc *mpc, uint16_t bias, uint16_t scale);
+
+    void (*program_mpc_3dlut_fl_config)(struct mpc *mpc, enum vpe_3dlut_mem_layout layout,
+        enum vpe_3dlut_mem_format format, bool enable);
+
+    void (*program_mpc_3dlut_fl)(struct mpc *mpc, enum lut_dimension lut_dimension, bool use_12bit);
+
+    void (*shaper_bypass)(struct mpc *mpc, bool bypass);
+    bool (*program_shaper_indirect)(struct mpc *, struct vpe_dma_shaper *);
 
 };
 
 struct mpc {
     struct vpe_priv  *vpe_priv;
     struct mpc_funcs *funcs;
+    unsigned int      inst;
     struct pwl_params regamma_params;
     struct pwl_params blender_params;
     struct pwl_params shaper_params;

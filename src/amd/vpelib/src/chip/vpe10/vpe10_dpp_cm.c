@@ -1,11 +1,31 @@
-
+/* Copyright 2024 Advanced Micro Devices, Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: AMD
+ *
+ */
 #include "vpe_priv.h"
 #include "reg_helper.h"
 #include "vpe10/inc/vpe10_cm_common.h"
 #include "vpe10_dpp.h"
 #include "conversion.h"
-#include "color_pwl.h"
-
 #define CTX      vpe10_dpp
 #define CTX_BASE dpp
 
@@ -112,21 +132,21 @@ static void vpe10_dpp_program_gammcor_lut(
             REG_OFFSET(VPCM_GAMCOR_LUT_DATA), REG_FIELD_SHIFT(VPCM_GAMCOR_LUT_DATA),
             REG_FIELD_MASK(VPCM_GAMCOR_LUT_DATA), CM_PWL_R);
     } else {
-        REG_UPDATE(VPCM_GAMCOR_LUT_CONTROL, VPCM_GAMCOR_LUT_WRITE_COLOR_MASK, 4);
+        REG_SET(VPCM_GAMCOR_LUT_CONTROL, 0, VPCM_GAMCOR_LUT_WRITE_COLOR_MASK, 4);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_red, num,
             REG_OFFSET(VPCM_GAMCOR_LUT_DATA), REG_FIELD_SHIFT(VPCM_GAMCOR_LUT_DATA),
             REG_FIELD_MASK(VPCM_GAMCOR_LUT_DATA), CM_PWL_R);
 
         REG_SET(VPCM_GAMCOR_LUT_INDEX, 0, VPCM_GAMCOR_LUT_INDEX, 0);
-        REG_UPDATE(VPCM_GAMCOR_LUT_CONTROL, VPCM_GAMCOR_LUT_WRITE_COLOR_MASK, 2);
+        REG_SET(VPCM_GAMCOR_LUT_CONTROL, 0, VPCM_GAMCOR_LUT_WRITE_COLOR_MASK, 2);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_green, num,
             REG_OFFSET(VPCM_GAMCOR_LUT_DATA), REG_FIELD_SHIFT(VPCM_GAMCOR_LUT_DATA),
             REG_FIELD_MASK(VPCM_GAMCOR_LUT_DATA), CM_PWL_G);
 
         REG_SET(VPCM_GAMCOR_LUT_INDEX, 0, VPCM_GAMCOR_LUT_INDEX, 0);
-        REG_UPDATE(VPCM_GAMCOR_LUT_CONTROL, VPCM_GAMCOR_LUT_WRITE_COLOR_MASK, 1);
+        REG_SET(VPCM_GAMCOR_LUT_CONTROL, 0, VPCM_GAMCOR_LUT_WRITE_COLOR_MASK, 1);
 
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_blue, num,
             REG_OFFSET(VPCM_GAMCOR_LUT_DATA), REG_FIELD_SHIFT(VPCM_GAMCOR_LUT_DATA),
@@ -134,7 +154,7 @@ static void vpe10_dpp_program_gammcor_lut(
     }
 }
 
-static void vpe10_dpp_program_gamcor_lut(struct dpp *dpp, const struct pwl_params *params)
+void vpe10_dpp_program_gamcor_lut(struct dpp *dpp, const struct pwl_params *params)
 {
     struct vpe10_xfer_func_reg gam_regs = {0};
 
@@ -187,8 +207,11 @@ void vpe10_dpp_program_input_transfer_func(struct dpp *dpp, struct transfer_func
 
     PROGRAM_ENTRY();
 
-    // There should always have input_tf
+    struct stream_ctx *stream_ctx = &vpe_priv->stream_ctx[vpe_priv->fe_cb_ctx.stream_idx];
+    bool               bypass;
+
     VPE_ASSERT(input_tf);
+    // There should always have input_tf
     // Only accept either DISTRIBUTED_POINTS or BYPASS
     // No support for PREDEFINED case
     VPE_ASSERT(input_tf->type == TF_TYPE_DISTRIBUTED_POINTS || input_tf->type == TF_TYPE_BYPASS);
@@ -196,17 +219,15 @@ void vpe10_dpp_program_input_transfer_func(struct dpp *dpp, struct transfer_func
     // VPE always do NL scaling using gamcor, thus skipping dgam (default bypass)
     // dpp->funcs->program_pre_dgam(dpp, tf);
     if (input_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
-        if (!input_tf->use_pre_calculated_table || dpp->vpe_priv->init.debug.force_tf_calculation) {
-            vpe10_cm_helper_translate_curve_to_degamma_hw_format(input_tf, &dpp->degamma_params);
-            params = &dpp->degamma_params;
-        } else {
-            vpe10_cm_get_tf_pwl_params(input_tf, &params, CM_DEGAM);
-            VPE_ASSERT(params != NULL);
-            if (params == NULL)
-                return;
-        }
+        vpe10_cm_helper_translate_curve_to_degamma_hw_format(
+            input_tf, &dpp->degamma_params, input_tf->dirty[dpp->inst]);
+        params = &dpp->degamma_params;
     }
-    vpe10_dpp_program_gamcor_lut(dpp, params);
+
+    bypass = ((input_tf->type == TF_TYPE_BYPASS) || dpp->vpe_priv->init.debug.bypass_gamcor);
+
+    CONFIG_CACHE(input_tf, stream_ctx, vpe_priv->init.debug.disable_lut_caching, bypass,
+        vpe10_dpp_program_gamcor_lut(dpp, params), dpp->inst);
 }
 
 void vpe10_dpp_program_gamut_remap(struct dpp *dpp, struct colorspace_transform *gamut_remap)

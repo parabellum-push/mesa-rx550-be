@@ -5,11 +5,15 @@
 # .gitlab-ci/image-tags.yml tags:
 # DEBIAN_BUILD_TAG
 
-set -ex
+set -uex
 
-git clone https://github.com/microsoft/DirectX-Headers -b v1.613.1 --depth 1
+section_start directx-headers "Building directx-headers"
+
+git clone https://github.com/microsoft/DirectX-Headers -b v1.619.1 --depth 1
 pushd DirectX-Headers
-meson setup build --backend=ninja --buildtype=release -Dbuild-test=false $EXTRA_MESON_ARGS
+meson setup build --backend=ninja --buildtype=release -Dbuild-test=false ${EXTRA_MESON_ARGS:-}
 meson install -C build
 popd
 rm -rf DirectX-Headers
+
+section_end directx-headers

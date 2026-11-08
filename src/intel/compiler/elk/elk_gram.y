@@ -1,25 +1,7 @@
 %{
 /*
  * Copyright © 2018 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stdio.h>
@@ -294,9 +276,18 @@ i965_asm_set_instruction_options(struct elk_codegen *p,
                                  options.no_dd_clear);
 	elk_inst_set_debug_control(p->devinfo, elk_last_inst,
 			           options.debug_control);
-	if (p->devinfo->ver >= 6)
+	if (elk_has_branch_ctrl(p->devinfo, elk_inst_opcode(p->isa, elk_last_inst))) {
+		if (options.acc_wr_control)
+			error(NULL, "Instruction does not support AccWrEnable\n");
+
+		elk_inst_set_branch_control(p->devinfo, elk_last_inst,
+		                            options.branch_control);
+	} else if (options.branch_control) {
+		error(NULL, "Instruction does not support BranchCtrl\n");
+	} else if (p->devinfo->ver >= 6) {
 		elk_inst_set_acc_wr_control(p->devinfo, elk_last_inst,
 					    options.acc_wr_control);
+	}
 	elk_inst_set_cmpt_control(p->devinfo, elk_last_inst,
 				  options.compaction);
 }
@@ -455,6 +446,9 @@ add_label(struct elk_codegen *p, const char* label_name, enum instr_label_type t
 /* thread control */
 %token ATOMIC SWITCH
 
+/* branch control */
+%token BRANCH_CTRL
+
 /* quater control */
 %token QTR_2Q QTR_3Q QTR_4Q QTR_2H QTR_2N QTR_3N QTR_4N QTR_5N
 %token QTR_6N QTR_7N QTR_8N
@@ -565,6 +559,9 @@ add_instruction_option(struct options *options, struct instoption opt)
 		break;
 	case ATOMIC:
 		options->thread_control |= ELK_THREAD_ATOMIC;
+		break;
+	case BRANCH_CTRL:
+		options->branch_control = true;
 		break;
 	case NODDCHK:
 		options->no_dd_check = true;
@@ -2284,7 +2281,12 @@ instoption_list:
 instoption:
 	ALIGN1 	        { $$.uint_value = ALIGN1;}
 	| ALIGN16 	{ $$.uint_value = ALIGN16; }
-	| ACCWREN 	{ $$.uint_value = ACCWREN; }
+	| ACCWREN
+	{
+		if (p->devinfo->ver < 6)
+			error(&@1, "AccWrEnable not supported before Gfx6\n");
+		$$.uint_value = ACCWREN;
+	}
 	| SECHALF 	{ $$.uint_value = SECHALF; }
 	| COMPR 	{ $$.uint_value = COMPR; }
 	| COMPR4 	{ $$.uint_value = COMPR4; }
@@ -2295,6 +2297,12 @@ instoption:
 	| EOT 	        { $$.uint_value = EOT; }
 	| SWITCH 	{ $$.uint_value = SWITCH; }
 	| ATOMIC 	{ $$.uint_value = ATOMIC; }
+	| BRANCH_CTRL
+	{
+		if (p->devinfo->ver < 8)
+			error(&@1, "BranchCtrl not supported before Gfx8\n");
+		$$.uint_value = BRANCH_CTRL;
+	}
 	| CMPTCTRL 	{ $$.uint_value = CMPTCTRL; }
 	| WECTRL 	{ $$.uint_value = WECTRL; }
 	| QTR_2Q 	{ $$.uint_value = QTR_2Q; }

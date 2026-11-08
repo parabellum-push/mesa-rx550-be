@@ -1,24 +1,6 @@
 /*
  * Copyright © 2021 Google, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef FREEDRENO_PERFETTO_H_
@@ -35,6 +17,7 @@ extern "C" {
  */
 enum fd_stage_id {
    SURFACE_STAGE_ID, /* Surface is a sort of meta-stage for render-target info */
+   NONDRAW_STAGE_ID,
    BINNING_STAGE_ID,
    GMEM_STAGE_ID,
    BYPASS_STAGE_ID,
@@ -55,6 +38,7 @@ static const struct {
    const char *desc;
 } stages[] = {
    [SURFACE_STAGE_ID] = {"Surface"},
+   [NONDRAW_STAGE_ID] = {"Non-draw"},
    [BINNING_STAGE_ID] = {"Binning", "Perform Visibility pass and determine target bins"},
    [GMEM_STAGE_ID]    = {"Render", "Rendering to GMEM"},
    [BYPASS_STAGE_ID]  = {"Render", "Rendering to system memory"},

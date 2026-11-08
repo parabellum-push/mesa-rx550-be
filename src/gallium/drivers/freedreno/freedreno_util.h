@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -45,8 +27,7 @@
 #include "util/u_math.h"
 #include "util/u_pack_color.h"
 
-#include "adreno_common.xml.h"
-#include "adreno_pm4.xml.h"
+#include "fd_hw_common.h"
 #include "disasm.h"
 
 #ifdef __cplusplus
@@ -85,7 +66,7 @@ enum fd_debug_flag {
    FD_DBG_SERIALC      = BITFIELD_BIT(10),
    FD_DBG_SHADERDB     = BITFIELD_BIT(11),
    FD_DBG_FLUSH        = BITFIELD_BIT(12),
-   FD_DBG_DEQP         = BITFIELD_BIT(13),
+   FD_DBG_NOLRZFC      = BITFIELD_BIT(13),
    FD_DBG_INORDER      = BITFIELD_BIT(14),
    FD_DBG_BSTAT        = BITFIELD_BIT(15),
    FD_DBG_NOGROW       = BITFIELD_BIT(16),
@@ -102,6 +83,8 @@ enum fd_debug_flag {
    FD_DBG_NOFP16       = BITFIELD_BIT(27),
    FD_DBG_NOHW         = BITFIELD_BIT(28),
    FD_DBG_NOSBIN       = BITFIELD_BIT(29),
+   FD_DBG_STOMP        = BITFIELD_BIT(30),
+   FD_DBG_ABORT        = BITFIELD_BIT(31),
 };
 /* clang-format on */
 
@@ -117,7 +100,7 @@ extern bool fd_binning_enabled;
 #define DBG(fmt, ...)                                                          \
    do {                                                                        \
       if (FD_DBG(MSGS))                                                        \
-         mesa_logi("%5d: %s:%d: " fmt, ((pid_t)syscall(SYS_gettid)),           \
+         mesa_logd("%5d: %s:%d: " fmt, ((pid_t)syscall(SYS_gettid)),           \
                                         __func__, __LINE__,                    \
                                         ##__VA_ARGS__);                        \
    } while (0)
@@ -172,7 +155,7 @@ struct __perf_time_state {
        ? os_time_get_nano()                                                    \
        : 0)
 
-#define DEFINE_CAST(parent, child)                                             \
+#define FD_DEFINE_CAST(parent, child)                                          \
    static inline struct child *child(struct parent *x)                         \
    {                                                                           \
       return (struct child *)x;                                                \
@@ -324,7 +307,7 @@ fd_half_precision(struct pipe_framebuffer_state *pfb)
    unsigned i;
 
    for (i = 0; i < pfb->nr_cbufs; i++)
-      if (!fd_surface_half_precision(pfb->cbufs[i]))
+      if (!fd_surface_half_precision(&pfb->cbufs[i]))
          return false;
 
    return true;
@@ -340,11 +323,10 @@ OUT_RINGP(struct fd_ringbuffer *ring, uint32_t data, struct util_dynarray *buf)
       DBG("ring[%p]: OUT_RINGP  %04x:  %08x", ring,
           (uint32_t)(ring->cur - ring->start), data);
    }
-   util_dynarray_append(buf, struct fd_cs_patch,
-                        ((struct fd_cs_patch){
-                           .cs = ring->cur++,
-                           .val = data,
-                        }));
+   util_dynarray_append(buf, ((struct fd_cs_patch){
+            .cs = ring->cur++,
+            .val = data,
+         }));
 }
 
 static inline void
@@ -432,7 +414,7 @@ fd_msaa_samples(unsigned samples)
 {
    switch (samples) {
    default:
-      unreachable("Unsupported samples");
+      UNREACHABLE("Unsupported samples");
    case 0:
    case 1:
       return MSAA_ONE;
@@ -475,7 +457,7 @@ fd_clamp_buffer_size(enum pipe_format format, uint32_t size,
  */
 
 static inline enum a4xx_state_block
-fd4_stage2shadersb(gl_shader_stage type)
+fd4_stage2shadersb(mesa_shader_stage type)
 {
    switch (type) {
    case MESA_SHADER_VERTEX:
@@ -486,7 +468,7 @@ fd4_stage2shadersb(gl_shader_stage type)
    case MESA_SHADER_KERNEL:
       return SB4_CS_SHADER;
    default:
-      unreachable("bad shader type");
+      UNREACHABLE("bad shader type");
       return (enum a4xx_state_block) ~0;
    }
 }

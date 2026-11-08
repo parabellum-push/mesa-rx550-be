@@ -15,54 +15,30 @@
 
 #include "util/sparse_array.h"
 
+#include "vn_descriptor.h"
 #include "vn_wsi.h"
-
-struct vn_physical_device_properties {
-   VkPhysicalDeviceProperties vulkan_1_0;
-   VkPhysicalDeviceVulkan11Properties vulkan_1_1;
-   VkPhysicalDeviceVulkan12Properties vulkan_1_2;
-   VkPhysicalDeviceVulkan13Properties vulkan_1_3;
-
-   /* KHR */
-   VkPhysicalDeviceFragmentShadingRatePropertiesKHR fragment_shading_rate;
-   VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor;
-
-   /* EXT */
-   VkPhysicalDeviceConservativeRasterizationPropertiesEXT
-      conservative_rasterization;
-   VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color;
-   VkPhysicalDeviceExtendedDynamicState3PropertiesEXT extended_dynamic_state_3;
-   VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT
-      graphics_pipeline_library;
-   VkPhysicalDeviceLineRasterizationPropertiesEXT line_rasterization;
-   VkPhysicalDeviceMultiDrawPropertiesEXT multi_draw;
-   VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus_info;
-   VkPhysicalDeviceProvokingVertexPropertiesEXT provoking_vertex;
-   VkPhysicalDeviceRobustness2PropertiesEXT robustness_2;
-   VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback;
-   VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT
-      vertex_attribute_divisor;
-};
 
 struct vn_format_properties_entry {
    atomic_bool valid;
-   VkFormatProperties properties;
-   atomic_bool props3_valid;
-   VkFormatProperties3 properties3;
+   VkFormatProperties props;
+   VkFormatProperties3 props3;
+   VkBool32 srpq;
 };
 
 struct vn_image_format_properties {
-   struct VkImageFormatProperties2 format;
+   VkImageFormatProperties2 format;
    VkResult cached_result;
 
    VkExternalImageFormatProperties ext_image;
+   VkHostImageCopyDevicePerformanceQuery host_copy;
    VkImageCompressionPropertiesEXT compression;
    VkSamplerYcbcrConversionImageFormatProperties ycbcr_conversion;
+   VkFilterCubicImageViewImageFormatPropertiesEXT filter_cubic;
 };
 
 struct vn_image_format_cache_entry {
    struct vn_image_format_properties properties;
-   uint8_t key[SHA1_DIGEST_LENGTH];
+   uint8_t key[BLAKE3_KEY_LEN];
    struct list_head head;
 };
 
@@ -78,6 +54,13 @@ struct vn_image_format_properties_cache {
    } debug;
 };
 
+struct vn_layered_api_properties {
+   VkPhysicalDeviceLayeredApiPropertiesKHR api;
+   VkPhysicalDeviceLayeredApiVulkanPropertiesKHR vk;
+   VkPhysicalDeviceDriverProperties driver;
+   VkPhysicalDeviceIDProperties id;
+};
+
 struct vn_physical_device {
    struct vn_physical_device_base base;
 
@@ -91,6 +74,9 @@ struct vn_physical_device {
     */
    uint32_t renderer_version;
 
+   /* For maintenance7 layered api properties. */
+   struct vn_layered_api_properties layered_properties;
+
    /* Between the driver and the app, base.base.supported_extensions is what
     * we advertise.
     *
@@ -100,27 +86,37 @@ struct vn_physical_device {
    struct vk_device_extension_table renderer_extensions;
    uint32_t *extension_spec_versions;
 
-   struct vn_physical_device_properties properties;
-   enum VkDriverId renderer_driver_id;
+   /* passthrough ray tracing support */
+   bool ray_tracing;
+
+   /* Venus feedback encounters cacheline overflush issue on Intel JSL, and
+    * has to workaround by further aligning up the feedback buffer alignment.
+    */
+   uint32_t wa_min_fb_align;
+
+   VkDriverId renderer_driver_id;
+   uint32_t renderer_driver_version;
+
+   /* Static storage so that host copy properties query can be done once. */
+   VkImageLayout copy_src_layouts[64];
+   VkImageLayout copy_dst_layouts[64];
 
    VkQueueFamilyProperties2 *queue_family_properties;
+   VkQueueFamilyGlobalPriorityProperties *global_priority_properties;
    uint32_t queue_family_count;
    bool sparse_binding_disabled;
+   /* Track the queue family index to emulate a second queue. -1 means no
+    * emulation is needed. To be noted that the emulation is a workaround for
+    * Android 14+ UI framework and it does not handle wait-before-signal.
+    */
+   int emulate_second_queue;
 
    VkPhysicalDeviceMemoryProperties memory_properties;
-   uint32_t coherent_uncached;
-   uint32_t incoherent_cached;
 
    struct {
       VkExternalMemoryHandleTypeFlagBits renderer_handle_type;
       VkExternalMemoryHandleTypeFlags supported_handle_types;
    } external_memory;
-
-   struct {
-      bool fence_exportable;
-      bool semaphore_exportable;
-      bool semaphore_importable;
-   } renderer_sync_fd;
 
    VkExternalFenceHandleTypeFlags external_fence_handles;
    VkExternalSemaphoreHandleTypeFlags external_binary_semaphore_handles;
@@ -128,17 +124,36 @@ struct vn_physical_device {
 
    struct wsi_device wsi_device;
 
-   simple_mtx_t format_update_mutex;
+   simple_mtx_t mutex;
    struct util_sparse_array format_properties;
 
    struct vn_image_format_properties_cache image_format_cache;
+
+   atomic_bool descriptor_sizes_initialized;
+   VkDeviceSize descriptor_sizes[VN_NUM_DESCRIPTOR_TYPES];
 };
 VK_DEFINE_HANDLE_CASTS(vn_physical_device,
-                       base.base.base,
+                       base.vk.base,
                        VkPhysicalDevice,
                        VK_OBJECT_TYPE_PHYSICAL_DEVICE)
 
 void
 vn_physical_device_fini(struct vn_physical_device *physical_dev);
+
+static inline bool
+vn_queue_family_can_feedback(struct vn_physical_device *physical_dev,
+                             uint32_t queue_family_index)
+{
+   /* Feedback requires transfer capability, so we must skip feedback cmd pool
+    * initialization on incompatible queue families. Meanwhile, rely on the
+    * pool_handle for all validity check needed.
+    */
+   assert(queue_family_index < physical_dev->queue_family_count);
+   const struct VkQueueFamilyProperties2 *props =
+      &physical_dev->queue_family_properties[queue_family_index];
+   const VkQueueFlags transfer_flags =
+      VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+   return props->queueFamilyProperties.queueFlags & transfer_flags;
+}
 
 #endif /* VN_PHYSICAL_DEVICE_H */

@@ -2,7 +2,7 @@
 
 $ProgressPreference = "SilentlyContinue"
 $MyPath = $MyInvocation.MyCommand.Path | Split-Path -Parent
-. "$MyPath\mesa_init_msvc.ps1"
+. "$MyPath\mesa_init_msvc.ps1" "-vcvars_ver=14.29"
 
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "deps" | Out-Null
 $depsInstallPath="C:\mesa-deps"
@@ -29,7 +29,7 @@ Pop-Location
 # libva already has a build dir in their repo, use builddir instead
 $libva_build = New-Item -ItemType Directory -Path ".\deps\libva" -Name "builddir"
 Push-Location -Path $libva_build.FullName
-meson .. -Dprefix="$depsInstallPath"
+meson setup .. -Dprefix="$depsInstallPath"
 ninja -j32 install
 $buildstatus = $?
 Pop-Location
@@ -65,7 +65,7 @@ Write-Host "Building libva-utils"
 # libva-utils already has a build dir in their repo, use builddir instead
 $libva_utils_build = New-Item -ItemType Directory -Path ".\deps\libva-utils" -Name "builddir"
 Push-Location -Path $libva_utils_build.FullName
-meson .. -Dprefix="$depsInstallPath" --pkg-config-path="$depsInstallPath\lib\pkgconfig;$depsInstallPath\share\pkgconfig"
+meson setup .. -Dprefix="$depsInstallPath" --pkg-config-path="$depsInstallPath\lib\pkgconfig;$depsInstallPath\share\pkgconfig"
 ninja -j32 install
 $buildstatus = $?
 Pop-Location
@@ -74,6 +74,12 @@ if (!$buildstatus) {
   Write-Host "Failed to compile libva-utils"
   Exit 1
 }
+
+function Remove-Symlinks {
+  Get-ChildItem -Force -ErrorAction SilentlyContinue @Args | Where-Object { if($_.Attributes -match "ReparsePoint"){$_.Delete()} }
+}
+Remove-Symlinks -Path "deps" -Recurse
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path "deps" | Out-Null
 
 Write-Host "Building libva-utils finished at:"
 Get-Date

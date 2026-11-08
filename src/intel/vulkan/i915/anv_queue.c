@@ -25,6 +25,7 @@
 #include "anv_private.h"
 
 #include "common/i915/intel_engine.h"
+#include "common/i915/intel_gem.h"
 #include "common/intel_gem.h"
 
 #include "i915/anv_device.h"
@@ -53,7 +54,7 @@ anv_i915_create_engine(struct anv_device *device,
          queue->exec_flags = I915_EXEC_BSD | I915_EXEC_BSD_RING1;
          break;
       default:
-         unreachable("Unsupported legacy engine");
+         UNREACHABLE("Unsupported legacy engine");
       }
    } else if (device->physical->has_vm_control) {
       assert(pCreateInfo->queueFamilyIndex < physical->queue.family_count);
@@ -63,6 +64,10 @@ anv_i915_create_engine(struct anv_device *device,
       engine_classes[0] = queue_family->engine_class;
       if (pCreateInfo->flags & VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT)
          flags |= INTEL_GEM_CREATE_CONTEXT_EXT_PROTECTED_FLAG;
+
+      if (device->physical->instance->drirc.perf.guc_low_latency &&
+          physical->info.supports_low_latency_hint)
+	      flags |= INTEL_GEM_CREATE_CONTEXT_EXT_LOW_LATENCY_FLAG;
 
       if (!intel_gem_create_context_engines(device->fd, flags,
                                             physical->engine_info,
@@ -89,9 +94,9 @@ anv_i915_create_engine(struct anv_device *device,
       }
 
       /* Check if client specified queue priority. */
-      const VkDeviceQueueGlobalPriorityCreateInfoKHR *queue_priority =
+      const VkDeviceQueueGlobalPriorityCreateInfo *queue_priority =
          vk_find_struct_const(pCreateInfo->pNext,
-                              DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR);
+                              DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO);
 
       VkResult result = anv_i915_set_queue_parameters(device,
                                                       queue->context_id,

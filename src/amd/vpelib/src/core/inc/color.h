@@ -27,17 +27,18 @@
 #include "vpe_types.h"
 #include "fixed31_32.h"
 #include "hw_shared.h"
+#include "config_cache.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SDR_VIDEO_WHITE_POINT  100 // nits
-#define SDR_WHITE_POINT        80  // nits
-#define HDR_PEAK_WHITE         10000
-#define CCCS_NORM              HDR_PEAK_WHITE/SDR_WHITE_POINT
-#define STUDIO_RANGE_FOOT_ROOM_10_BIT  vpe_fixpt_from_fraction(64, 1023)
-#define STUDIO_RANGE_SCALE_10_BIT      vpe_fixpt_from_fraction(940 - 64, 1023)
+#define SDR_VIDEO_WHITE_POINT         100 // nits
+#define SDR_WHITE_POINT               80  // nits
+#define HDR_PEAK_WHITE                10000
+#define CCCS_NORM                     HDR_PEAK_WHITE / SDR_WHITE_POINT
+#define STUDIO_RANGE_FOOT_ROOM_10_BIT vpe_fixpt_from_fraction(64, 1023)
+#define STUDIO_RANGE_SCALE_10_BIT     vpe_fixpt_from_fraction(940 - 64, 1023)
 #define STUDIO_RANGE_FOOT_ROOM_8_BIT  vpe_fixpt_from_fraction(16, 255)
 #define STUDIO_RANGE_SCALE_8_BIT      vpe_fixpt_from_fraction(235 - 16, 255)
 
@@ -57,21 +58,23 @@ enum color_depth {
     COLOR_DEPTH_COUNT
 };
 
-/*
-* Special comment for TRANSFER_FUNC_LINEAR_0_125, 
-  Inside of the pipeline, vpe operates in 0 - 1 nominal range.
-  For degamma operations, 0_125 refers to input normalization and for regam, 0_125 refers to output normalization. 
- */
- enum color_transfer_func {
+enum color_range_type {
+    COLOR_RANGE_FULL,
+    COLOR_RANGE_LIMITED_8BPC,
+    COLOR_RANGE_LIMITED_10BPC,
+    COLOR_RANGE_LIMITED_16BPC,
+};
+
+enum color_transfer_func {
     TRANSFER_FUNC_UNKNOWN,
     TRANSFER_FUNC_SRGB,
     TRANSFER_FUNC_BT709,
     TRANSFER_FUNC_BT1886,
     TRANSFER_FUNC_PQ2084,
-    TRANSFER_FUNC_LINEAR_0_1,
-    TRANSFER_FUNC_LINEAR_0_125, 
+    TRANSFER_FUNC_LINEAR,
     TRANSFER_FUNC_NORMALIZED_PQ,
-    TRANSFER_FUNC_HLG
+    TRANSFER_FUNC_HLG,
+    TRANSFER_FUNC_CUSTOM,
 };
 
 enum dither_option {
@@ -109,14 +112,18 @@ enum color_space {
     COLOR_SPACE_SRGB_LIMITED,
     COLOR_SPACE_MSREF_SCRGB,
     COLOR_SPACE_YCBCR601,
+    COLOR_SPACE_RGB601,
+    COLOR_SPACE_RGB601_LIMITED,
     COLOR_SPACE_YCBCR709,
-    COLOR_SPACE_JFIF,
+    COLOR_SPACE_YCBCR_JFIF,
+    COLOR_SPACE_RGB_JFIF,
     COLOR_SPACE_YCBCR601_LIMITED,
     COLOR_SPACE_YCBCR709_LIMITED,
     COLOR_SPACE_2020_RGB_FULLRANGE,
     COLOR_SPACE_2020_RGB_LIMITEDRANGE,
     COLOR_SPACE_2020_YCBCR,
     COLOR_SPACE_2020_YCBCR_LIMITED,
+    COLOR_SPACE_CUSTOM,
     COLOR_SPACE_MAX,
 };
 
@@ -124,7 +131,7 @@ enum transfer_func_type {
     TF_TYPE_PREDEFINED,
     TF_TYPE_DISTRIBUTED_POINTS,
     TF_TYPE_BYPASS,
-    TF_TYPE_HWPWL
+    TF_TYPE_HWPWL,
 };
 
 enum cm_type {
@@ -149,11 +156,19 @@ struct transfer_func_distributed_points {
     uint16_t x_point_at_y1_blue;
 };
 
+struct cache_info {
+    enum color_transfer_func tf;
+    enum cm_type             cm_gamma_type;
+    struct fixed31_32        x_scale;
+    struct fixed31_32        y_scale;
+    struct fixed31_32        y_bias;
+};
+
 struct transfer_func {
     enum transfer_func_type  type;
     enum color_transfer_func tf;
     enum cm_type             cm_gamma_type;
-    struct fixed31_32        start_base; //Used to clamp curve start
+    struct fixed31_32        start_base; // Used to clamp curve start
 
     /* FP16 1.0 reference level in nits, default is 80 nits, only for PQ*/
     uint32_t sdr_ref_white_level;
@@ -161,7 +176,13 @@ struct transfer_func {
         struct pwl_params                       pwl;
         struct transfer_func_distributed_points tf_pts;
     };
-    bool use_pre_calculated_table;
+
+    // the followings are for optimization: skip if no change
+    bool dirty[MAX_INPUT_PIPE];       /*< indicate this object is updated or not */
+    struct config_cache
+        config_cache[MAX_INPUT_PIPE]; /*< used by the hw hook layer to do the caching */
+
+    struct cache_info cache_info[MAX_INPUT_PIPE];
 };
 
 enum color_white_point_type {
@@ -215,8 +236,9 @@ struct color_gamut_data {
 
 union vpe_3dlut_state {
     struct {
-        uint32_t initialized : 1; /*if 3dlut is went through color module for initialization */
-        uint32_t reserved    : 15;
+        uint32_t initialized : 1; /*< if 3dlut is went through color module for initialization */
+        uint32_t is_dma   : 1;
+        uint32_t reserved : 14;
     } bits;
     uint32_t raw;
 };
@@ -226,6 +248,22 @@ struct vpe_3dlut {
     struct tetrahedral_params lut_3d;
     struct fixed31_32         hdr_multiplier;
     union vpe_3dlut_state     state;
+    struct {
+        enum vpe_3dlut_mem_format format;
+        enum vpe_3dlut_mem_layout layout;
+        enum vpe_3dlut_addr_mode  addr_mode;
+        enum vpe_3dlut_crossbar   crossbar_r;
+        enum vpe_3dlut_crossbar   crossbar_g;
+        enum vpe_3dlut_crossbar   crossbar_b;
+    } dma_params;
+
+    // the followings are for optimization: skip if no change
+    bool                dirty[MAX_3DLUT];        /*< indicate this object is updated or not */
+    struct config_cache config_cache[MAX_3DLUT]; /*< used by the hw hook layer to do the caching */
+
+    struct {
+        uint64_t uid_3dlut; /*< UID for current 3D LUT params */
+    } cache_info[MAX_3DLUT];
 };
 
 enum vpe_status vpe_color_update_color_space_and_tf(
@@ -248,14 +286,37 @@ void vpe_convert_full_range_color_enum(enum color_space *cs);
 enum vpe_status vpe_color_update_whitepoint(
     const struct vpe_priv *vpe_priv, const struct vpe_build_param *param);
 
-enum vpe_status vpe_color_tm_update_hdr_mult(uint16_t shaper_in_exp_max, uint32_t peak_white,
-    struct fixed31_32 *hdr_multiplier, bool enable_3dlut);
+enum vpe_status vpe_color_tm_update_hdr_mult(
+    uint32_t peak_white, struct fixed31_32 *hdr_multiplier, bool enable_3dlut, bool is_fp16);
 
-enum vpe_status vpe_color_update_shaper(
-    uint16_t shaper_in_exp_max, struct transfer_func *shaper_func, bool enable_3dlut);
+enum vpe_status vpe_color_build_shaper_cs(const struct vpe_tonemap_params *tm_params,
+    struct vpe_surface_info *surface_info, struct vpe_color_space *tm_out_cs);
+
+enum vpe_status vpe_color_update_shaper(const struct vpe_priv *vpe_priv, uint16_t shaper_in_exp_max,
+    struct stream_ctx *stream_ctx, enum color_transfer_func tf_in_3dlut, bool enable_3dlut);
 
 enum vpe_status vpe_color_build_tm_cs(const struct vpe_tonemap_params *tm_params,
-    struct vpe_surface_info surface_info, struct vpe_color_space *vcs);
+    const struct vpe_surface_info *surface_info, struct vpe_color_space *vcs);
+
+enum vpe_status vpe_color_update_3dlut(
+    struct vpe_priv *vpe_priv, struct stream_ctx *stream_ctx, bool enable_3dlut);
+
+bool vpe_color_update_regamma_tf(struct vpe_priv *vpe_priv,
+    enum color_transfer_func output_transfer_function, struct fixed31_32 x_scale,
+    struct fixed31_32 y_scale, struct fixed31_32 y_bias, bool can_bypass,
+    struct transfer_func *output_tf);
+
+bool vpe_color_update_degamma_tf(struct vpe_priv *vpe_priv, enum color_transfer_func color_input_tf,
+    struct fixed31_32 x_scale, struct fixed31_32 y_scale, struct fixed31_32 y_bias, bool can_bypass,
+    struct transfer_func *input_tf);
+
+enum color_range_type vpe_get_range_type(
+    enum color_space color_space, enum vpe_surface_pixel_format format);
+
+enum vpe_status vpe_color_setup_dma_lut(
+    struct vpe_3dlut *lut3d_func, struct stream_ctx *stream_ctx);
+
+enum vpe_status vpe_calculate_shaper(struct vpe_priv *vpe_priv, struct stream_ctx *stream_ctx);
 
 #ifdef __cplusplus
 }

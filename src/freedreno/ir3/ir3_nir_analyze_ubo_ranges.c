@@ -1,24 +1,6 @@
 /*
  * Copyright © 2019 Google, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "compiler/nir/nir.h"
@@ -31,21 +13,17 @@ static inline bool
 get_ubo_load_range(nir_shader *nir, nir_intrinsic_instr *instr,
                    uint32_t alignment, struct ir3_ubo_range *r)
 {
-   uint32_t offset = nir_intrinsic_range_base(instr);
+   uint32_t offset =
+      nir_intrinsic_has_range_base(instr) ? nir_intrinsic_range_base(instr) : 0;
    uint32_t size = nir_intrinsic_range(instr);
-
-   if (instr->intrinsic == nir_intrinsic_load_global_ir3) {
-      offset *= 4;
-      size *= 4;
-   }
 
    /* If the offset is constant, the range is trivial (and NIR may not have
     * figured it out).
     */
    if (nir_src_is_const(instr->src[1])) {
       offset = nir_src_as_uint(instr->src[1]);
-      if (instr->intrinsic == nir_intrinsic_load_global_ir3)
-         offset *= 4;
+      if (nir_intrinsic_has_offset_shift(instr))
+         offset <<= nir_intrinsic_offset_shift(instr);
       size = nir_intrinsic_dest_components(instr) * 4;
    }
 
@@ -54,7 +32,7 @@ get_ubo_load_range(nir_shader *nir, nir_intrinsic_instr *instr,
       return false;
 
    r->start = ROUND_DOWN_TO(offset, alignment * 16);
-   r->end = ALIGN(offset + size, alignment * 16);
+   r->end = align(offset + size, alignment * 16);
 
    return true;
 }
@@ -62,7 +40,7 @@ get_ubo_load_range(nir_shader *nir, nir_intrinsic_instr *instr,
 static bool
 get_ubo_info(nir_intrinsic_instr *instr, struct ir3_ubo_info *ubo)
 {
-   if (instr->intrinsic == nir_intrinsic_load_global_ir3) {
+   if (instr->intrinsic == nir_intrinsic_load_global_offset) {
       ubo->global_base = instr->src[0].ssa;
       ubo->block = 0;
       ubo->bindless_base = 0;
@@ -208,22 +186,22 @@ gather_ubo_ranges(nir_shader *nir, nir_intrinsic_instr *instr,
  * loads with the same base, but different constant offset, ie:
  *
  *    vec1 32 ssa_33 = iadd ssa_base, const_offset
- *    vec4 32 ssa_34 = intrinsic load_uniform (ssa_33) (base=N, 0, 0)
+ *    vec4 32 ssa_34 = intrinsic load_const_ir3 (ssa_33) (base=N, 0, 0)
  *
  * Detect this, and peel out the const_offset part, to end up with:
  *
- *    vec4 32 ssa_34 = intrinsic load_uniform (ssa_base) (base=N+const_offset,
+ *    vec4 32 ssa_34 = intrinsic load_const_ir3 (ssa_base) (base=N+const_offset,
  * 0, 0)
  *
  * Or similarly:
  *
  *    vec1 32 ssa_33 = imad24_ir3 a, b, const_offset
- *    vec4 32 ssa_34 = intrinsic load_uniform (ssa_33) (base=N, 0, 0)
+ *    vec4 32 ssa_34 = intrinsic load_const_ir3 (ssa_33) (base=N, 0, 0)
  *
  * Can be converted to:
  *
  *    vec1 32 ssa_base = imul24 a, b
- *    vec4 32 ssa_34 = intrinsic load_uniform (ssa_base) (base=N+const_offset,
+ *    vec4 32 ssa_34 = intrinsic load_const_ir3 (ssa_base) (base=N+const_offset,
  * 0, 0)
  *
  * This gives the other opt passes something much easier to work
@@ -232,10 +210,11 @@ gather_ubo_ranges(nir_shader *nir, nir_intrinsic_instr *instr,
 static void
 handle_partial_const(nir_builder *b, nir_def **srcp, int *offp)
 {
-   if ((*srcp)->parent_instr->type != nir_instr_type_alu)
+   if (!nir_def_is_alu(*srcp))
       return;
 
-   nir_alu_instr *alu = nir_instr_as_alu((*srcp)->parent_instr);
+   nir_alu_instr *alu = nir_def_as_alu((*srcp));
+   assert(alu->def.num_components == 1);
 
    if (alu->op == nir_op_imad24_ir3) {
       /* This case is slightly more complicated as we need to
@@ -256,9 +235,9 @@ handle_partial_const(nir_builder *b, nir_def **srcp, int *offp)
 
    if (nir_src_is_const(alu->src[0].src)) {
       *offp += nir_src_as_uint(alu->src[0].src);
-      *srcp = alu->src[1].src.ssa;
+      *srcp = nir_mov_alu(b, alu->src[1], 1);
    } else if (nir_src_is_const(alu->src[1].src)) {
-      *srcp = alu->src[0].src.ssa;
+      *srcp = nir_mov_alu(b, alu->src[0], 1);
       *offp += nir_src_as_uint(alu->src[1].src);
    }
 }
@@ -296,7 +275,7 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
       return false;
    }
 
-   /* We don't lower dynamic block index UBO loads to load_uniform, but we
+   /* We don't lower dynamic block index UBO loads to load_const_ir3, but we
     * could probably with some effort determine a block stride in number of
     * registers.
     */
@@ -310,29 +289,38 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
    nir_def *ubo_offset = instr->src[1].ssa;
    int const_offset = 0;
 
+   if (nir_intrinsic_has_base(instr)) {
+      const_offset = nir_intrinsic_base(instr);
+   }
+
    handle_partial_const(b, &ubo_offset, &const_offset);
 
    nir_def *uniform_offset = ubo_offset;
 
-   if (instr->intrinsic == nir_intrinsic_load_ubo) {
-      /* UBO offset is in bytes, but uniform offset is in units of
-       * dwords, so we need to divide by 4 (right-shift by 2). For ldc the
-       * offset is in units of 16 bytes, so we need to multiply by 4. And
-       * also the same for the constant part of the offset:
-       */
-      const int shift = -2;
-      nir_def *new_offset = ir3_nir_try_propagate_bit_shift(b, ubo_offset, -2);
-      if (new_offset) {
-         uniform_offset = new_offset;
-      } else {
-         uniform_offset = shift > 0
-                             ? nir_ishl_imm(b, ubo_offset, shift)
-                             : nir_ushr_imm(b, ubo_offset, -shift);
-      }
+   /* UBO/global offset is in bytes, but uniform offset is in units of
+    * dwords, so we need to divide by 4 (right-shift by 2). For ldc the
+    * offset is in units of 16 bytes, so we need to multiply by 4. And
+    * also the same for the constant part of the offset:
+    */
+   int shift = -2;
+
+   if (nir_intrinsic_has_offset_shift(instr)) {
+      unsigned offset_shift = nir_intrinsic_offset_shift(instr);
+      assert(offset_shift <= 2);
+
+      shift = -(2 - offset_shift);
+   }
+
+   nir_def *new_offset = ir3_nir_try_propagate_bit_shift(b, ubo_offset, shift);
+   if (new_offset) {
+      uniform_offset = new_offset;
+   } else {
+      uniform_offset = shift > 0 ? nir_ishl_imm(b, ubo_offset, shift)
+                                 : nir_ushr_imm(b, ubo_offset, -shift);
    }
 
    assert(!(const_offset & 0x3));
-   const_offset >>= 2;
+   const_offset >>= -shift;
 
    const int range_offset = ((int)range->offset - (int)range->start) / 4;
    const_offset += range_offset;
@@ -349,98 +337,12 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
    }
 
    nir_def *uniform =
-      nir_load_uniform(b, instr->num_components, instr->def.bit_size,
-                       uniform_offset, .base = const_offset);
+      nir_load_const_ir3(b, instr->num_components, instr->def.bit_size,
+                         uniform_offset, .base = const_offset);
 
-   nir_def_rewrite_uses(&instr->def, uniform);
-
-   nir_instr_remove(&instr->instr);
+   nir_def_replace(&instr->def, uniform);
 
    return true;
-}
-
-/* This isn't nearly as comprehensive as what's done in nir_opt_preamble, but we
- * need to hoist the load_global base into the preamble. Currently the only user
- * is turnip with inline uniforms, so we can be simple and only handle a few
- * uncomplicated intrinsics.
- *
- * TODO: Fold what this pass does into opt_preamble, which will give us a better
- * heuristic for what to push and we won't need this.
- */
-static bool
-def_is_rematerializable(nir_def *def)
-{
-   switch (def->parent_instr->type) {
-   case nir_instr_type_load_const:
-      return true;
-   case nir_instr_type_intrinsic: {
-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(def->parent_instr);
-      switch (intrin->intrinsic) {
-      case nir_intrinsic_load_ubo:
-         return def_is_rematerializable(intrin->src[0].ssa) &&
-            def_is_rematerializable(intrin->src[1].ssa);
-      case nir_intrinsic_bindless_resource_ir3:
-         return def_is_rematerializable(intrin->src[0].ssa);
-      default:
-         return false;
-      }
-   }
-   case nir_instr_type_alu: {
-      nir_alu_instr *alu = nir_instr_as_alu(def->parent_instr);
-      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
-         if (!def_is_rematerializable(alu->src[i].src.ssa))
-            return false;
-      }
-      return true;
-   }
-   default:
-      return false;
-   }
-}
-
-static nir_def *
-_rematerialize_def(nir_builder *b, struct hash_table *remap_ht,
-                   nir_def *def)
-{
-   if (_mesa_hash_table_search(remap_ht, def->parent_instr))
-      return NULL;
-
-   switch (def->parent_instr->type) {
-   case nir_instr_type_load_const:
-      break;
-   case nir_instr_type_intrinsic: {
-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(def->parent_instr);
-      for (unsigned i = 0; i < nir_intrinsic_infos[intrin->intrinsic].num_srcs;
-           i++)
-         _rematerialize_def(b, remap_ht, intrin->src[i].ssa);
-      break;
-   }
-   case nir_instr_type_alu: {
-      nir_alu_instr *alu = nir_instr_as_alu(def->parent_instr);
-      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
-         _rematerialize_def(b, remap_ht, alu->src[i].src.ssa);
-      break;
-   }
-   default:
-      unreachable("should not get here");
-   }
-
-   nir_instr *instr = nir_instr_clone_deep(b->shader, def->parent_instr,
-                                           remap_ht);
-   nir_builder_instr_insert(b, instr);
-   return nir_instr_def(instr);
-}
-
-static nir_def *
-rematerialize_def(nir_builder *b, nir_def *def)
-{
-   struct hash_table *remap_ht = _mesa_pointer_hash_table_create(NULL);
-
-   nir_def *new_def = _rematerialize_def(b, remap_ht, def);
-
-   _mesa_hash_table_destroy(remap_ht, NULL);
-
-   return new_def;
 }
 
 static bool
@@ -468,7 +370,9 @@ rematerialize_load_global_bases(nir_shader *nir,
       if (!range->ubo.global)
          continue;
 
-      range->ubo.global_base = rematerialize_def(b, range->ubo.global_base);
+      range->ubo.global_base =
+         ir3_rematerialize_def_for_preamble(b, range->ubo.global_base, NULL,
+                                            NULL);
    }
 
    return true;
@@ -488,7 +392,9 @@ copy_global_to_uniform(nir_shader *nir, struct ir3_ubo_analysis_state *state)
       const struct ir3_ubo_range *range = &state->range[i];
       assert(range->ubo.global);
 
-      nir_def *base = rematerialize_def(b, range->ubo.global_base);
+      nir_def *base =
+         ir3_rematerialize_def_for_preamble(b, range->ubo.global_base, NULL,
+                                            NULL);
       unsigned start = range->start;
       if (start > (1 << 10)) {
          /* This is happening pretty late, so we need to add the offset
@@ -505,22 +411,12 @@ copy_global_to_uniform(nir_shader *nir, struct ir3_ubo_analysis_state *state)
       }
 
       unsigned size = (range->end - range->start);
-      for (unsigned offset = 0; offset < size; offset += 16) {
+      /* ldg.k can copy at most 256 vec4s. */
+      for (unsigned offset = 0; offset < size; offset += 256 * 16) {
          unsigned const_offset = range->offset / 4 + offset / 4;
-         if (const_offset < 256) {
-            nir_copy_global_to_uniform_ir3(b, base,
-                                           .base = start + offset,
-                                           .range_base = const_offset,
-                                           .range = 1);
-         } else {
-            /* It seems that the a1.x format doesn't work, so we need to
-             * decompose the ldg.k into ldg + stc.
-             */
-            nir_def *load =
-               nir_load_global_ir3(b, 4, 32, base,
-                                   nir_imm_int(b, (start + offset) / 4));
-            nir_store_uniform_ir3(b, load, .base = const_offset);
-         }
+         nir_copy_global_to_uniform_ir3(
+            b, base, .base = start + offset, .range_base = const_offset,
+            .range = MIN2(256, (size - offset) / 16));
       }
    }
 
@@ -528,18 +424,11 @@ copy_global_to_uniform(nir_shader *nir, struct ir3_ubo_analysis_state *state)
 }
 
 static bool
-copy_ubo_to_uniform(nir_shader *nir, const struct ir3_const_state *const_state,
-                    bool const_data_via_cp)
+copy_ubo_to_uniform(nir_shader *nir, const struct ir3_const_state *const_state)
 {
    const struct ir3_ubo_analysis_state *state = &const_state->ubo_state;
 
    if (state->num_enabled == 0)
-      return false;
-
-   if (state->num_enabled == 1 &&
-       !state->range[0].ubo.bindless &&
-       state->range[0].ubo.block == const_state->consts_ubo.idx &&
-       const_data_via_cp)
       return false;
 
    nir_function_impl *preamble = nir_shader_get_preamble(nir);
@@ -548,15 +437,6 @@ copy_ubo_to_uniform(nir_shader *nir, const struct ir3_const_state *const_state,
 
    for (unsigned i = 0; i < state->num_enabled; i++) {
       const struct ir3_ubo_range *range = &state->range[i];
-
-      /* The constant_data UBO is pushed in a different path from normal
-       * uniforms, and the state is setup earlier so it makes more sense to let
-       * the CP do it for us.
-       */
-      if (!range->ubo.bindless &&
-          range->ubo.block == const_state->consts_ubo.idx &&
-          const_data_via_cp)
-         continue;
 
       nir_def *ubo = nir_imm_int(b, range->ubo.block);
       if (range->ubo.bindless) {
@@ -593,16 +473,10 @@ instr_is_load_ubo(nir_instr *instr)
    return op == nir_intrinsic_load_ubo;
 }
 
-static bool
-instr_is_load_const(nir_instr *instr)
+bool
+ir3_nir_can_lower_to_ldg_k(nir_intrinsic_instr *intrin)
 {
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
-
-   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-   nir_intrinsic_op op = intrin->intrinsic;
-
-   if (op != nir_intrinsic_load_global_ir3)
+   if (intrin->intrinsic != nir_intrinsic_load_global_offset)
       return false;
 
    /* TODO handle non-aligned accesses */
@@ -612,6 +486,16 @@ instr_is_load_const(nir_instr *instr)
 
    enum gl_access_qualifier access = nir_intrinsic_access(intrin);
    return (access & ACCESS_NON_WRITEABLE) && (access & ACCESS_CAN_SPECULATE);
+}
+
+static bool
+instr_is_load_const(nir_instr *instr)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+   return ir3_nir_can_lower_to_ldg_k(intrin);
 }
 
 /* For now, everything we upload is accessed statically and thus will be
@@ -638,6 +522,14 @@ assign_offsets(struct ir3_ubo_analysis_state *state, unsigned start,
    state->size = offset;
 }
 
+static uint32_t
+const_align_vec4(struct ir3_compiler *compiler)
+{
+   return compiler->info->props.load_shader_consts_via_preamble
+             ? 1
+             : compiler->const_upload_unit;
+}
+
 /* Lowering to ldg to ldg.k + const uses the same infrastructure as lowering UBO
  * loads, but must be done separately because the analysis and transform must be
  * done in the same pass and we cannot reuse the main variant analysis for the
@@ -646,21 +538,26 @@ assign_offsets(struct ir3_ubo_analysis_state *state, unsigned start,
 bool
 ir3_nir_lower_const_global_loads(nir_shader *nir, struct ir3_shader_variant *v)
 {
-   struct ir3_const_state *const_state = ir3_const_state(v);
+   const struct ir3_const_state *const_state = ir3_const_state(v);
    struct ir3_compiler *compiler = v->compiler;
 
    if (ir3_shader_debug & IR3_DBG_NOUBOOPT)
       return false;
 
+   uint32_t align_vec4 = const_align_vec4(compiler);
+
    unsigned max_upload;
+   uint32_t global_offset = 0;
    if (v->binning_pass) {
-      max_upload = const_state->global_size * 16;
+      max_upload =
+         const_state->allocs.consts[IR3_CONST_ALLOC_GLOBAL].size_vec4 * 16;
+      global_offset =
+         const_state->allocs.consts[IR3_CONST_ALLOC_GLOBAL].offset_vec4 * 16;
    } else {
-      struct ir3_const_state worst_case_const_state = {
-         .preamble_size = const_state->preamble_size,
-      };
-      ir3_setup_const_state(nir, v, &worst_case_const_state);
-      max_upload = (ir3_max_const(v) - worst_case_const_state.offsets.immediate) * 16;
+      const struct ir3_const_state *const_state = ir3_const_state(v);
+      global_offset = const_state->allocs.max_const_offset_vec4 * 16;
+      max_upload =
+         ir3_const_state_get_free_space(v, const_state, 1) * 16;
    }
 
    struct ir3_ubo_analysis_state state = {};
@@ -671,16 +568,15 @@ ir3_nir_lower_const_global_loads(nir_shader *nir, struct ir3_shader_variant *v)
          nir_foreach_block (block, function->impl) {
             nir_foreach_instr (instr, block) {
                if (instr_is_load_const(instr) &&
-                   def_is_rematerializable(nir_instr_as_intrinsic(instr)->src[0].ssa))
+                   ir3_def_is_rematerializable_for_preamble(nir_instr_as_intrinsic(instr)->src[0].ssa, NULL))
                   gather_ubo_ranges(nir, nir_instr_as_intrinsic(instr), &state,
-                                    compiler->const_upload_unit,
+                                    align_vec4,
                                     &upload_remaining);
             }
          }
       }
    }
 
-   uint32_t global_offset = v->shader_options.num_reserved_user_consts * 16;
    assign_offsets(&state, global_offset, max_upload);
 
    bool progress = copy_global_to_uniform(nir, &state);
@@ -689,8 +585,7 @@ ir3_nir_lower_const_global_loads(nir_shader *nir, struct ir3_shader_variant *v)
       nir_foreach_function (function, nir) {
          if (function->impl) {
             if (function->is_preamble) {
-               nir_metadata_preserve(
-                  function->impl, nir_metadata_all);
+               nir_no_progress(function->impl);
                continue;
             }
 
@@ -701,18 +596,19 @@ ir3_nir_lower_const_global_loads(nir_shader *nir, struct ir3_shader_variant *v)
                      continue;
                   progress |= lower_ubo_load_to_uniform(
                      nir_instr_as_intrinsic(instr), &builder, &state, NULL,
-                     compiler->const_upload_unit);
+                     align_vec4);
                }
             }
 
-            nir_metadata_preserve(
-               function->impl, nir_metadata_block_index | nir_metadata_dominance);
+            nir_progress(true, function->impl, nir_metadata_control_flow);
          }
       }
    }
 
-   if (!v->binning_pass)
-      const_state->global_size = DIV_ROUND_UP(state.size, 16);
+   if (!v->binning_pass) {
+      ir3_const_alloc(&ir3_const_state_mut(v)->allocs, IR3_CONST_ALLOC_GLOBAL,
+                      DIV_ROUND_UP(state.size, 16), 1);
+   }
 
    return progress;
 }
@@ -720,23 +616,27 @@ ir3_nir_lower_const_global_loads(nir_shader *nir, struct ir3_shader_variant *v)
 void
 ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader_variant *v)
 {
-   struct ir3_const_state *const_state = ir3_const_state(v);
+   struct ir3_const_state *const_state = ir3_const_state_mut(v);
    struct ir3_ubo_analysis_state *state = &const_state->ubo_state;
    struct ir3_compiler *compiler = v->compiler;
+
+   if (compiler->gen < 6 && const_state->num_ubos > 0) {
+      uint32_t ptrs_vec4 =
+         align(const_state->num_ubos * ir3_pointer_size(compiler), 4) / 4;
+      ir3_const_reserve_space(&const_state->allocs, IR3_CONST_ALLOC_UBO_PTRS,
+                              ptrs_vec4, 1);
+   }
+
+   uint32_t align_vec4 = const_align_vec4(compiler);
 
    /* Limit our uploads to the amount of constant buffer space available in
     * the hardware, minus what the shader compiler may need for various
     * driver params.  We do this UBO-to-push-constant before the real
-    * allocation of the driver params' const space, because UBO pointers can
+    * allocation of the UBO pointers' const space, because UBO pointers can
     * be driver params but this pass usually eliminatings them.
     */
-   struct ir3_const_state worst_case_const_state = {
-      .preamble_size = const_state->preamble_size,
-      .global_size = const_state->global_size,
-   };
-   ir3_setup_const_state(nir, v, &worst_case_const_state);
    const uint32_t max_upload =
-      (ir3_max_const(v) - worst_case_const_state.offsets.immediate) * 16;
+      ir3_const_state_get_free_space(v, const_state, align_vec4) * 16;
 
    memset(state, 0, sizeof(*state));
 
@@ -752,16 +652,20 @@ ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader_variant *v)
             nir_foreach_instr (instr, block) {
                if (instr_is_load_ubo(instr))
                   gather_ubo_ranges(nir, nir_instr_as_intrinsic(instr), state,
-                                    compiler->const_upload_unit,
+                                    align_vec4,
                                     &upload_remaining);
             }
          }
       }
    }
 
-   uint32_t ubo_offset = v->shader_options.num_reserved_user_consts * 16 +
-      const_state->global_size * 16;
+   uint32_t ubo_offset = align(const_state->allocs.max_const_offset_vec4, align_vec4) * 16;
    assign_offsets(state, ubo_offset, max_upload);
+
+   uint32_t upload_vec4 = state->size / 16;
+   if (upload_vec4 > 0)
+      ir3_const_alloc(&ir3_const_state_mut(v)->allocs,
+                      IR3_CONST_ALLOC_UBO_RANGES, upload_vec4, align_vec4);
 }
 
 bool
@@ -775,6 +679,8 @@ ir3_nir_lower_ubo_loads(nir_shader *nir, struct ir3_shader_variant *v)
    const struct ir3_const_state *const_state = ir3_const_state(v);
    const struct ir3_ubo_analysis_state *state = &const_state->ubo_state;
 
+   uint32_t align_vec4 = const_align_vec4(compiler);
+
    int num_ubos = 0;
    bool progress = false;
    bool has_preamble = false;
@@ -783,7 +689,7 @@ ir3_nir_lower_ubo_loads(nir_shader *nir, struct ir3_shader_variant *v)
       if (function->impl) {
          if (function->is_preamble && push_ubos) {
             has_preamble = true;
-            nir_metadata_preserve(function->impl, nir_metadata_all);
+            nir_no_progress(function->impl);
             continue;
          }
          nir_builder builder = nir_builder_create(function->impl);
@@ -793,12 +699,11 @@ ir3_nir_lower_ubo_loads(nir_shader *nir, struct ir3_shader_variant *v)
                   continue;
                progress |= lower_ubo_load_to_uniform(
                   nir_instr_as_intrinsic(instr), &builder, state, &num_ubos,
-                  compiler->const_upload_unit);
+                  align_vec4);
             }
          }
 
-         nir_metadata_preserve(
-            function->impl, nir_metadata_block_index | nir_metadata_dominance);
+         nir_progress(true, function->impl, nir_metadata_control_flow);
       }
    }
    /* Update the num_ubos field for GL (first_ubo_is_default_ubo).  With
@@ -808,24 +713,39 @@ ir3_nir_lower_ubo_loads(nir_shader *nir, struct ir3_shader_variant *v)
    if (nir->info.first_ubo_is_default_ubo && !push_ubos && !has_preamble)
       nir->info.num_ubos = num_ubos;
 
+
+   if (!v->binning_pass) {
+      ir3_const_state_mut(v)->num_ubos = num_ubos;
+
+      if (compiler->gen < 6)
+         ir3_const_free_reserved_space(&ir3_const_state_mut(v)->allocs,
+                                       IR3_CONST_ALLOC_UBO_PTRS);
+
+      if (compiler->gen < 6 && const_state->num_ubos > 0) {
+         uint32_t upload_ptrs_vec4 =
+            align(const_state->num_ubos * ir3_pointer_size(compiler), 4) / 4;
+         ir3_const_alloc(&ir3_const_state_mut(v)->allocs,
+                         IR3_CONST_ALLOC_UBO_PTRS, upload_ptrs_vec4, 1);
+      }
+   }
+
    if (compiler->has_preamble && push_ubos)
-      progress |= copy_ubo_to_uniform(
-         nir, const_state, !compiler->load_shader_consts_via_preamble);
+      progress |= copy_ubo_to_uniform(nir, const_state);
 
    return progress;
 }
 
 static bool
-fixup_load_uniform_filter(const nir_instr *instr, const void *arg)
+fixup_load_const_ir3_filter(const nir_instr *instr, const void *arg)
 {
    if (instr->type != nir_instr_type_intrinsic)
       return false;
    return nir_instr_as_intrinsic(instr)->intrinsic ==
-          nir_intrinsic_load_uniform;
+          nir_intrinsic_load_const_ir3;
 }
 
 static nir_def *
-fixup_load_uniform_instr(struct nir_builder *b, nir_instr *instr, void *arg)
+fixup_load_const_ir3_instr(struct nir_builder *b, nir_instr *instr, void *arg)
 {
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
 
@@ -836,8 +756,9 @@ fixup_load_uniform_instr(struct nir_builder *b, nir_instr *instr, void *arg)
    const unsigned base_offset_limit = (1 << 9); /* 9 bits */
    unsigned base_offset = nir_intrinsic_base(intr);
 
-   /* Or cases were base offset is lower than the hw limit: */
-   if (base_offset < base_offset_limit)
+   /* Or cases where base offset for each component (because we scalarize the
+    * intrinsic when emitting ir3) fits in the hw limit: */
+   if (base_offset <= base_offset_limit - intr->num_components)
       return NULL;
 
    b->cursor = nir_before_instr(instr);
@@ -846,9 +767,9 @@ fixup_load_uniform_instr(struct nir_builder *b, nir_instr *instr, void *arg)
 
    /* We'd like to avoid a sequence like:
     *
-    *   vec4 32 ssa_18 = intrinsic load_uniform (ssa_4) (1024, 0, 0)
-    *   vec4 32 ssa_19 = intrinsic load_uniform (ssa_4) (1072, 0, 0)
-    *   vec4 32 ssa_20 = intrinsic load_uniform (ssa_4) (1120, 0, 0)
+    *   vec4 32 ssa_18 = intrinsic load_const_ir3 (ssa_4) (1024, 0, 0)
+    *   vec4 32 ssa_19 = intrinsic load_const_ir3 (ssa_4) (1072, 0, 0)
+    *   vec4 32 ssa_20 = intrinsic load_const_ir3 (ssa_4) (1120, 0, 0)
     *
     * From turning into a unique offset value (which requires reloading
     * a0.x for each instruction).  So instead of just adding the constant
@@ -858,12 +779,34 @@ fixup_load_uniform_instr(struct nir_builder *b, nir_instr *instr, void *arg)
     *
     *   vec1 32 ssa_5 = load_const (1024)
     *   vec4 32 ssa_6  = iadd ssa4_, ssa_5
-    *   vec4 32 ssa_18 = intrinsic load_uniform (ssa_5) (0, 0, 0)
-    *   vec4 32 ssa_19 = intrinsic load_uniform (ssa_5) (48, 0, 0)
-    *   vec4 32 ssa_20 = intrinsic load_uniform (ssa_5) (96, 0, 0)
+    *   vec4 32 ssa_18 = intrinsic load_const_ir3 (ssa_5) (0, 0, 0)
+    *   vec4 32 ssa_19 = intrinsic load_const_ir3 (ssa_5) (48, 0, 0)
+    *   vec4 32 ssa_20 = intrinsic load_const_ir3 (ssa_5) (96, 0, 0)
     */
    unsigned new_base_offset = base_offset % base_offset_limit;
 
+   /* If the vector components straddle the hardware limit, we scalarize the
+    * intrinsic so that nir_opt_offsets is able to see which offset additions
+    * for individual components are safe to fold back into the base offset.
+    */
+   if (new_base_offset > base_offset_limit - intr->num_components) {
+      nir_def *results[NIR_MAX_VEC_COMPONENTS];
+      for (unsigned i = 0; i < intr->def.num_components; i++) {
+         unsigned component_base_offset = base_offset + i;
+         new_base_offset = component_base_offset % base_offset_limit;
+
+         results[i] = nir_load_const_ir3(
+            b, 1, intr->def.bit_size,
+            nir_iadd_imm(b, offset, component_base_offset - new_base_offset),
+            .base = new_base_offset);
+      }
+
+      nir_def *result = nir_vec(b, results, intr->def.num_components);
+
+      return result;
+   }
+
+   /* All components fit, just update the existing intrinsic: */
    nir_intrinsic_set_base(intr, new_base_offset);
    offset = nir_iadd_imm(b, offset, base_offset - new_base_offset);
 
@@ -881,15 +824,15 @@ fixup_load_uniform_instr(struct nir_builder *b, nir_instr *instr, void *arg)
  * thing, so we can actually know if it is an indirect uniform offset or not.
  */
 bool
-ir3_nir_fixup_load_uniform(nir_shader *nir)
+ir3_nir_fixup_load_const_ir3(nir_shader *nir)
 {
-   return nir_shader_lower_instructions(nir, fixup_load_uniform_filter,
-                                        fixup_load_uniform_instr, NULL);
+   return nir_shader_lower_instructions(nir, fixup_load_const_ir3_filter,
+                                        fixup_load_const_ir3_instr, NULL);
 }
 static nir_def *
 ir3_nir_lower_load_const_instr(nir_builder *b, nir_instr *in_instr, void *data)
 {
-   struct ir3_const_state *const_state = data;
+   struct ir3_shader_variant *v = data;
    nir_intrinsic_instr *instr = nir_instr_as_intrinsic(in_instr);
 
    unsigned num_components = instr->num_components;
@@ -905,7 +848,7 @@ ir3_nir_lower_load_const_instr(nir_builder *b, nir_instr *in_instr, void *data)
       bit_size = 32;
    }
    unsigned base = nir_intrinsic_base(instr);
-   nir_def *index = ir3_get_driver_ubo(b, &const_state->consts_ubo);
+   nir_def *index = ir3_get_driver_consts_ubo(b, v);
    nir_def *offset =
       nir_iadd_imm(b, instr->src[0].ssa, base);
 
@@ -937,11 +880,9 @@ ir3_lower_load_const_filter(const nir_instr *instr, const void *data)
 bool
 ir3_nir_lower_load_constant(nir_shader *nir, struct ir3_shader_variant *v)
 {
-   struct ir3_const_state *const_state = ir3_const_state(v);
-
    bool progress = nir_shader_lower_instructions(
       nir, ir3_lower_load_const_filter, ir3_nir_lower_load_const_instr,
-      const_state);
+      v);
 
    if (progress) {
       struct ir3_compiler *compiler = v->compiler;
@@ -954,6 +895,9 @@ ir3_nir_lower_load_constant(nir_shader *nir, struct ir3_shader_variant *v)
                compiler->const_upload_unit * 4 * sizeof(uint32_t));
       v->constant_data = rzalloc_size(v, v->constant_data_size);
       memcpy(v->constant_data, nir->constant_data, nir->constant_data_size);
+
+      const struct ir3_const_state *const_state = ir3_const_state(v);
+      ir3_update_driver_ubo(nir, &const_state->consts_ubo, "$consts");
    }
 
    return progress;

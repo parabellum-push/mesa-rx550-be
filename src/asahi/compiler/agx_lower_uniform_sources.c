@@ -30,6 +30,11 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
       assert(!(src_index == 2 && high) && "texture heap always low");
       return !high && (src_index == 1 || src_index == 2);
 
+   case AGX_OPCODE_TEX_STATE_STORE:
+   case AGX_OPCODE_SAMPLER_STATE_STORE:
+      assert(!high && "texture heap always low");
+      return !high && src_index == 0;
+
    case AGX_OPCODE_DEVICE_LOAD:
       return src_index == 0 && !high;
    case AGX_OPCODE_DEVICE_STORE:
@@ -41,10 +46,10 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
       return src_index == 1;
    case AGX_OPCODE_IMAGE_WRITE:
       return src_index == 3;
+   case AGX_OPCODE_BLOCK_IMAGE_STORE:
    case AGX_OPCODE_ZS_EMIT:
    case AGX_OPCODE_ST_TILE:
    case AGX_OPCODE_LD_TILE:
-   case AGX_OPCODE_BLOCK_IMAGE_STORE:
    case AGX_OPCODE_UNIFORM_STORE:
    case AGX_OPCODE_ST_VARY:
    case AGX_OPCODE_LOCAL_ATOMIC:
@@ -53,7 +58,17 @@ agx_instr_accepts_uniform(enum agx_opcode op, unsigned src_index,
    case AGX_OPCODE_ITERPROJ:
    case AGX_OPCODE_STACK_LOAD:
    case AGX_OPCODE_STACK_STORE:
+   case AGX_OPCODE_BALLOT:
+   case AGX_OPCODE_FCMP_BALLOT:
+   case AGX_OPCODE_ICMP_BALLOT:
+   case AGX_OPCODE_QUAD_BALLOT:
+   case AGX_OPCODE_FCMP_QUAD_BALLOT:
+   case AGX_OPCODE_ICMP_QUAD_BALLOT:
       return false;
+   case AGX_OPCODE_EXPORT:
+   case AGX_OPCODE_PHI:
+      /* We would fail validation otherwise */
+      return true;
    default:
       return !is_64;
    }

@@ -76,6 +76,21 @@ util_range_add(struct pipe_resource *resource, struct util_range *range,
    }
 }
 
+static inline void
+u_range_copy(struct pipe_resource *resource, struct util_range *dst, struct util_range *src)
+{
+   if (resource->flags & PIPE_RESOURCE_FLAG_SINGLE_THREAD_USE ||
+       p_atomic_read(&resource->screen->num_contexts) == 1) {
+      dst->start = src->start;
+      dst->end = src->end;
+   } else {
+      simple_mtx_lock(&src->write_mutex);
+      dst->start = src->start;
+      dst->end = src->end;
+      simple_mtx_unlock(&src->write_mutex);
+   }
+}
+
 static inline bool
 util_ranges_intersect(const struct util_range *range,
                       unsigned start, unsigned end)
@@ -83,6 +98,12 @@ util_ranges_intersect(const struct util_range *range,
    return MAX2(start, range->start) < MIN2(end, range->end);
 }
 
+static inline bool
+util_ranges_covered(const struct util_range *range,
+                    unsigned start, unsigned end)
+{
+   return (start <= range->start) && (end >= range->end);
+}
 
 /* Init/deinit */
 

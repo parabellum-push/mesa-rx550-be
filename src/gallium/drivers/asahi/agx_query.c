@@ -11,15 +11,13 @@
 #include "util/ralloc.h"
 #include "util/u_dump.h"
 #include "util/u_inlines.h"
-#include "util/u_prim.h"
+#include "agx_abi.h"
 #include "agx_bo.h"
 #include "agx_device.h"
 #include "agx_state.h"
-#include "nir.h"
-#include "nir_builder.h"
-#include "nir_builder_opcodes.h"
-#include "pool.h"
-#include "shader_enums.h"
+#include "libagx.h"
+#include "libagx_dgc.h"
+#include "libagx_shaders.h"
 
 static bool
 is_occlusion(struct agx_query *query)
@@ -46,10 +44,9 @@ is_timer(struct agx_query *query)
    }
 }
 
-#define AGX_MAX_OCCLUSION_QUERIES (65536)
-
 struct agx_oq_heap {
    /* The GPU allocation itself */
+   struct agx_device *dev;
    struct agx_bo *bo;
 
    /* Bitset of query indices that are in use */
@@ -60,7 +57,7 @@ static void
 agx_destroy_oq_heap(void *heap_)
 {
    struct agx_oq_heap *heap = heap_;
-   agx_bo_unreference(heap->bo);
+   agx_bo_unreference(heap->dev, heap->bo);
 }
 
 static struct agx_oq_heap *
@@ -69,9 +66,10 @@ agx_alloc_oq_heap(struct agx_context *ctx)
    struct agx_oq_heap *heap = rzalloc(ctx, struct agx_oq_heap);
    ralloc_set_destructor(heap, agx_destroy_oq_heap);
 
-   heap->bo = agx_bo_create(agx_device(ctx->base.screen),
-                            AGX_MAX_OCCLUSION_QUERIES * sizeof(uint64_t),
-                            AGX_BO_WRITEBACK, "Occlusion query heap");
+   heap->dev = agx_device(ctx->base.screen);
+   heap->bo =
+      agx_bo_create(heap->dev, AGX_MAX_OCCLUSION_QUERIES * sizeof(uint64_t), 0,
+                    AGX_BO_WRITEBACK, "Occlusion query heap");
 
    /* At the start, everything is available */
    BITSET_ONES(heap->available);
@@ -105,8 +103,8 @@ agx_alloc_oq(struct agx_context *ctx)
    unsigned offset = index * sizeof(uint64_t);
 
    return (struct agx_ptr){
-      (uint8_t *)heap->bo->ptr.cpu + offset,
-      heap->bo->ptr.gpu + offset,
+      (uint8_t *)agx_bo_map(heap->bo) + offset,
+      heap->bo->va->addr + offset,
    };
 }
 
@@ -115,7 +113,7 @@ agx_oq_index(struct agx_context *ctx, struct agx_query *q)
 {
    assert(is_occlusion(q));
 
-   return (q->ptr.gpu - ctx->oq->bo->ptr.gpu) / sizeof(uint64_t);
+   return (q->ptr.gpu - ctx->oq->bo->va->addr) / sizeof(uint64_t);
 }
 
 static void
@@ -139,7 +137,7 @@ agx_get_occlusion_heap(struct agx_batch *batch)
    struct agx_bo *bo = batch->ctx->oq->bo;
 
    if (agx_batch_uses_bo(batch, bo))
-      return bo->ptr.gpu;
+      return bo->va->addr;
    else
       return 0;
 }
@@ -166,8 +164,11 @@ agx_create_query(struct pipe_context *ctx, unsigned query_type, unsigned index)
        * tracking / reference counting to deal with lifetimes.
        */
       query->bo = agx_bo_create(agx_device(ctx->screen), sizeof(uint64_t) * 2,
-                                AGX_BO_WRITEBACK, "Query");
-      query->ptr = query->bo->ptr;
+                                0, AGX_BO_WRITEBACK, "Query");
+      query->ptr = (struct agx_ptr){
+         .gpu = query->bo->va->addr,
+         .cpu = agx_bo_map(query->bo),
+      };
    }
 
    if (!query->ptr.gpu) {
@@ -218,6 +219,7 @@ agx_destroy_query(struct pipe_context *pctx, struct pipe_query *pquery)
 {
    struct agx_context *ctx = agx_context(pctx);
    struct agx_query *query = (struct agx_query *)pquery;
+   struct agx_device *dev = agx_device(pctx->screen);
 
    /* We don't reference count the occlusion query allocations, so we need to
     * sync writers when destroying so we can freely write from the CPU after
@@ -230,7 +232,7 @@ agx_destroy_query(struct pipe_context *pctx, struct pipe_query *pquery)
       sync_query_writers(ctx, query, "Occlusion query destroy");
       agx_free_oq(ctx, query);
    } else {
-      agx_bo_unreference(query->bo);
+      agx_bo_unreference(dev, query->bo);
    }
 
    free(pquery);
@@ -395,11 +397,11 @@ agx_get_query_result(struct pipe_context *pctx, struct pipe_query *pquery,
 
    switch (classify_query_type(query->type)) {
    case QUERY_COPY_BOOL32:
-      vresult->b = value;
+      vresult->u64 = ((uint32_t)value) != 0;
       return true;
 
    case QUERY_COPY_BOOL64:
-      vresult->b = value > 0;
+      vresult->u64 = value != 0;
       return true;
 
    case QUERY_COPY_NORMAL:
@@ -407,16 +409,16 @@ agx_get_query_result(struct pipe_context *pctx, struct pipe_query *pquery,
       return true;
 
    case QUERY_COPY_TIMESTAMP:
-      vresult->u64 = agx_gpu_time_to_ns(dev, value);
+      vresult->u64 = agx_gpu_timestamp_to_ns(dev, value);
       return true;
 
    case QUERY_COPY_TIME_ELAPSED:
       /* end - begin */
-      vresult->u64 = agx_gpu_time_to_ns(dev, ptr[0] - ptr[1]);
+      vresult->u64 = agx_gpu_timestamp_to_ns(dev, ptr[0] - ptr[1]);
       return true;
 
    default:
-      unreachable("Other queries not yet supported");
+      UNREACHABLE("Other queries not yet supported");
    }
 }
 
@@ -443,15 +445,6 @@ agx_get_query_result_resource_cpu(struct agx_context *ctx,
          agx_get_query_result(&ctx->base, (void *)query, true, &result);
 
       assert(ready);
-
-      switch (classify_query_type(query->type)) {
-      case QUERY_COPY_BOOL32:
-      case QUERY_COPY_BOOL64:
-         result.u64 = result.b;
-         break;
-      default:
-         break;
-      }
    }
 
    /* Clamp to type, arb_query_buffer_object-qbo tests */
@@ -465,44 +458,6 @@ agx_get_query_result_resource_cpu(struct agx_context *ctx,
 
    pipe_buffer_write(&ctx->base, resource, offset,
                      result_type_size(result_type), &result.u64);
-}
-
-struct query_copy_key {
-   enum pipe_query_value_type result;
-   enum query_copy_type query;
-};
-
-static void
-agx_nir_query_copy(nir_builder *b, const void *key_)
-{
-   const struct query_copy_key *key = key_;
-   b->shader->info.num_ubos = 1;
-
-   nir_def *params =
-      nir_load_ubo(b, 2, 64, nir_imm_int(b, 0), nir_imm_int(b, 0),
-                   .align_mul = 8, .range = 8);
-
-   nir_def *value =
-      nir_load_global_constant(b, nir_channel(b, params, 0), 8, 1, 64);
-
-   if (key->query == QUERY_COPY_BOOL32 || key->query == QUERY_COPY_BOOL64) {
-      if (key->query == QUERY_COPY_BOOL32)
-         value = nir_u2u32(b, value);
-
-      value = nir_u2u64(b, nir_ine_imm(b, value, 0));
-   }
-
-   if (key->result == PIPE_QUERY_TYPE_U32) {
-      value =
-         nir_u2u32(b, nir_umin(b, value, nir_imm_int64(b, u_uintN_max(32))));
-   } else if (key->result == PIPE_QUERY_TYPE_I32) {
-      value =
-         nir_u2u32(b, nir_iclamp(b, value, nir_imm_int64(b, u_intN_min(32)),
-                                 nir_imm_int64(b, u_intN_max(32))));
-   }
-
-   nir_store_global(b, nir_channel(b, params, 1), result_type_size(key->result),
-                    value, nir_component_mask(1));
 }
 
 static bool
@@ -525,42 +480,21 @@ agx_get_query_result_resource_gpu(struct agx_context *ctx,
    flush_query_writers(ctx, query, util_str_query_type(query->type, true));
 
    struct agx_resource *rsrc = agx_resource(prsrc);
-
-   struct query_copy_key key = {
-      .result = result_type,
-      .query = classify_query_type(query->type),
-   };
-
-   struct agx_compiled_shader *cs =
-      agx_build_meta_shader(ctx, agx_nir_query_copy, &key, sizeof(key));
+   enum query_copy_type copy_type = classify_query_type(query->type);
 
    struct agx_batch *batch = agx_get_compute_batch(ctx);
    agx_batch_init_state(batch);
    agx_dirty_all(ctx);
 
-   /* Save cb */
-   struct agx_stage *stage = &ctx->stage[PIPE_SHADER_COMPUTE];
-   struct pipe_constant_buffer saved_cb = {NULL};
-   pipe_resource_reference(&saved_cb.buffer, stage->cb[0].buffer);
-   memcpy(&saved_cb, &stage->cb[0], sizeof(struct pipe_constant_buffer));
-
    /* Set params */
-   uint64_t params[2] = {query->ptr.gpu, rsrc->bo->ptr.gpu + offset};
    agx_batch_writes_range(batch, rsrc, offset, result_type_size(result_type));
 
-   struct pipe_constant_buffer cb = {
-      .buffer_size = sizeof(params),
-      .user_buffer = &params,
-   };
-   ctx->base.set_constant_buffer(&ctx->base, PIPE_SHADER_COMPUTE, 0, false,
-                                 &cb);
+   unsigned bool_size = copy_type == QUERY_COPY_BOOL64   ? 8
+                        : copy_type == QUERY_COPY_BOOL32 ? 4
+                                                         : 0;
 
-   struct pipe_grid_info grid = {.block = {1, 1, 1}, .grid = {1, 1, 1}};
-   agx_launch(batch, &grid, cs, NULL, PIPE_SHADER_COMPUTE);
-
-   /* take_ownership=true so do not unreference */
-   ctx->base.set_constant_buffer(&ctx->base, PIPE_SHADER_COMPUTE, 0, true,
-                                 &saved_cb);
+   libagx_copy_query_gl(batch, agx_1d(1), AGX_BARRIER_ALL, query->ptr.gpu,
+                        agx_map_gpu(rsrc) + offset, result_type, bool_size);
    return true;
 }
 
@@ -607,7 +541,7 @@ agx_batch_add_timestamp_query(struct agx_batch *batch, struct agx_query *q)
 {
    if (q) {
       agx_add_query_to_batch(batch, q);
-      util_dynarray_append(&batch->timestamps, struct agx_ptr, q->ptr);
+      util_dynarray_append(&batch->timestamps, q->ptr);
    }
 }
 
@@ -621,8 +555,12 @@ agx_get_oq_index(struct agx_batch *batch, struct agx_query *query)
 uint64_t
 agx_get_query_address(struct agx_batch *batch, struct agx_query *query)
 {
-   agx_add_query_to_batch(batch, query);
-   return query->ptr.gpu;
+   if (query) {
+      agx_add_query_to_batch(batch, query);
+      return query->ptr.gpu;
+   } else {
+      return AGX_SCRATCH_PAGE_ADDRESS;
+   }
 }
 
 void

@@ -1,26 +1,8 @@
 /* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
 
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -36,8 +18,14 @@
 
 #ifdef ENABLE_SCRIPTING
 
+struct rnn;
+struct rnndomain;
+
 /* called at start to load the script: */
 int script_load(const char *file);
+/* called at start to load internal pkt handlers: */
+void internal_lua_pkt_handler_load(void);
+void internal_lua_pkt_handler_init_rnn(struct rnn *rnn);
 
 /* called at start of each cmdstream file: */
 void script_start_cmdstream(const char *name);
@@ -48,12 +36,24 @@ void script_start_cmdstream(const char *name);
 __attribute__((weak))
 void script_draw(const char *primtype, uint32_t nindx);
 
-struct rnn;
-struct rnndomain;
 __attribute__((weak))
-void script_packet(uint32_t *dwords, uint32_t sizedwords,
+void script_packet(const uint32_t *dwords, uint32_t sizedwords,
                    struct rnn *rnn,
                    struct rnndomain *dom);
+
+__attribute__((weak))
+const char * internal_packet(const uint32_t *dwords, uint32_t sizedwords,
+                             struct rnn *rnn,
+                             struct rnndomain *dom);
+
+__attribute__((weak))
+bool script_show_descriptor(const uint32_t *dwords,
+                            uint32_t sizedwords,
+                            int base, int idx,
+                            const char *type,
+                            const char *pm4_pkt,
+                            struct rnn *rnn,
+                            struct rnndomain *dom);
 
 /* maybe at some point it is interesting to add additional script
  * hooks for CP_EVENT_WRITE, etc?
@@ -67,6 +67,7 @@ void script_end_submit(void);
 
 /* called after last cmdstream file: */
 void script_finish(void);
+void internal_lua_pkt_handler_finish(void);
 
 #else
 // TODO no-op stubs..

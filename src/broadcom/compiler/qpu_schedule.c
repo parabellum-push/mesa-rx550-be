@@ -86,6 +86,7 @@ struct schedule_state {
         struct schedule_node *last_rtop;
         struct schedule_node *last_unifa;
         struct schedule_node *last_setmsf;
+        struct schedule_node *last_nn_mode;
         enum direction dir;
         /* Estimated cycle when the current instruction would start. */
         uint32_t time;
@@ -201,6 +202,27 @@ tmu_write_is_sequence_terminator(uint32_t waddr)
 }
 
 static bool
+is_tmu_sequence_terminator(struct qinst *inst)
+{
+        if (inst->qpu.type != V3D_QPU_INSTR_TYPE_ALU)
+                return false;
+
+        if (inst->qpu.alu.add.op != V3D_QPU_A_NOP) {
+                if (!inst->qpu.alu.add.magic_write)
+                        return false;
+                return tmu_write_is_sequence_terminator(inst->qpu.alu.add.waddr);
+        }
+
+        if (inst->qpu.alu.mul.op != V3D_QPU_M_NOP) {
+                if (!inst->qpu.alu.mul.magic_write)
+                        return false;
+                return tmu_write_is_sequence_terminator(inst->qpu.alu.mul.waddr);
+        }
+
+        return false;
+}
+
+static bool
 can_reorder_tmu_write(const struct v3d_device_info *devinfo, uint32_t waddr)
 {
         if (tmu_write_is_sequence_terminator(waddr))
@@ -272,7 +294,7 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
                         break;
 
                 default:
-                        fprintf(stderr, "Unknown waddr %d\n", waddr);
+                        mesa_loge("Unknown waddr %d", waddr);
                         abort();
                 }
         }
@@ -397,6 +419,16 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
                 add_read_dep(state, state->last_setmsf, n);
                 break;
 
+        case V3D_QPU_A_SETNNMODE_UU:
+        case V3D_QPU_A_SETNNMODE_SU:
+        case V3D_QPU_A_SETNNMODE_US:
+        case V3D_QPU_A_SETNNMODE_SS:
+                /* SETNNMODE sets the sign nnmode register. It must be set
+                 * before any v8dot that depends on the mode setting. It
+                 * applies from the current instruction.
+                 */
+                add_write_dep(state, &state->last_nn_mode, n);
+                break;
         default:
                 break;
         }
@@ -405,11 +437,21 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
         case V3D_QPU_M_MULTOP:
         case V3D_QPU_M_UMUL24:
                 /* MULTOP sets rtop, and UMUL24 implicitly reads rtop and
-                 * resets it to 0.  We could possibly reorder umul24s relative
-                 * to each other, but for now just keep all the MUL parts in
-                 * order.
+                 * resets it to 0.
                  */
                 add_write_dep(state, &state->last_rtop, n);
+                break;
+        case V3D_QPU_M_UMUL24_RTOP0:
+                /* Read dependency is only needed to avoid inserting an
+                 * UMUL24_RTOP0 in the middle of a MULTOP+UMUL24 sequence.
+                 */
+                add_read_dep(state, state->last_rtop, n);
+                break;
+        case V3D_QPU_M_V8DOT:
+                /* V8DOT reads the NN mode to determine sign interpretation
+                 * of the 8-bit dot product inputs.
+                 */
+                add_read_dep(state, state->last_nn_mode, n);
                 break;
         default:
                 break;
@@ -945,13 +987,13 @@ qpu_raddrs_used(const struct v3d_qpu_instr *a,
 
         uint64_t raddrs_used = 0;
         if (v3d_qpu_uses_mux(a, V3D_QPU_MUX_A))
-                raddrs_used |= (1ll << a->raddr_a);
+                raddrs_used |= (UINT64_C(1) << a->raddr_a);
         if (!a->sig.small_imm_b && v3d_qpu_uses_mux(a, V3D_QPU_MUX_B))
-                raddrs_used |= (1ll << a->raddr_b);
+                raddrs_used |= (UINT64_C(1) << a->raddr_b);
         if (v3d_qpu_uses_mux(b, V3D_QPU_MUX_A))
-                raddrs_used |= (1ll << b->raddr_a);
+                raddrs_used |= (UINT64_C(1) << b->raddr_a);
         if (!b->sig.small_imm_b && v3d_qpu_uses_mux(b, V3D_QPU_MUX_B))
-                raddrs_used |= (1ll << b->raddr_b);
+                raddrs_used |= (UINT64_C(1) << b->raddr_b);
 
         return raddrs_used;
 }
@@ -1014,7 +1056,7 @@ qpu_merge_raddrs(struct v3d_qpu_instr *result,
                 return true;
 
         int raddr_a = ffsll(raddrs_used) - 1;
-        raddrs_used &= ~(1ll << raddr_a);
+        raddrs_used &= ~(UINT64_C(1) << raddr_a);
         result->raddr_a = raddr_a;
 
         if (!result->sig.small_imm_b) {
@@ -1085,7 +1127,7 @@ add_op_as_mul_op(enum v3d_qpu_add_op op)
         case V3D_QPU_A_SUB:
                 return V3D_QPU_M_SUB;
         default:
-                unreachable("unexpected add opcode");
+                UNREACHABLE("unexpected add opcode");
         }
 }
 
@@ -1150,7 +1192,7 @@ mul_op_as_add_op(enum v3d_qpu_mul_op op)
         case V3D_QPU_M_FMOV:
                 return V3D_QPU_A_FMOV;
         default:
-                unreachable("unexpected mov opcode");
+                UNREACHABLE("unexpected mov opcode");
         }
 }
 
@@ -1533,6 +1575,7 @@ retry:
                          * this aspect in the compiler yet.
                          */
                         if (prev_inst->inst->qpu.sig.ldtmu &&
+                            is_tmu_sequence_terminator(n->inst) &&
                             !scoreboard->first_ldtmu_after_thrsw &&
                             (scoreboard->pending_ldtmu_count +
                              n->inst->ldtmu_count > 16 / c->threads)) {
@@ -1753,9 +1796,9 @@ static void
 dump_state(const struct v3d_device_info *devinfo, struct dag *dag)
 {
         list_for_each_entry(struct schedule_node, n, &dag->heads, dag.link) {
-                fprintf(stderr, "         t=%4d: ", n->unblocked_time);
-                v3d_qpu_dump(devinfo, &n->inst->qpu);
-                fprintf(stderr, "\n");
+                const char *str = v3d_qpu_decode(devinfo, &n->inst->qpu);
+                mesa_logd("         t=%4d: %s", n->unblocked_time, str);
+                ralloc_free((void *)str);
 
                 util_dynarray_foreach(&n->dag.edges, struct dag_edge, edge) {
                         struct schedule_node *child =
@@ -1763,11 +1806,12 @@ dump_state(const struct v3d_device_info *devinfo, struct dag *dag)
                         if (!child)
                                 continue;
 
-                        fprintf(stderr, "                 - ");
-                        v3d_qpu_dump(devinfo, &child->inst->qpu);
-                        fprintf(stderr, " (%d parents, %c)\n",
-                                child->dag.parent_count,
-                                edge->data ? 'w' : 'r');
+                        const char *str = v3d_qpu_decode(devinfo, &child->inst->qpu);
+                        mesa_logd("                 - %s (%d parents, %c)",
+                                  str,
+                                  child->dag.parent_count,
+                                  edge->data ? 'w' : 'r');
+                        ralloc_free((void *)str);
                 }
         }
 }
@@ -2708,12 +2752,12 @@ schedule_instructions(struct v3d_compile *c,
                 struct v3d_qpu_instr *inst = &qinst->qpu;
 
                 if (debug) {
-                        fprintf(stderr, "t=%4d: current list:\n",
-                                time);
+                        mesa_logd("t=%4d: current list:",
+                                  time);
                         dump_state(devinfo, scoreboard->dag);
-                        fprintf(stderr, "t=%4d: chose:   ", time);
-                        v3d_qpu_dump(devinfo, inst);
-                        fprintf(stderr, "\n");
+                        const char *str = v3d_qpu_decode(devinfo, inst);
+                        mesa_logd("t=%4d: chose:   %s", time, str);
+                        ralloc_free((void *)str);
                 }
 
                 /* We can't mark_instruction_scheduled() the chosen inst until
@@ -2747,13 +2791,14 @@ schedule_instructions(struct v3d_compile *c,
                                         merge->inst->ldtmu_count;
 
                                 if (debug) {
-                                        fprintf(stderr, "t=%4d: merging: ",
-                                                time);
-                                        v3d_qpu_dump(devinfo, &merge->inst->qpu);
-                                        fprintf(stderr, "\n");
-                                        fprintf(stderr, "         result: ");
-                                        v3d_qpu_dump(devinfo, inst);
-                                        fprintf(stderr, "\n");
+                                        const char *strmerge = v3d_qpu_decode(devinfo, &merge->inst->qpu);
+                                        const char *strinst = v3d_qpu_decode(devinfo, inst);
+                                        mesa_logd("t=%4d: merging \"%s\" result to \"%s\"",
+                                                  time,
+                                                  strmerge,
+                                                  strinst);
+                                        ralloc_free((void *)strmerge);
+                                        ralloc_free((void *)strinst);
                                 }
 
                                 if (scoreboard->fixup_ldvary) {
@@ -2792,7 +2837,7 @@ schedule_instructions(struct v3d_compile *c,
                 }
 
                 if (debug) {
-                        fprintf(stderr, "\n");
+                        mesa_logd("\n");
                 }
 
                 /* Now that we've scheduled a new instruction, some of its
@@ -2999,16 +3044,16 @@ v3d_qpu_schedule_instructions(struct v3d_compile *c)
         scoreboard.last_implicit_rf0_write_tick = - 10;
 
         if (debug) {
-                fprintf(stderr, "Pre-schedule instructions\n");
+                mesa_logd("Pre-schedule instructions");
                 vir_for_each_block(block, c) {
-                        fprintf(stderr, "BLOCK %d\n", block->index);
+                        mesa_logd("BLOCK %d\n", block->index);
                         list_for_each_entry(struct qinst, qinst,
                                             &block->instructions, link) {
-                                v3d_qpu_dump(devinfo, &qinst->qpu);
-                                fprintf(stderr, "\n");
+                                const char *str = v3d_qpu_decode(devinfo, &qinst->qpu);
+                                mesa_logd("%s", str);
+                                ralloc_free((void *)str);
                         }
                 }
-                fprintf(stderr, "\n");
         }
 
         uint32_t cycles = 0;

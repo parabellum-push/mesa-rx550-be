@@ -31,15 +31,22 @@ enum tu_dynamic_state
    TU_DYNAMIC_STATE_BLEND,
    TU_DYNAMIC_STATE_VERTEX_INPUT,
    TU_DYNAMIC_STATE_PATCH_CONTROL_POINTS,
+   TU_DYNAMIC_STATE_PRIM_MODE_SYSMEM,
+   TU_DYNAMIC_STATE_A7XX_FRAGMENT_SHADING_RATE = TU_DYNAMIC_STATE_PRIM_MODE_SYSMEM,
    TU_DYNAMIC_STATE_COUNT,
 };
 
 struct cache_entry;
 
+enum tu_lrz_blend_status {
+   TU_LRZ_BLEND_SAFE_FOR_LRZ,
+   TU_LRZ_BLEND_READS_DEST_OR_PARTIAL_WRITE,
+   TU_LRZ_BLEND_ALL_COLOR_WRITES_SKIPPED,
+};
 struct tu_lrz_blend
 {
    bool valid;
-   bool reads_dest;
+   enum tu_lrz_blend_status lrz_blend_status;
 };
 
 struct tu_bandwidth
@@ -47,6 +54,12 @@ struct tu_bandwidth
    uint32_t color_bandwidth_per_sample;
    uint32_t depth_cpp_per_sample;
    uint32_t stencil_cpp_per_sample;
+   bool valid;
+};
+
+struct tu_disable_fs
+{
+   bool disable_fs;
    bool valid;
 };
 
@@ -97,13 +110,57 @@ struct tu_program_state
 
       struct tu_program_descriptor_linkage link[MESA_SHADER_STAGES];
 
+      char stage_blake3[MESA_SHADER_STAGES][BLAKE3_HEX_LEN];
+
       unsigned dynamic_descriptor_offsets[MAX_SETS];
 
+      /* With FDM, we control the fragment area by overriding the viewport and
+       * scsissor. In order to have different areas for different views, we
+       * need to have a viewport/scissor per FDM layer. There are various
+       * possible scenarios based on the shader and whether multiview or
+       * per-layer sampling is enabled, that are communicated to the driver
+       * via the struct members below:
+       * 
+       * - The shader writes gl_ViewportIndex, managing multiple viewports in
+       *   a way that may not correspond to FDM layer:
+       *   - Set everything to false. The driver will set shared_scale and
+       *     apply the same scaling to all viewports/scissors.
+       * - Multiview is enabled:
+       *   - Set per_view_viewport.
+       *   - Set fake_single_viewport to splat viewport 0 to all viewports.
+       *       - (Not implemented yet) if the user requests per-view
+       *         viewports, don't set fake_single_viewport and let the user
+       *         set multiple viewports that are transformed independently.
+       * - Multiview is not enabled and per-layer FDM sampling is enabled:
+       *   - Inject code into shader and set per_layer_viewport.
+       *   - Set fake_single_viewport to splat viewport 0 to all viewports.
+       */
+
+      /* Whether the per-view-viewport feature should be enabled in HW. This
+       * implicitly adds gl_ViewIndex to gl_ViewportIndex so that from a HW
+       * point of view (but not necessarily the user's point of view!) there
+       * is a viewport per view.
+       */
       bool per_view_viewport;
+      /* Whether gl_ViewportIndex has been set to gl_Layer, so that from a HW
+       * point of view (but not necessarily the user's point of view!) there
+       * is a viewport per view.
+       */
+      bool per_layer_viewport;
+      /* If per_view_viewport or per_layer_viewport is true and this is true,
+       * the app has provided a single viewport and we need to fake it by
+       * duplicating the viewport across views before transforming each
+       * viewport separately using FDM state.
+       */
+      bool fake_single_viewport;
+
+      bool writes_shading_rate;
+      bool reads_shading_rate;
+      bool uses_ray_intersection;
 };
 
 struct tu_pipeline_executable {
-   gl_shader_stage stage;
+   mesa_shader_stage stage;
 
    struct ir3_info stats;
    bool is_binning;
@@ -153,7 +210,7 @@ struct tu_pipeline
    struct {
       /* If the pipeline sets SINGLE_PRIM_MODE for sysmem. */
       bool sysmem_single_prim_mode;
-      struct tu_draw_state state_sysmem, state_gmem;
+      struct tu_draw_state state_gmem;
    } prim_order;
 
    /* draw states for the pipeline */
@@ -165,6 +222,7 @@ struct tu_pipeline
 
    struct tu_lrz_blend lrz_blend;
    struct tu_bandwidth bandwidth;
+   struct tu_disable_fs disable_fs;
 
    void *executables_mem_ctx;
    /* tu_pipeline_executable */
@@ -204,7 +262,7 @@ struct tu_graphics_pipeline {
     */
    struct vk_sample_locations_state sample_locations;
 
-   bool feedback_loop_color, feedback_loop_ds;
+   VkImageAspectFlags feedback_loops;
    bool feedback_loop_may_involve_textures;
 };
 
@@ -230,7 +288,8 @@ TU_DECL_PIPELINE_DOWNCAST(graphics, TU_PIPELINE_GRAPHICS)
 TU_DECL_PIPELINE_DOWNCAST(graphics_lib, TU_PIPELINE_GRAPHICS_LIB)
 TU_DECL_PIPELINE_DOWNCAST(compute, TU_PIPELINE_COMPUTE)
 
-VkOffset2D tu_fdm_per_bin_offset(VkExtent2D frag_area, VkRect2D bin);
+VkOffset2D tu_fdm_per_bin_offset(VkExtent2D frag_area, VkRect2D bin,
+                                 VkOffset2D common_bin_offset);
 
 template <chip CHIP>
 uint32_t tu_emit_draw_state(struct tu_cmd_buffer *cmd);
@@ -242,15 +301,18 @@ struct tu_pvtmem_config {
    bool per_wave;
 };
 
-template <chip CHIP>
-void
-tu6_emit_xs_config(struct tu_cs *cs,
-                   gl_shader_stage stage,
-                   const struct ir3_shader_variant *xs);
+struct tu_shader_stages {
+   const struct ir3_shader_variant *vs, *hs, *ds, *gs, *fs, *cs;
+};
 
 template <chip CHIP>
 void
-tu6_emit_shared_consts_enable(struct tu_cs *cs, bool shared_consts_enable);
+tu6_emit_xs_config(struct tu_crb &crb,
+                   struct tu_shader_stages stages);
+
+template <chip CHIP>
+void
+tu6_emit_shared_consts_enable(struct tu_crb &crb, bool shared_consts_enable);
 
 template <chip CHIP>
 void
@@ -263,6 +325,7 @@ tu6_emit_vpc(struct tu_cs *cs,
 
 void
 tu_fill_render_pass_state(struct vk_render_pass_state *rp,
+                          struct vk_multiview_state *mv,
                           const struct tu_render_pass *pass,
                           const struct tu_subpass *subpass);
 

@@ -28,24 +28,52 @@
 #include "nir.h"
 #include "nir_builder.h"
 
-static nir_alu_instr *
-get_parent_mov(nir_def *ssa)
+static bool
+phi_srcs_equal(nir_def *a, nir_def *b)
 {
-   if (ssa->parent_instr->type != nir_instr_type_alu)
-      return NULL;
+   if (a == b)
+      return true;
 
-   nir_alu_instr *alu = nir_instr_as_alu(ssa->parent_instr);
-   return (alu->op == nir_op_mov) ? alu : NULL;
+   nir_instr *a_instr = nir_def_instr(a);
+   nir_instr *b_instr = nir_def_instr(b);
+
+   if (a_instr->type != b_instr->type)
+      return false;
+
+   if (a_instr->type != nir_instr_type_alu &&
+       a_instr->type != nir_instr_type_load_const)
+      return false;
+
+   if (!nir_instrs_equal(a_instr, b_instr))
+      return false;
+
+   /* nir_instrs_equal ignores fp_math_ctrl */
+   if (a_instr->type == nir_instr_type_alu) {
+      nir_alu_instr *a_alu = nir_def_as_alu(a);
+      nir_alu_instr *b_alu = nir_def_as_alu(b);
+      if (a_alu->fp_math_ctrl != b_alu->fp_math_ctrl)
+         return false;
+   }
+
+   return true;
 }
 
 static bool
-matching_mov(nir_alu_instr *mov1, nir_def *ssa)
+src_dominates_block(nir_src *src, void *state)
 {
-   if (!mov1)
-      return false;
+   nir_block *block = state;
+   return nir_block_dominates(nir_def_block(src->ssa), block);
+}
 
-   nir_alu_instr *mov2 = get_parent_mov(ssa);
-   return mov2 && nir_alu_srcs_equal(mov1, mov2, 0, 0);
+static bool
+can_rematerialize_phi_src(nir_block *imm_dom, nir_def *def)
+{
+   if (nir_def_is_alu(def)) {
+      return nir_foreach_src(nir_def_instr(def), src_dominates_block, imm_dom);
+   } else if (nir_def_is_const(def)) {
+      return true;
+   }
+   return false;
 }
 
 /*
@@ -64,111 +92,120 @@ matching_mov(nir_alu_instr *mov1, nir_def *ssa)
  */
 
 static bool
-remove_phis_block(nir_block *block, nir_builder *b)
+remove_phis_instr(nir_builder *b, nir_phi_instr *phi, void *unused)
 {
-   bool progress = false;
+   nir_block *block = phi->instr.block;
+   nir_def *def = NULL;
+   bool needs_remat = false;
+   nir_phi_instr *nested_phi = NULL;
 
-   nir_foreach_phi_safe(phi, block) {
-      nir_def *def = NULL;
-      nir_alu_instr *mov = NULL;
-      bool srcs_same = true;
+   /* Skip unreachable phis, they should be removed by nir_opt_dead_cf. */
+   if (nir_block_is_unreachable(block))
+      return false;
 
-      nir_foreach_phi_src(src, phi) {
-         /* For phi nodes at the beginning of loops, we may encounter some
-          * sources from backedges that point back to the destination of the
-          * same phi, i.e. something like:
-          *
-          * a = phi(a, b, ...)
-          *
-          * We can safely ignore these sources, since if all of the normal
-          * sources point to the same definition, then that definition must
-          * still dominate the phi node, and the phi will still always take
-          * the value of that definition.
-          */
-         if (src->src.ssa == &phi->def)
-            continue;
-
-         if (def == NULL) {
-            def = src->src.ssa;
-            mov = get_parent_mov(def);
-         } else if (nir_src_is_undef(src->src) &&
-                    nir_block_dominates(def->parent_instr->block, src->pred)) {
-            /* Ignore this undef source. */
-         } else {
-            if (src->src.ssa != def && !matching_mov(mov, src->src.ssa)) {
-               srcs_same = false;
-               break;
-            }
-         }
-      }
-
-      if (!srcs_same)
+   nir_foreach_phi_src(src, phi) {
+      /* For phi nodes at the beginning of loops, we may encounter some
+       * sources from backedges that point back to the destination of the
+       * same phi, i.e. something like:
+       *
+       * b = phi(a, b)
+       *
+       * We can safely ignore these sources, since if all of the normal
+       * sources point to the same definition, then that definition must
+       * still dominate the phi node, and the phi will still always take
+       * the value of that definition.
+       */
+      if (src->src.ssa == &phi->def)
          continue;
 
-      if (!def) {
-         /* In this case, the phi had no sources. So turn it into an undef. */
+      /* Ignore undef sources. */
+      if (nir_src_is_undef(src->src))
+         continue;
 
-         b->cursor = nir_after_phis(block);
-         def = nir_undef(b, phi->def.num_components,
-                         phi->def.bit_size);
-      } else if (mov) {
-         /* If the sources were all movs from the same source with the same
-          * swizzle, then we can't just pick a random move because it may not
-          * dominate the phi node. Instead, we need to emit our own move after
-          * the phi which uses the shared source, and rewrite uses of the phi
-          * to use the move instead. This is ok, because while the movs may
-          * not all dominate the phi node, their shared source does.
-          */
+      /* This src is from a loop back-edge and itself is another phi. */
+      if (src->pred->index > block->index && nir_src_is_phi(src->src)) {
+         if (nested_phi)
+            return false;
 
-         b->cursor = nir_after_phis(block);
-         def = nir_mov_alu(b, mov->src[0], def->num_components);
+         nested_phi = nir_src_as_phi(src->src);
+         continue;
       }
 
-      nir_def_rewrite_uses(&phi->def, def);
-      nir_instr_remove(&phi->instr);
-
-      progress = true;
+      if (def == NULL) {
+         def = src->src.ssa;
+         if (!nir_block_dominates(nir_def_block(def), block->imm_dom)) {
+            if (!can_rematerialize_phi_src(block->imm_dom, def))
+               return false;
+            needs_remat = true;
+         }
+      } else if (!phi_srcs_equal(src->src.ssa, def)) {
+         return false;
+      }
    }
 
-   return progress;
-}
+   if (nested_phi) {
+      if (!def)
+         return false;
 
-bool
-nir_opt_remove_phis_block(nir_block *block)
-{
-   nir_builder b = nir_builder_create(nir_cf_node_get_function(&block->cf_node));
-   return remove_phis_block(block, &b);
-}
-
-static bool
-nir_opt_remove_phis_impl(nir_function_impl *impl)
-{
-   bool progress = false;
-   nir_builder bld = nir_builder_create(impl);
-
-   nir_metadata_require(impl, nir_metadata_dominance);
-
-   nir_foreach_block(block, impl) {
-      progress |= remove_phis_block(block, &bld);
+      /* For phi-sources from loop back-edges, if the source is another phi,
+       * check if the source-phi only uses this phi's definition or equal
+       * sources, i.e. something like:
+       *
+       * b = phi (a, c)
+       * ...
+       * c = phi (b, a)
+       */
+      nir_foreach_phi_src(src, nested_phi) {
+         if (src->src.ssa != &phi->def && !phi_srcs_equal(src->src.ssa, def))
+            return false;
+      }
    }
 
-   if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                     nir_metadata_dominance);
-   } else {
-      nir_metadata_preserve(impl, nir_metadata_all);
+   if (!def) {
+      /* In this case, the phi had no non undef sources. So turn it into an undef. */
+      b->cursor = nir_after_phis(block);
+      def = nir_undef(b, phi->def.num_components, phi->def.bit_size);
+   } else if (needs_remat) {
+      b->cursor = nir_after_block_before_jump(block->imm_dom);
+      nir_instr *remat = nir_instr_clone(b->shader, nir_def_instr(def));
+      nir_builder_instr_insert(b, remat);
+      def = nir_instr_def(remat);
    }
 
-   return progress;
+   nir_def_replace(&phi->def, def);
+   return true;
 }
 
 bool
 nir_opt_remove_phis(nir_shader *shader)
 {
-   bool progress = false;
-
    nir_foreach_function_impl(impl, shader)
-      progress = nir_opt_remove_phis_impl(impl) || progress;
+      nir_metadata_require(impl, nir_metadata_dominance);
 
+   return nir_shader_phi_pass(shader, remove_phis_instr,
+                              nir_metadata_control_flow, NULL);
+}
+
+bool
+nir_remove_single_src_phis_block(nir_block *block)
+{
+   assert(nir_block_num_preds(block) <= 1);
+   bool progress = false;
+   nir_foreach_phi_safe(phi, block) {
+      nir_def *def = NULL;
+      nir_foreach_phi_src(src, phi) {
+         def = src->src.ssa;
+         break;
+      }
+
+      if (!def) {
+         nir_builder b = nir_builder_create(block->impl);
+         b.cursor = nir_after_phis(block);
+         def = nir_undef(&b, phi->def.num_components, phi->def.bit_size);
+      }
+
+      nir_def_replace(&phi->def, def);
+      progress = true;
+   }
    return progress;
 }

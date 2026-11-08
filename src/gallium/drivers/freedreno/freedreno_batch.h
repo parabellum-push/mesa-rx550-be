@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -109,6 +91,9 @@ struct fd_batch {
    struct pipe_fence_handle *fence;
 
    struct fd_context *ctx;
+
+   /* update seqno of most recent draw/etc to the batch. */
+   uint32_t update_seqno;
 
    /* do we need to mem2gmem before rendering.  We don't, if for example,
     * there was a glClear() that invalidated the entire previous buffer
@@ -391,6 +376,19 @@ fd_batch_reference(struct fd_batch **ptr, struct fd_batch *batch)
 }
 
 /**
+ * Check if batch belongs to same ctx, and is not already flushed.
+ * The screen lock is held when a batch is destroyed, but not
+ * necessarily when the last unref happens.  Checking whether
+ * the batch is flushed avoids resurrecting zombie batches.
+ */
+static inline bool
+check_batch(struct fd_batch *batch, struct fd_context *ctx)
+{
+   fd_screen_assert_locked(ctx->screen);
+   return (batch->ctx == ctx) && !batch->flushed;
+}
+
+/**
  * Mark the batch as having something worth flushing (rendering, blit, query,
  * etc)
  */
@@ -398,6 +396,7 @@ static inline void
 fd_batch_needs_flush(struct fd_batch *batch)
 {
    batch->needs_flush = true;
+   batch->update_seqno = ++batch->ctx->update_count;
    fd_pipe_fence_ref(&batch->ctx->last_fence, NULL);
 }
 
@@ -433,7 +432,9 @@ fd_reset_wfi(struct fd_batch *batch)
 void fd_wfi(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt;
 
 /* emit a CP_EVENT_WRITE:
+ * (a6xx+ cannot use this, use fd6_event_write<chip>.)
  */
+#ifndef __cplusplus
 static inline void
 fd_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
                enum vgt_event_type evt)
@@ -442,6 +443,7 @@ fd_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
    OUT_RING(ring, evt);
    fd_reset_wfi(batch);
 }
+#endif
 
 /* Get per-tile epilogue */
 static inline struct fd_ringbuffer *

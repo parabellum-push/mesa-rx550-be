@@ -9,14 +9,17 @@ libasahi_agx_files = files(
   'agx_insert_waits.c',
   'agx_nir_lower_address.c',
   'agx_nir_lower_cull_distance.c',
+  'agx_nir_lower_fminmax.c',
   'agx_nir_lower_frag_sidefx.c',
   'agx_nir_lower_sample_mask.c',
   'agx_nir_lower_discard_zs_emit.c',
   'agx_nir_lower_interpolation.c',
   'agx_nir_lower_shared_bitsize.c',
   'agx_nir_lower_subgroups.c',
+  'agx_nir_lower_texture.c',
   'agx_nir_opt_preamble.c',
   'agx_lower_64bit.c',
+  'agx_lower_divergent_shuffle.c',
   'agx_lower_parallel_copy.c',
   'agx_lower_pseudo.c',
   'agx_lower_spill.c',
@@ -32,16 +35,17 @@ libasahi_agx_files = files(
   'agx_opt_jmp_none.c',
   'agx_opt_compact_constants.c',
   'agx_opt_promote_constants.c',
+  'agx_opt_register_cache.c',
   'agx_optimizer.c',
   'agx_repair_ssa.c',
   'agx_reindex_ssa.c',
   'agx_spill.c',
   'agx_register_allocate.c',
   'agx_validate.c',
+  'agx_validate_ra.c',
 )
 
 agx_nir_algebraic_c = custom_target(
-  'agx_nir_algebraic.c',
   input : 'agx_nir_algebraic.py',
   output : 'agx_nir_algebraic.c',
   command : [
@@ -52,7 +56,6 @@ agx_nir_algebraic_c = custom_target(
 )
 
 agx_opcodes_h = custom_target(
-  'agx_opcodes.h',
   input : ['agx_opcodes.h.py'],
   output : 'agx_opcodes.h',
   command : [prog_python, '@INPUT@'],
@@ -66,7 +69,6 @@ idep_agx_opcodes_h = declare_dependency(
 )
 
 agx_opcodes_c = custom_target(
-  'agx_opcodes.c',
   input : ['agx_opcodes.c.py'],
   output : 'agx_opcodes.c',
   command : [prog_python, '@INPUT@'],
@@ -75,7 +77,6 @@ agx_opcodes_c = custom_target(
 )
 
 agx_builder_h = custom_target(
-  'agx_builder.h',
   input : ['agx_builder.h.py'],
   output : 'agx_builder.h',
   command : [prog_python, '@INPUT@'],
@@ -91,8 +92,9 @@ idep_agx_builder_h = declare_dependency(
 libasahi_compiler = static_library(
   'asahi_compiler',
   [libasahi_agx_files, agx_opcodes_c, agx_nir_algebraic_c],
-  dependencies: [idep_nir, idep_agx_opcodes_h, idep_agx_builder_h],
-  c_args : [no_override_init_args],
+  dependencies: [idep_nir, idep_agx_opcodes_h, idep_agx_builder_h, idep_mesautil, idep_libagx],
+  link_with : [libagx2_disasm],
+  c_args : [no_override_init_args, '-Wno-c2x-extensions'],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
@@ -113,7 +115,7 @@ if with_tests
       ),
       c_args : [c_msvc_compat_args, no_override_init_args],
       gnu_symbol_visibility : 'hidden',
-      dependencies: [idep_gtest, idep_nir, idep_agx_opcodes_h, idep_agx_builder_h],
+      dependencies: [idep_gtest, idep_nir, idep_agx_opcodes_h, idep_agx_builder_h, idep_mesautil],
       link_with : [libasahi_compiler],
     ),
     suite : ['asahi'],

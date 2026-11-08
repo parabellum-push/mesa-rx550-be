@@ -220,7 +220,7 @@ static bool cm_helper_convert_to_custom_float(struct pwl_result_data *rgb_result
 #define NUMBER_SW_SEGMENTS 16
 
 bool vpe10_cm_helper_translate_curve_to_hw_format(
-    const struct transfer_func *output_tf, struct pwl_params *lut_params, bool fixpoint)
+    const struct transfer_func *tf, struct pwl_params *lut_params, bool fixpoint, bool dirty)
 {
     struct curve_points3   *corner_points;
     struct pwl_result_data *rgb_resulted;
@@ -232,7 +232,8 @@ bool vpe10_cm_helper_translate_curve_to_hw_format(
     int32_t  i;
     uint32_t j, k, seg_distr[MAX_REGIONS_NUMBER], increment, start_index, hw_points;
 
-    if (output_tf == NULL || lut_params == NULL || output_tf->type == TF_TYPE_BYPASS)
+    if (tf == NULL || lut_params == NULL || tf->type == TF_TYPE_BYPASS ||
+        (!dirty && (lut_params->hw_points_num != 0)))
         return false;
 
     corner_points = lut_params->corner_points;
@@ -242,7 +243,7 @@ bool vpe10_cm_helper_translate_curve_to_hw_format(
     memset(lut_params, 0, sizeof(struct pwl_params));
     memset(seg_distr, 0, sizeof(seg_distr));
 
-    if (output_tf->tf == TRANSFER_FUNC_PQ2084) {
+    if (tf->tf == TRANSFER_FUNC_PQ2084) {
 
         for (i = 0; i < MAX_LOW_POINT; i++)
             seg_distr[i] = 3;
@@ -251,7 +252,7 @@ bool vpe10_cm_helper_translate_curve_to_hw_format(
         seg_distr[i] = 1;
         region_start = -MAX_LOW_POINT;
         region_end   = 1;
-    } else if (output_tf->tf == TRANSFER_FUNC_LINEAR_0_125) {
+    } else if (tf->tf == TRANSFER_FUNC_LINEAR) {
 
         int num_regions_linear = MAX_LOW_POINT + 3;
 
@@ -295,18 +296,18 @@ bool vpe10_cm_helper_translate_curve_to_hw_format(
              i += increment) {
             if (j == hw_points - 1)
                 break;
-            rgb_resulted[j].red   = output_tf->tf_pts.red[i];
-            rgb_resulted[j].green = output_tf->tf_pts.green[i];
-            rgb_resulted[j].blue  = output_tf->tf_pts.blue[i];
+            rgb_resulted[j].red   = tf->tf_pts.red[i];
+            rgb_resulted[j].green = tf->tf_pts.green[i];
+            rgb_resulted[j].blue  = tf->tf_pts.blue[i];
             j++;
         }
     }
 
     /* last point */
     start_index                     = (uint32_t)((region_end + MAX_LOW_POINT) * NUMBER_SW_SEGMENTS);
-    rgb_resulted[hw_points - 1].red = output_tf->tf_pts.red[start_index];
-    rgb_resulted[hw_points - 1].green = output_tf->tf_pts.green[start_index];
-    rgb_resulted[hw_points - 1].blue  = output_tf->tf_pts.blue[start_index];
+    rgb_resulted[hw_points - 1].red = tf->tf_pts.red[start_index];
+    rgb_resulted[hw_points - 1].green = tf->tf_pts.green[start_index];
+    rgb_resulted[hw_points - 1].blue  = tf->tf_pts.blue[start_index];
 
     rgb_resulted[hw_points].red   = rgb_resulted[hw_points - 1].red;
     rgb_resulted[hw_points].green = rgb_resulted[hw_points - 1].green;
@@ -392,9 +393,9 @@ bool vpe10_cm_helper_translate_curve_to_hw_format(
     corner_points[0].red.y        = vpe_fixpt_zero;
     corner_points[0].green.y      = vpe_fixpt_zero;
     corner_points[0].blue.y       = vpe_fixpt_zero;
-    corner_points[0].red.offset   = output_tf->start_base;
-    corner_points[0].green.offset = output_tf->start_base;
-    corner_points[0].blue.offset  = output_tf->start_base;
+    corner_points[0].red.offset   = tf->start_base;
+    corner_points[0].green.offset = tf->start_base;
+    corner_points[0].blue.offset  = tf->start_base;
 
     cm_helper_convert_to_custom_float(rgb_resulted, lut_params->corner_points, hw_points, fixpoint);
 
@@ -406,7 +407,7 @@ bool vpe10_cm_helper_translate_curve_to_hw_format(
 #define MAX_HW_POINTS_DEGAMMA      257
 
 bool vpe10_cm_helper_translate_curve_to_degamma_hw_format(
-    const struct transfer_func *output_tf, struct pwl_params *lut_params)
+    const struct transfer_func *tf, struct pwl_params *lut_params, bool dirty)
 {
     struct curve_points3   *corner_points;
     struct pwl_result_data *rgb_resulted;
@@ -417,7 +418,8 @@ bool vpe10_cm_helper_translate_curve_to_degamma_hw_format(
     int32_t  i;
     uint32_t k, seg_distr[MAX_REGIONS_NUMBER_DEGAMMA], num_segments, hw_points;
 
-    if (output_tf == NULL || lut_params == NULL || output_tf->type == TF_TYPE_BYPASS)
+    if (tf == NULL || lut_params == NULL || tf->type == TF_TYPE_BYPASS ||
+        (!dirty && (lut_params->hw_points_num != 0)))
         return false;
 
     corner_points = lut_params->corner_points;
@@ -431,9 +433,9 @@ bool vpe10_cm_helper_translate_curve_to_degamma_hw_format(
     region_end   = 0;
 
     for (i = 0; i < MAX_HW_POINTS_DEGAMMA; i++) {
-        rgb_resulted[i].red   = output_tf->tf_pts.red[i];
-        rgb_resulted[i].green = output_tf->tf_pts.green[i];
-        rgb_resulted[i].blue  = output_tf->tf_pts.blue[i];
+        rgb_resulted[i].red   = tf->tf_pts.red[i];
+        rgb_resulted[i].green = tf->tf_pts.green[i];
+        rgb_resulted[i].blue  = tf->tf_pts.blue[i];
     }
 
     for (k = (uint32_t)(region_end - region_start); k < MAX_REGIONS_NUMBER_DEGAMMA; k++)
@@ -510,39 +512,13 @@ bool vpe10_cm_helper_translate_curve_to_degamma_hw_format(
     corner_points[0].red.y        = vpe_fixpt_zero;
     corner_points[0].green.y      = vpe_fixpt_zero;
     corner_points[0].blue.y       = vpe_fixpt_zero;
-    corner_points[0].red.offset   = output_tf->start_base;
-    corner_points[0].green.offset = output_tf->start_base;
-    corner_points[0].blue.offset  = output_tf->start_base;
+    corner_points[0].red.offset   = tf->start_base;
+    corner_points[0].green.offset = tf->start_base;
+    corner_points[0].blue.offset  = tf->start_base;
 
     cm_helper_convert_to_custom_float(rgb_resulted, lut_params->corner_points, hw_points, false);
 
     return true;
-}
-
-void vpe10_cm_get_tf_pwl_params(
-    const struct transfer_func *output_tf, struct pwl_params **lut_params, enum cm_type vpe_cm_type)
-{
-    int table_index = 0;
-
-    switch (output_tf->tf) {
-    case TRANSFER_FUNC_SRGB:
-        table_index = 0;
-        break;
-    case TRANSFER_FUNC_BT1886:
-        table_index = 1;
-        break;
-    case TRANSFER_FUNC_PQ2084:
-        table_index = 2;
-        break;
-    case TRANSFER_FUNC_BT709:
-    case TRANSFER_FUNC_LINEAR_0_125:
-        table_index = 3;
-        break;
-    default:
-        *lut_params = NULL;
-        return;
-    }
-    *lut_params = &tf_pwl_param_table[vpe_cm_type][table_index];
 }
 
 #define REG_FIELD_VALUE_CM(field, value)                                                           \
@@ -551,18 +527,22 @@ void vpe10_cm_get_tf_pwl_params(
 
 #define REG_SET_CM(reg_offset, init_val, field, val)                                               \
     do {                                                                                           \
-        config_writer_fill(                                                                        \
-            config_writer, VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_DATA_SIZE, 0) |                        \
-                               VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_REGISTER_OFFSET, reg_offset));     \
+        struct vpep_direct_config_packet packet = {0};                                             \
+        packet.bits.INC                         = 0;                                               \
+        packet.bits.VPEP_CONFIG_DATA_SIZE       = 0;                                               \
+        packet.bits.VPEP_CONFIG_REGISTER_OFFSET = reg_offset;                                      \
+        config_writer_fill_direct_config_packet_header(config_writer, &packet);                    \
         config_writer_fill(config_writer,                                                          \
             ((init_val & ~(REG_FIELD_MASK_CM(field))) | REG_FIELD_VALUE_CM(field, val)));          \
     } while (0)
 
 #define REG_SET_2_CM(reg_offset, init_val, f1, v1, f2, v2)                                         \
     do {                                                                                           \
-        config_writer_fill(                                                                        \
-            config_writer, VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_DATA_SIZE, 0) |                        \
-                               VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_REGISTER_OFFSET, reg_offset));     \
+        struct vpep_direct_config_packet packet = {0};                                             \
+        packet.bits.INC                         = 0;                                               \
+        packet.bits.VPEP_CONFIG_DATA_SIZE       = 0;                                               \
+        packet.bits.VPEP_CONFIG_REGISTER_OFFSET = reg_offset;                                      \
+        config_writer_fill_direct_config_packet_header(config_writer, &packet);                    \
         config_writer_fill(                                                                        \
             config_writer, ((init_val & ~(REG_FIELD_MASK_CM(f1)) & ~(REG_FIELD_MASK_CM(f2))) |     \
                                REG_FIELD_VALUE_CM(f1, v1) | REG_FIELD_VALUE_CM(f2, v2)));          \
@@ -570,9 +550,11 @@ void vpe10_cm_get_tf_pwl_params(
 
 #define REG_SET_4_CM(reg_offset, init_val, f1, v1, f2, v2, f3, v3, f4, v4)                         \
     do {                                                                                           \
-        config_writer_fill(                                                                        \
-            config_writer, VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_DATA_SIZE, 0) |                        \
-                               VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_REGISTER_OFFSET, reg_offset));     \
+        struct vpep_direct_config_packet packet = {0};                                             \
+        packet.bits.INC                         = 0;                                               \
+        packet.bits.VPEP_CONFIG_DATA_SIZE       = 0;                                               \
+        packet.bits.VPEP_CONFIG_REGISTER_OFFSET = reg_offset;                                      \
+        config_writer_fill_direct_config_packet_header(config_writer, &packet);                    \
         config_writer_fill(                                                                        \
             config_writer, ((init_val & ~(REG_FIELD_MASK_CM(f1)) & ~(REG_FIELD_MASK_CM(f2)) &      \
                                 ~(REG_FIELD_MASK_CM(f3)) & ~(REG_FIELD_MASK_CM(f4))) |             \
@@ -635,10 +617,12 @@ void vpe10_cm_helper_program_gamcor_xfer_func(struct config_writer *config_write
 
     // program all the *GAM_RAM?_REGION_start ~ region_end regs in one VPEP_DIRECT_CONFIG packet
     // with auto inc
-    config_writer_fill(
-        config_writer, VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_DATA_SIZE, packet_data_size - 1) |
-                           VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_REGISTER_OFFSET, reg->region_start) |
-                           0x01); // auto increase on
+    struct vpep_direct_config_packet packet = {0};
+
+    packet.bits.INC                         = 1;
+    packet.bits.VPEP_CONFIG_DATA_SIZE       = packet_data_size - 1;
+    packet.bits.VPEP_CONFIG_REGISTER_OFFSET = reg->region_start;
+    config_writer_fill_direct_config_packet_header(config_writer, &packet);
 
     for (reg_region_cur = reg->region_start; reg_region_cur <= reg->region_end; reg_region_cur++) {
 
@@ -667,10 +651,13 @@ void vpe10_cm_helper_program_pwl(struct config_writer *config_writer,
     uint32_t i;
     uint32_t lut_data = 0;
 
-    // For LUT, we keep write the same address with entire LUT data, so don't set INC bit
-    config_writer_fill(
-        config_writer, VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_DATA_SIZE, num) |
-                           VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_REGISTER_OFFSET, lut_data_reg_offset));
+    // For LUT, we keep write the same address with entire LUT data, so do not set INC bit
+    struct vpep_direct_config_packet packet = {0};
+
+    packet.bits.INC                         = 0;
+    packet.bits.VPEP_CONFIG_DATA_SIZE       = num;
+    packet.bits.VPEP_CONFIG_REGISTER_OFFSET = lut_data_reg_offset;
+    config_writer_fill_direct_config_packet_header(config_writer, &packet);
 
     for (i = 0; i < num; i++) {
         switch (channel) {
@@ -697,11 +684,12 @@ void vpe10_cm_helper_program_color_matrices(struct config_writer *config_writer,
     uint32_t     cur_csc_reg;
     unsigned int i                = 0;
     uint16_t     packet_data_size = (uint16_t)((reg->csc_c33_c34 - reg->csc_c11_c12 + 1));
+    struct vpep_direct_config_packet packet = {0};
 
-    config_writer_fill(
-        config_writer, VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_DATA_SIZE, packet_data_size - 1) |
-                           VPEC_FIELD_VALUE(VPE_DIR_CFG_PKT_REGISTER_OFFSET, reg->csc_c11_c12) |
-                           0x01); // auto increase on
+    packet.bits.INC                         = 1;
+    packet.bits.VPEP_CONFIG_DATA_SIZE       = packet_data_size - 1;
+    packet.bits.VPEP_CONFIG_REGISTER_OFFSET = reg->csc_c11_c12;
+    config_writer_fill_direct_config_packet_header(config_writer, &packet);
 
     for (cur_csc_reg = reg->csc_c11_c12; cur_csc_reg <= reg->csc_c33_c34; cur_csc_reg++) {
 

@@ -31,8 +31,6 @@
  * we support.
  */
 
-#ifdef USE_V3D_SIMULATOR
-
 #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -42,6 +40,7 @@
 
 #include "common/v3d_performance_counters.h"
 
+#include "util/log.h"
 #include "util/macros.h"
 #include "util/bitscan.h"
 #include "drm-uapi/v3d_drm.h"
@@ -251,6 +250,7 @@ v3dX(simulator_submit_csd_ioctl)(struct v3d_hw *v3d,
 
 int
 v3dX(simulator_get_param_ioctl)(struct v3d_hw *v3d,
+                                uint32_t perfcnt_total,
                                 struct drm_v3d_get_param *args)
 {
         static const uint32_t reg_map[] = {
@@ -272,13 +272,13 @@ v3dX(simulator_get_param_ioctl)(struct v3d_hw *v3d,
                 args->value = 1;
                 return 0;
         case DRM_V3D_PARAM_SUPPORTS_CSD:
-                args->value = V3D_VERSION >= 42;
+                args->value = 1;
                 return 0;
         case DRM_V3D_PARAM_SUPPORTS_CACHE_FLUSH:
                 args->value = 1;
                 return 0;
         case DRM_V3D_PARAM_SUPPORTS_PERFMON:
-                args->value = V3D_VERSION >= 42;
+                args->value = 1;
                 return 0;
         case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
                 args->value = 1;
@@ -286,6 +286,15 @@ v3dX(simulator_get_param_ioctl)(struct v3d_hw *v3d,
 	case DRM_V3D_PARAM_SUPPORTS_CPU_QUEUE:
 		args->value = 1;
 		return 0;
+	case DRM_V3D_PARAM_MAX_PERF_COUNTERS:
+		args->value = perfcnt_total;
+		return 0;
+        case DRM_V3D_PARAM_GLOBAL_RESET_COUNTER:
+                args->value = 0;
+                return 0;
+        case DRM_V3D_PARAM_CONTEXT_RESET_COUNTER:
+                args->value = 0;
+                return 0;
         }
 
         if (args->param < ARRAY_SIZE(reg_map) && reg_map[args->param]) {
@@ -293,9 +302,32 @@ v3dX(simulator_get_param_ioctl)(struct v3d_hw *v3d,
                 return 0;
         }
 
-        fprintf(stderr, "Unknown DRM_IOCTL_V3D_GET_PARAM(%lld)\n",
-                (long long)args->value);
+        mesa_loge("Unknown DRM_IOCTL_V3D_GET_PARAM(%lld)", (long long)args->value);
         abort();
+}
+
+int
+v3dX(simulator_perfmon_get_counter_ioctl)(uint32_t perfcnt_total,
+                                          struct drm_v3d_perfmon_get_counter *args)
+{
+        const char **counter = NULL;
+
+        /* Make sure that the counter ID is valid */
+        if (args->counter >= perfcnt_total)
+                return -1;
+
+        counter = v3d_performance_counters[args->counter];
+
+        strncpy((char *)args->name, counter[V3D_PERFCNT_NAME],
+                DRM_V3D_PERFCNT_MAX_NAME);
+
+        strncpy((char *)args->category, counter[V3D_PERFCNT_CATEGORY],
+                DRM_V3D_PERFCNT_MAX_CATEGORY);
+
+        strncpy((char *)args->description, counter[V3D_PERFCNT_DESCRIPTION],
+                DRM_V3D_PERFCNT_MAX_DESCRIPTION);
+
+        return 0;
 }
 
 static struct v3d_hw *v3d_isr_hw;
@@ -326,12 +358,9 @@ v3d_isr_core(struct v3d_hw *v3d,
 
 #if V3D_VERSION <= 42
         if (core_status & V3D_CTL_0_INT_STS_INT_GMPV_SET) {
-                fprintf(stderr, "GMP violation at 0x%08x\n",
-                        V3D_READ(V3D_GMP_VIO_ADDR));
+                mesa_loge("GMP violation at 0x%08x", V3D_READ(V3D_GMP_VIO_ADDR));
         } else {
-                fprintf(stderr,
-                        "Unexpected ISR with core status 0x%08x\n",
-                        core_status);
+                mesa_loge("Unexpected ISR with core status 0x%08x", core_status);
         }
         abort();
 #endif
@@ -383,11 +412,11 @@ handle_mmu_interruptions(struct v3d_hw *v3d,
          * like restoring the MMU ctrl bits
          */
 
-        fprintf(stderr, "MMU error from client %s (%d) at 0x%llx%s%s%s\n",
-                client, axi_id, (long long) vio_addr,
-                wrv ? ", write violation" : "",
-                pti ? ", pte invalid" : "",
-                cap ? ", cap exceeded" : "");
+        mesa_loge("MMU error from client %s (%d) at 0x%llx%s%s%s",
+                  client, axi_id, (long long) vio_addr,
+                  wrv ? ", write violation" : "",
+                  pti ? ", pte invalid" : "",
+                  cap ? ", cap exceeded" : "");
 
         abort();
 }
@@ -406,19 +435,16 @@ v3d_isr_hub(struct v3d_hw *v3d)
                  * the future. In any case, note that for this case we would
                  * only be doing debugging log.
                  */
-                unreachable("TFU Conversion Complete interrupt not handled");
+                UNREACHABLE("TFU Conversion Complete interrupt not handled");
         }
 
         handle_mmu_interruptions(v3d, hub_status);
 
 #if V3D_VERSION == 71
         if (hub_status & V3D_HUB_CTL_INT_STS_INT_GMPV_SET) {
-                fprintf(stderr, "GMP violation at 0x%08x\n",
-                        V3D_READ(V3D_GMP_VIO_ADDR));
+                mesa_loge("GMP violation at 0x%08x", V3D_READ(V3D_GMP_VIO_ADDR));
         } else {
-                fprintf(stderr,
-                        "Unexpected ISR with status 0x%08x\n",
-                        hub_status);
+                mesa_loge("Unexpected ISR with status 0x%08x", hub_status);
         }
         abort();
 #endif
@@ -566,5 +592,3 @@ void v3dX(simulator_get_perfcnt_total)(uint32_t *count)
 {
         *count = ARRAY_SIZE(v3d_performance_counters);
 }
-
-#endif /* USE_V3D_SIMULATOR */

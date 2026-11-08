@@ -26,63 +26,10 @@
 #include "anv_private.h"
 #include "anv_measure.h"
 #include "common/intel_bind_timeline.h"
+#include "common/xe/intel_gem.h"
+#include "perf/intel_perf.h"
 
 #include "drm-uapi/xe_drm.h"
-
-VkResult
-xe_execute_simple_batch(struct anv_queue *queue,
-                        struct anv_bo *batch_bo,
-                        uint32_t batch_bo_size,
-                        bool is_companion_rcs_batch)
-{
-   struct anv_device *device = queue->device;
-   uint32_t exec_queue_id = is_companion_rcs_batch ?
-                            queue->companion_rcs_id :
-                            queue->exec_queue_id;
-   struct drm_syncobj_create syncobj_create = {};
-   struct drm_syncobj_destroy syncobj_destroy = {};
-   struct drm_xe_sync syncs[2] = {};
-   VkResult result = VK_SUCCESS;
-
-   if (intel_ioctl(device->fd, DRM_IOCTL_SYNCOBJ_CREATE, &syncobj_create))
-      return vk_errorf(device, VK_ERROR_UNKNOWN, "Unable to create sync obj");
-
-   syncs[0].type = DRM_XE_SYNC_TYPE_SYNCOBJ;
-   syncs[0].flags = DRM_XE_SYNC_FLAG_SIGNAL;
-   syncs[0].handle = syncobj_create.handle;
-
-   /* vm bind sync */
-   syncs[1].type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ;
-   syncs[1].handle = intel_bind_timeline_get_syncobj(&device->bind_timeline);
-   syncs[1].timeline_value = intel_bind_timeline_get_last_point(&device->bind_timeline);
-
-   struct drm_xe_exec exec = {
-      .exec_queue_id = exec_queue_id,
-      .num_batch_buffer = 1,
-      .address = batch_bo->offset,
-      .num_syncs = ARRAY_SIZE(syncs),
-      .syncs = (uintptr_t)syncs,
-   };
-
-   if (intel_ioctl(device->fd, DRM_IOCTL_XE_EXEC, &exec)) {
-      result = vk_device_set_lost(&device->vk, "XE_EXEC failed: %m");
-      goto exec_error;
-   }
-
-   struct drm_syncobj_wait wait = {
-      .handles = (uintptr_t)&syncobj_create.handle,
-      .timeout_nsec = INT64_MAX,
-      .count_handles = 1,
-   };
-   if (intel_ioctl(device->fd, DRM_IOCTL_SYNCOBJ_WAIT, &wait))
-      result = vk_device_set_lost(&device->vk, "DRM_IOCTL_SYNCOBJ_WAIT failed: %m");
-
-exec_error:
-   syncobj_destroy.handle = syncobj_create.handle;
-   intel_ioctl(device->fd, DRM_IOCTL_SYNCOBJ_DESTROY, &syncobj_destroy);
-
-   return result;
-}
 
 #define TYPE_SIGNAL true
 #define TYPE_WAIT false
@@ -97,9 +44,10 @@ vk_sync_to_drm_xe_sync(struct vk_sync *vk_sync, uint64_t value, bool signal)
       .type = value ? DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ :
                       DRM_XE_SYNC_TYPE_SYNCOBJ,
       .flags = signal ? DRM_XE_SYNC_FLAG_SIGNAL : 0,
-      .handle = syncobj->syncobj,
+      .addr = 0, /* init union to 0 before setting .handle */
       .timeline_value = value,
    };
+   drm_sync.handle = syncobj->syncobj;
 
    return drm_sync;
 }
@@ -111,18 +59,20 @@ xe_exec_process_syncs(struct anv_queue *queue,
                       uint32_t extra_sync_count, const struct drm_xe_sync *extra_syncs,
                       struct anv_utrace_submit *utrace_submit,
                       bool is_companion_rcs_queue,
+                      bool skip_bind_timeline,
                       struct drm_xe_sync **ret, uint32_t *ret_count)
 {
    struct anv_device *device = queue->device;
    /* Signal the utrace sync only if it doesn't have a batch. Otherwise the
     * it's the utrace batch that should signal its own sync.
     */
-   const bool has_utrace_sync = utrace_submit &&
-                                util_dynarray_num_elements(&utrace_submit->batch_bos, struct anv_bo *) == 0;
+   const bool has_utrace_sync =
+      utrace_submit &&
+      util_dynarray_num_elements(&utrace_submit->base.batch_bos, struct anv_bo *) == 0;
    const uint32_t num_syncs = wait_count + signal_count + extra_sync_count +
                               (has_utrace_sync ? 1 : 0) +
                               ((queue->sync && !is_companion_rcs_queue) ? 1 : 0) +
-                              1 /* vm bind sync */;
+                              (!skip_bind_timeline ? 1 : 0) /* vm bind sync */;
    struct drm_xe_sync *xe_syncs = vk_zalloc(&device->vk.alloc,
                                             sizeof(*xe_syncs) * num_syncs, 8,
                                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
@@ -132,7 +82,8 @@ xe_exec_process_syncs(struct anv_queue *queue,
    uint32_t count = 0;
 
    if (has_utrace_sync) {
-      xe_syncs[count++] = vk_sync_to_drm_xe_sync(utrace_submit->sync, 0,
+      xe_syncs[count++] = vk_sync_to_drm_xe_sync(utrace_submit->base.signal.sync,
+                                                 utrace_submit->base.signal.signal_value,
                                                  TYPE_SIGNAL);
    }
 
@@ -154,13 +105,17 @@ xe_exec_process_syncs(struct anv_queue *queue,
    if (queue->sync && !is_companion_rcs_queue)
       xe_syncs[count++] = vk_sync_to_drm_xe_sync(queue->sync, 0, TYPE_SIGNAL);
 
-   /* vm bind sync */
-   xe_syncs[count++] = (struct drm_xe_sync) {
-      .type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ,
-      .flags = 0 /* TYPE_WAIT */,
-      .handle = intel_bind_timeline_get_syncobj(&device->bind_timeline),
-      .timeline_value = intel_bind_timeline_get_last_point(&device->bind_timeline),
-   };
+   if (!skip_bind_timeline) {
+      /* vm bind sync */
+      xe_syncs[count] = (struct drm_xe_sync) {
+         .type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ,
+         .flags = 0 /* TYPE_WAIT */,
+         .addr = 0, /* init union to 0 before setting .handle */
+         .timeline_value = intel_bind_timeline_get_last_point(&device->bind_timeline),
+      };
+      xe_syncs[count++].handle =
+         intel_bind_timeline_get_syncobj(&device->bind_timeline);
+   }
 
    assert(count == num_syncs);
    *ret = xe_syncs;
@@ -181,94 +136,94 @@ xe_exec_print_debug(struct anv_queue *queue, uint32_t cmd_buffer_count,
                                    perf_query_pool, perf_query_pass);
 }
 
-VkResult
-xe_execute_trtt_batch(struct anv_sparse_submission *submit,
-                      struct anv_trtt_batch_bo *trtt_bbo)
+#define xe_exec_ioctl(q, e) xe_exec_ioctl_impl((q), (e), __func__, __LINE__)
+
+static VkResult
+xe_exec_ioctl_impl(struct anv_queue *queue, struct drm_xe_exec *exec,
+                   const char *func, int line)
 {
-   struct anv_queue *queue = submit->queue;
    struct anv_device *device = queue->device;
-   struct anv_trtt *trtt = &device->trtt;
-   VkResult result = VK_SUCCESS;
 
-   struct drm_xe_sync extra_sync = {
-      .type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ,
-      .flags = DRM_XE_SYNC_FLAG_SIGNAL,
-      .handle = trtt->timeline_handle,
-      .timeline_value = trtt_bbo->timeline_val,
-   };
-
-   struct drm_xe_sync *xe_syncs = NULL;
-   uint32_t xe_syncs_count = 0;
-   result = xe_exec_process_syncs(queue, submit->wait_count, submit->waits,
-                                  submit->signal_count, submit->signals,
-                                  1, &extra_sync,
-                                  NULL, /* utrace_submit */
-                                  false, /* is_companion_rcs_queue */
-                                  &xe_syncs, &xe_syncs_count);
-   if (result != VK_SUCCESS)
-      return result;
-
-   struct drm_xe_exec exec = {
-      .exec_queue_id = queue->exec_queue_id,
-      .num_syncs = xe_syncs_count,
-      .syncs = (uintptr_t)xe_syncs,
-      .address = trtt_bbo->bo->offset,
-      .num_batch_buffer = 1,
-   };
-
-   if (!device->info->no_hw) {
-      if (intel_ioctl(device->fd, DRM_IOCTL_XE_EXEC, &exec)) {
-         result = vk_device_set_lost(&device->vk, "XE_EXEC failed: %m");
-         goto out;
-      }
+   int ret = xe_gem_exec_ioctl(device->fd, device->info, exec);
+   if (ret) {
+      if (anv_needs_printf_buffer())
+         vk_check_printf_status(&device->vk, &device->printf);
+      return anv_queue_set_lost(queue, errno, "%s(%d) failed: %m", func, line);
    }
 
-   if (queue->sync) {
-      result = vk_sync_wait(&device->vk, queue->sync, 0,
-                            VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
-   }
-
-out:
-   vk_free(&device->vk.alloc, xe_syncs);
-   return result;
+   return VK_SUCCESS;
 }
 
 VkResult
-xe_queue_exec_utrace_locked(struct anv_queue *queue,
-                            struct anv_utrace_submit *utrace_submit)
+xe_queue_exec_async(struct anv_async_submit *submit,
+                    uint32_t wait_count,
+                    const struct vk_sync_wait *waits,
+                    uint32_t signal_count,
+                    const struct vk_sync_signal *signals)
 {
+   struct anv_queue *queue = submit->queue;
    struct anv_device *device = queue->device;
-   struct drm_xe_sync xe_syncs[2] = {};
+   STACK_ARRAY(struct drm_xe_sync, xe_syncs,
+               wait_count + signal_count +
+               ((submit->signal.sync != NULL) ? 1 : 0) +
+               (queue->sync != NULL ? 1 : 0) +
+               + 1);
+   uint32_t n_syncs = 0;
 
-   xe_syncs[0] = vk_sync_to_drm_xe_sync(utrace_submit->sync, 0, TYPE_SIGNAL);
+   for (uint32_t i = 0; i < wait_count; i++) {
+      xe_syncs[n_syncs++] = vk_sync_to_drm_xe_sync(waits[i].sync,
+                                                   waits[i].wait_value,
+                                                   TYPE_WAIT);
+   }
+   for (uint32_t i = 0; i < signal_count; i++) {
+      xe_syncs[n_syncs++] = vk_sync_to_drm_xe_sync(signals[i].sync,
+                                                   signals[i].signal_value,
+                                                   TYPE_SIGNAL);
+   }
+   if (submit->signal.sync) {
+      xe_syncs[n_syncs++] = vk_sync_to_drm_xe_sync(submit->signal.sync,
+                                                   submit->signal.signal_value,
+                                                   TYPE_SIGNAL);
+   }
+   if (queue->sync)
+      xe_syncs[n_syncs++] = vk_sync_to_drm_xe_sync(queue->sync, 0, TYPE_SIGNAL);
 
-   xe_syncs[1].type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ;
-   xe_syncs[1].handle = intel_bind_timeline_get_syncobj(&device->bind_timeline);
-   xe_syncs[1].timeline_value = intel_bind_timeline_get_last_point(&device->bind_timeline);
+   xe_syncs[n_syncs] = (struct drm_xe_sync) {
+      .type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ,
+      .flags = 0 /* TYPE_WAIT */,
+      .addr = 0, /* init union to 0 before setting .handle */
+      .timeline_value = intel_bind_timeline_get_last_point(&device->bind_timeline),
+   };
+   xe_syncs[n_syncs++].handle =
+      intel_bind_timeline_get_syncobj(&device->bind_timeline);
 
 #ifdef SUPPORT_INTEL_INTEGRATED_GPUS
    if (device->physical->memory.need_flush &&
        anv_bo_needs_host_cache_flush(device->utrace_bo_pool.bo_alloc_flags)) {
-      util_dynarray_foreach(&utrace_submit->batch_bos, struct anv_bo *, bo)
-         intel_flush_range((*bo)->map, (*bo)->size);
+      util_dynarray_foreach(&submit->batch_bos, struct anv_bo *, bo)
+         util_flush_range((*bo)->map, (*bo)->size);
    }
 #endif
 
    struct anv_bo *batch_bo =
-      *util_dynarray_element(&utrace_submit->batch_bos, struct anv_bo *, 0);
+      *util_dynarray_element(&submit->batch_bos, struct anv_bo *, 0);
    struct drm_xe_exec exec = {
-      .exec_queue_id = queue->exec_queue_id,
+      .exec_queue_id = submit->use_companion_rcs ?
+                       queue->companion_rcs_id : queue->exec_queue_id,
       .num_batch_buffer = 1,
       .syncs = (uintptr_t)xe_syncs,
-      .num_syncs = ARRAY_SIZE(xe_syncs),
+      .num_syncs = n_syncs,
       .address = batch_bo->offset,
    };
-   if (likely(!device->info->no_hw)) {
-      if (intel_ioctl(device->fd, DRM_IOCTL_XE_EXEC, &exec))
-         return vk_device_set_lost(&device->vk, "anv_xe_queue_exec_locked failed: %m");
-   }
 
-   return VK_SUCCESS;
+   xe_exec_print_debug(queue, 0, NULL, NULL, 0, &exec);
+   anv_async_submit_print_batch(submit);
+
+   VkResult result = xe_exec_ioctl(queue, &exec);
+   if (result != VK_SUCCESS)
+      return result;
+
+   return anv_queue_post_submit(queue, VK_SUCCESS);
 }
 
 static VkResult
@@ -291,6 +246,7 @@ xe_companion_rcs_queue_exec_locked(struct anv_queue *queue,
                                   0, NULL, /* extra_syncs */
                                   NULL /* utrace_submit */,
                                   true /* is_companion_rcs_queue */,
+                                  false /* skip_bind_timeline */,
                                   &xe_syncs,
                                   &xe_syncs_count);
    if (result != VK_SUCCESS)
@@ -311,10 +267,8 @@ xe_companion_rcs_queue_exec_locked(struct anv_queue *queue,
    anv_measure_submit(companion_rcs_cmd_buffer);
    xe_exec_print_debug(queue, 1, &companion_rcs_cmd_buffer, NULL, 0, &exec);
 
-   if (!device->info->no_hw) {
-      if (intel_ioctl(device->fd, DRM_IOCTL_XE_EXEC, &exec))
-         result = vk_device_set_lost(&device->vk, "anv_xe_queue_exec_locked failed: %m");
-   }
+   result = xe_exec_ioctl(queue, &exec);
+
    vk_free(&device->vk.alloc, xe_syncs);
 
    return result;
@@ -335,6 +289,11 @@ xe_queue_exec_locked(struct anv_queue *queue,
    struct anv_device *device = queue->device;
    VkResult result;
 
+   const bool can_skip_bind_timeline = cmd_buffer_count == 0;
+   const bool is_queue_wait_idle = can_skip_bind_timeline &&
+      wait_count == 0 && signal_count == 1 &&
+      !(signals[0].sync->flags & VK_SYNC_IS_SHAREABLE);
+
    struct drm_xe_sync *xe_syncs = NULL;
    uint32_t xe_syncs_count = 0;
    result = xe_exec_process_syncs(queue, wait_count, waits,
@@ -342,24 +301,28 @@ xe_queue_exec_locked(struct anv_queue *queue,
                                   0, NULL, /* extra_syncs */
                                   utrace_submit,
                                   false, /* is_companion_rcs_queue */
+                                  can_skip_bind_timeline,
                                   &xe_syncs, &xe_syncs_count);
    if (result != VK_SUCCESS)
       return result;
 
-   /* If we have no batch for utrace, just forget about it now. */
+   /* If there is a utrace submission but no batch, it means there is no
+    * commands to run for utrace so ignore the submission.
+    */
    if (utrace_submit &&
-       util_dynarray_num_elements(&utrace_submit->batch_bos,
+       util_dynarray_num_elements(&utrace_submit->base.batch_bos,
                                   struct anv_bo *) == 0)
       utrace_submit = NULL;
 
    struct drm_xe_exec exec = {
       .exec_queue_id = queue->exec_queue_id,
-      .num_batch_buffer = 1,
       .syncs = (uintptr_t)xe_syncs,
       .num_syncs = xe_syncs_count,
    };
 
    if (cmd_buffer_count) {
+      exec.num_batch_buffer = 1;
+
       if (unlikely(device->physical->measure_device.config)) {
          for (uint32_t i = 0; i < cmd_buffer_count; i++)
             anv_measure_submit(cmd_buffers[i]);
@@ -377,22 +340,72 @@ xe_queue_exec_locked(struct anv_queue *queue,
       struct anv_batch_bo *first_batch_bo = list_first_entry(&first_cmd_buffer->batch_bos,
                                                              struct anv_batch_bo, link);
       exec.address = first_batch_bo->bo->offset;
-   } else {
+   } else if (!is_queue_wait_idle) {
+      exec.num_batch_buffer = 1;
       exec.address = device->trivial_batch_bo->offset;
    }
 
    xe_exec_print_debug(queue, cmd_buffer_count, cmd_buffers, perf_query_pool,
                        perf_query_pass, &exec);
 
-   /* TODO: add perfetto stuff when Xe supports it */
+   if (perf_query_pool && cmd_buffer_count) {
+      struct drm_xe_sync xe_syncs[2] = {};
+      struct drm_xe_exec perf_query_exec = {
+            .exec_queue_id = queue->exec_queue_id,
+            .num_batch_buffer = 1,
+            .address = perf_query_pool->bo->offset +
+                       khr_perf_query_preamble_offset(perf_query_pool, perf_query_pass),
+            .num_syncs = 1,
+            .syncs = (uintptr_t)xe_syncs,
+      };
+      assert(perf_query_pass < perf_query_pool->n_passes);
+      struct intel_perf_query_info *query_info = perf_query_pool->pass_query[perf_query_pass];
 
-   if (!device->info->no_hw) {
-      if (intel_ioctl(device->fd, DRM_IOCTL_XE_EXEC, &exec))
-         result = vk_device_set_lost(&device->vk, "anv_xe_queue_exec_locked failed: %m");
+      /* Some performance queries just the pipeline statistic HW, no need for
+       * OA in that case, so no need to reconfigure.
+       */
+      if (!INTEL_DEBUG(DEBUG_NO_OACONFIG) &&
+          (query_info->kind == INTEL_PERF_QUERY_TYPE_OA ||
+           query_info->kind == INTEL_PERF_QUERY_TYPE_RAW)) {
+         int ret = intel_perf_stream_set_metrics_id(device->physical->perf,
+                                                    device->fd,
+                                                    device->perf_fd,
+                                                    queue->exec_queue_id,
+                                                    query_info->oa_metrics_set_id,
+                                                    &device->perf_timeline);
+         if (ret < 0) {
+            result = vk_device_set_lost(&device->vk,
+                                        "intel_perf_stream_set_metrics_id failed: %s",
+                                        strerror(errno));
+         }
+      }
+
+      /* wait on completion of all vm binds */
+      xe_syncs[0].type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ;
+      xe_syncs[0].flags = 0;/* wait */
+      xe_syncs[0].handle = intel_bind_timeline_get_syncobj(&device->bind_timeline);
+      xe_syncs[0].timeline_value = intel_bind_timeline_get_last_point(&device->bind_timeline);
+
+      /* wait for metric change if supported */
+      if (intel_bind_timeline_get_syncobj(&device->perf_timeline)) {
+         perf_query_exec.num_syncs++;
+         xe_syncs[1].type = DRM_XE_SYNC_TYPE_TIMELINE_SYNCOBJ;
+         xe_syncs[1].flags = 0;/* wait */
+         xe_syncs[1].handle = intel_bind_timeline_get_syncobj(&device->perf_timeline);
+         xe_syncs[1].timeline_value = intel_bind_timeline_get_last_point(&device->perf_timeline);
+      }
+
+      if (result == VK_SUCCESS)
+         result = xe_exec_ioctl(queue, &perf_query_exec);
    }
+
+   if (result == VK_SUCCESS)
+      result = xe_exec_ioctl(queue, &exec);
+
    vk_free(&device->vk.alloc, xe_syncs);
 
-   if (cmd_buffer_count != 0 && cmd_buffers[0]->companion_rcs_cmd_buffer) {
+   if (cmd_buffer_count != 0 && cmd_buffers[0]->companion_rcs_cmd_buffer &&
+       result == VK_SUCCESS) {
       /* not allowed to chain cmd_buffers with companion_rcs_cmd_buffer  */
       assert(cmd_buffer_count == 1);
       result = xe_companion_rcs_queue_exec_locked(queue,
@@ -402,8 +415,14 @@ xe_queue_exec_locked(struct anv_queue *queue,
 
    result = anv_queue_post_submit(queue, result);
 
-   if (result == VK_SUCCESS && utrace_submit)
-      result = xe_queue_exec_utrace_locked(queue, utrace_submit);
+   if (result == VK_SUCCESS && utrace_submit) {
+      struct vk_sync_signal signal = {
+         .sync = utrace_submit->base.signal.sync,
+         .signal_value = utrace_submit->base.signal.signal_value,
+      };
+      result = xe_queue_exec_async(&utrace_submit->base,
+                                   0, NULL, 1, &signal);
+   }
 
    return result;
 }

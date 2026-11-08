@@ -1,24 +1,6 @@
 /*
- * Copyright (c) 2012 Rob Clark <robdclark@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robdclark@gmail.com>
+ * SPDX-License-Identifier: MIT
  */
 
 #include <fcntl.h>
@@ -286,7 +268,7 @@ next_sect(struct state *state, int *sect_size)
    *sect_size = end - state->buf;
 
    /* copy the section to keep things nicely 32b aligned: */
-   sect = malloc(ALIGN(*sect_size, 4));
+   sect = malloc(align(*sect_size, 4));
    memcpy(sect, state->buf, *sect_size);
 
    state->sz -= *sect_size + 4;
@@ -411,7 +393,7 @@ dump_short_summary(struct state *state, int nconsts,
 }
 
 static void
-dump_raw_shader(uint32_t *dwords, uint32_t sizedwords, int n, char *ext)
+dump_raw_shader(const uint32_t *dwords, uint32_t sizedwords, int n, char *ext)
 {
    static char filename[256];
    int fd;
@@ -602,8 +584,8 @@ dump_shaders_a3xx(struct state *state)
 
       if (!compact) {
          if (state->hdr->revision >= 7) {
-            instrs += ALIGN(instrs_size, 8) - instrs_size;
-            instrs_size = ALIGN(instrs_size, 8);
+            instrs += align(instrs_size, 8) - instrs_size;
+            instrs_size = align(instrs_size, 8);
          }
          instrs += 32;
          instrs_size -= 32;
@@ -1018,7 +1000,7 @@ main(int argc, char **argv)
 
    /* figure out what sort of input we are dealing with: */
    if (!(check_extension(infile, ".rd") || check_extension(infile, ".rd.gz"))) {
-      gl_shader_stage shader = ~0;
+      mesa_shader_stage shader = ~0;
       int ret;
       if (check_extension(infile, ".vo")) {
          shader = MESA_SHADER_VERTEX;

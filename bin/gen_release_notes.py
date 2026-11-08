@@ -40,7 +40,8 @@ import docutils.utils
 import docutils.parsers.rst.states as states
 
 CURRENT_GL_VERSION = '4.6'
-CURRENT_VK_VERSION = '1.3'
+CURRENT_CL_VERSION = '3.1'
+CURRENT_VK_VERSION = '1.4'
 
 TEMPLATE = Template(textwrap.dedent("""\
     ${header}
@@ -61,12 +62,16 @@ TEMPLATE = Template(textwrap.dedent("""\
     ${gl_version} is **only** available if requested at context creation.
     Compatibility contexts may report a lower version depending on each driver.
 
+    Mesa ${this_version} implements the OpenCL ${cl_version} API, but the version reported by
+    the CL_DEVICE_VERSION, CL_DEVICE_NUMERIC_VERSION and CL_DEVICE_OPENCL_C_ALL_VERSIONS
+    clGetDeviceInfo queries depends on the particular driver being used.
+
     Mesa ${this_version} implements the Vulkan ${vk_version} API, but the version reported by
     the apiVersion property of the VkPhysicalDeviceProperties struct
     depends on the particular driver being used.
 
-    SHA256 checksum
-    ---------------
+    SHA checksums
+    -------------
 
     ::
 
@@ -201,7 +206,7 @@ async def parse_issues(commits: str) -> typing.List[str]:
                 # Avoid parsing "merge_requests" URL. Note that a valid issue
                 # URL may or may not contain the "/-/" text, so we check if
                 # the word "issues" is contained in URL.
-                and '/issues' in bug):
+                and ('/issues/' in bug or '/work_items/' in bug)):
                 # This means we have a bug in the form "Closes: https://..."
                 issues.append(os.path.basename(urllib.parse.urlparse(bug).path))
             elif ',' in bug:
@@ -226,8 +231,8 @@ async def gather_bugs(version: str) -> typing.List[str]:
     loop = asyncio.get_event_loop()
     async with aiohttp.ClientSession(loop=loop) as session:
         results = await asyncio.gather(*[get_bug(session, i) for i in issues])
-    typing.cast(typing.Tuple[str, ...], results)
-    bugs = list(results)
+    # Remove duplicates.
+    bugs = sorted(set(results))
     if not bugs:
         bugs = ['None']
     return bugs
@@ -365,6 +370,7 @@ async def main() -> None:
                 changes=walk_shortlog(shortlog),
                 features=get_features(is_point_release),
                 gl_version=CURRENT_GL_VERSION,
+                cl_version=CURRENT_CL_VERSION,
                 this_version=this_version,
                 header=header,
                 header_underline=header_underline,
@@ -385,5 +391,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
     loop.run_until_complete(main())
