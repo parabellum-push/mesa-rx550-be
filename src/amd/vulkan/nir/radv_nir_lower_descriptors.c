@@ -958,7 +958,7 @@ lower_native_texel_buffer(nir_builder *b, nir_instr *instr, UNUSED void *data)
       case nir_intrinsic_load_buffer_amd:
          /* Since Mesa 25, ac_nir_lower_image_tex turns texel buffer fetches and image loads
           * into formatted buffer loads before descriptor lowering.
-          * TODO: R64 texel buffers arrive as 32-bit pairs here and are not half-swapped.
+          * R64 texels arrive as 32-bit pairs; ac_nir_lower_image_tex packs them high dword first.
           */
          if (!(nir_intrinsic_access(intr) & ACCESS_USES_FORMAT_AMD) ||
              (nir_intrinsic_access(intr) & ACCESS_SPARSE) ||

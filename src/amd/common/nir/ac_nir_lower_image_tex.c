@@ -24,6 +24,21 @@
 
 #include "ac_nir.h"
 #include "nir_builder.h"
+#include "util/u_endian.h"
+
+/* The X of a 64-bit texel is fetched as two dwords in memory order. Big endian
+ * keeps application data in host order, so the drivers' texel lowering swaps
+ * the bytes of each dword and the high dword comes first. W (ZW) is a
+ * descriptor constant, not memory, and keeps the normal order.
+ */
+static nir_def *
+ac_nir_pack_texel64(nir_builder *b, nir_def *result, unsigned first)
+{
+   nir_def *x = nir_channel(b, result, first), *y = nir_channel(b, result, first + 1);
+   if (UTIL_ARCH_BIG_ENDIAN)
+      return nir_pack_64_2x32_split(b, y, x);
+   return nir_pack_64_2x32_split(b, x, y);
+}
 
 static void
 replace_with_formatted_load_buffer_amd(nir_builder *b, nir_def *old_def, nir_deref_instr *deref,
@@ -105,7 +120,7 @@ replace_with_formatted_load_buffer_amd(nir_builder *b, nir_def *old_def, nir_der
       /* The 64-bit result is: (xy, 0, 0, zw, sparse). */
       if (0 < old_def->num_components - is_sparse) {
          if (2 <= result->num_components - is_sparse)
-            vec[0] = nir_pack_64_2x32(b, nir_channels(b, result, BITFIELD_MASK(2)));
+            vec[0] = ac_nir_pack_texel64(b, result, 0);
          else
             vec[0] = undef64;
       }
