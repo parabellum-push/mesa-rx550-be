@@ -24,6 +24,7 @@
 #include "nir_deref.h"
 #include "util/hash_table.h"
 #include "nir.h"
+#include "util/u_endian.h"
 #include "nir_builder.h"
 
 bool
@@ -1364,6 +1365,12 @@ opt_load_vec_deref(nir_builder *b, nir_intrinsic_instr *load)
       const unsigned new_num_comps = glsl_get_vector_elements(parent->type);
       const unsigned new_bit_size = glsl_get_bit_size(parent->type);
 
+      /* nir_bitcast_vector packs components little endian; memory on a big-endian host holds
+       * host-order words, so a narrower view of a wider element starts at its high bits.
+       */
+      if (UTIL_ARCH_BIG_ENDIAN && old_bit_size != new_bit_size)
+         return false;
+
       /* Stomp it to reference the parent */
       nir_src_rewrite(&load->src[0], &parent->def);
       load->def.bit_size = new_bit_size;
@@ -1401,6 +1408,10 @@ opt_store_vec_deref(nir_builder *b, nir_intrinsic_instr *store)
       nir_deref_instr *parent = nir_src_as_deref(deref->parent);
       const unsigned new_num_comps = glsl_get_vector_elements(parent->type);
       const unsigned new_bit_size = glsl_get_bit_size(parent->type);
+
+      /* See opt_load_vec_deref: little-endian component packing. */
+      if (UTIL_ARCH_BIG_ENDIAN && old_bit_size != new_bit_size)
+         return false;
 
       nir_src_rewrite(&store->src[0], &parent->def);
 

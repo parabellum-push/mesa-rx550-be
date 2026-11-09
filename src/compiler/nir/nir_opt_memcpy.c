@@ -142,10 +142,14 @@ try_lower_memcpy(nir_builder *b, nir_intrinsic_instr *cpy,
       return true;
    }
 
+   /* nir_bitcast_vector packs components little endian; on a big-endian host the copied
+    * memory holds host-order words, so only same-bit-size copies may become a load/store.
+    */
    if (glsl_type_is_vector_or_scalar(src->type) &&
        glsl_type_is_vector_or_scalar(dst->type) &&
        glsl_get_explicit_size(dst->type, false) == size &&
-       glsl_get_explicit_size(src->type, false) == size) {
+       glsl_get_explicit_size(src->type, false) == size &&
+       (!UTIL_ARCH_BIG_ENDIAN || glsl_get_bit_size(src->type) == glsl_get_bit_size(dst->type))) {
       b->cursor = nir_instr_remove(&cpy->instr);
       nir_def *data =
          nir_load_deref_with_access(b, src, nir_intrinsic_src_access(cpy));
