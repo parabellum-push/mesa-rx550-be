@@ -8,9 +8,9 @@ data and application buffers.
 | Branch | Mesa | Drivers | Packages |
 |---|---|---|---|
 | [`g5-26`](../../tree/g5-26) (default) | **26.2.6** | radeonsi (OpenGL 4.6 / ES 3.2), RADV (Vulkan 1.3), Rusticl (OpenCL 3.1), VA-API | `26.2.6-1+rx550g5.3` |
-| [`g5-24`](../../tree/g5-24) | **24.1.6** | radeonsi (OpenGL 4.6 / ES 3.2), RADV (Vulkan 1.3), VA-API, VDPAU | `24.1.6-1+rx550g5.1` |
+| [`g5-24`](../../tree/g5-24) | **24.1.6** | radeonsi (OpenGL 4.6 / ES 3.2), RADV (Vulkan 1.3), VA-API, VDPAU (built, untested) | `24.1.6-1+rx550g5.1` |
 
-**Mesa 24.1.6 is also available** on the [`g5-24`](../../tree/g5-24) branch (the first complete release of this port; it keeps VDPAU, which Mesa removed in 25.3).
+**Mesa 24.1.6 is also available** on the [`g5-24`](../../tree/g5-24) branch (the first complete release of this port; it still builds VDPAU, which Mesa removed in 25.3; VDPAU is untested).
 
 Almost all changes take effect only on a big-endian CPU with a GFX8 GPU (RX 460/470/480/550/560/570/580);
 other GPUs and CPUs run stock code. The port also needs the patched kernel driver
