@@ -267,6 +267,23 @@ static nir_def *load_bindless_image_desc(nir_builder *b, nir_def *index,
 /* A helper invocation's atomic has no effect, so its compare/exchange never
  * succeeds and the retry loop would hang the GPU.
  */
+/* Big endian GFX8 shader-side format decode: UNORM/SNORM to float as the texture unit does it,
+ * correctly rounded x / max. x * (1 / max) is one ulp off for many inputs (126 of 256 for UNORM8),
+ * and OpenCL compares sampler-less buffer reads with sampled image reads bit for bit. One FMA
+ * correction step is exact for every integer input of the 2..16-bit formats (checked exhaustively).
+ */
+static nir_def *si_be_norm_div(nir_builder *b, nir_def *x, double max)
+{
+   const double inv = 1.0 / max;
+   const uint32_t saved = b->fp_math_ctrl;
+   b->fp_math_ctrl = nir_fp_exact;   /* keep the correction step as written */
+   nir_def *q = nir_fmul_imm(b, x, inv);
+   nir_def *r = nir_ffma(b, nir_fneg(b, q), nir_imm_float(b, max), x);
+   nir_def *res = nir_ffma(b, r, nir_imm_float(b, inv), q);
+   b->fp_math_ctrl = saved;
+   return res;
+}
+
 static nir_def *si_native_atomic_done(nir_builder *b, nir_def *observed, nir_def *old)
 {
    nir_def *done = nir_ieq(b, observed, old);
@@ -632,8 +649,8 @@ static void si_lower_native_wide_image_load(nir_builder *b, nir_intrinsic_instr 
       nir_def *swapped = si_tbo_bswap(b, nir_u2u16(b, raw));
       nir_def *narrow;
       if (floating) {
-         nir_def *unorm = nir_fmul_imm(b, nir_u2f32(b, swapped), 1.0 / 65535);
-         nir_def *snorm = nir_fmax(b, nir_fmul_imm(b, nir_i2f32(b, swapped), 1.0 / 32767),
+         nir_def *unorm = si_be_norm_div(b, nir_u2f32(b, swapped), 65535);
+         nir_def *snorm = nir_fmax(b, si_be_norm_div(b, nir_i2f32(b, swapped), 32767),
                                     nir_imm_float(b, -1));
          narrow = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F14_IMG_NUM_FORMAT_SNORM), snorm, unorm);
          narrow = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F14_IMG_NUM_FORMAT_FLOAT),
@@ -646,7 +663,7 @@ static void si_lower_native_wide_image_load(nir_builder *b, nir_intrinsic_instr 
       unsigned packed_max = (1u << packed_bits) - 1;
       nir_def *packed_component = nir_iand_imm(b, nir_ushr_imm(b, packed_word, i * 10), packed_max);
       if (floating) {
-         packed_component = nir_fmul_imm(b, nir_u2f32(b, packed_component), 1.0 / packed_max);
+         packed_component = si_be_norm_div(b, nir_u2f32(b, packed_component), packed_max);
          nir_def *float_component = i < 3 ? nir_channel(b, packed_float, i) : nir_imm_float(b, 1);
          packed_component = nir_bcsel(b, nir_ieq_imm(b, packed_target, 3), float_component, packed_component);
       }
@@ -818,9 +835,9 @@ static nir_def *si_native_tbo_values(nir_builder *b, nir_def *desc, nir_def *coo
       } else if (bits == 32) {
          value = raw;
       } else {
-         nir_def *unorm = nir_fmul_imm(b, nir_u2f32(b, raw), 1.0 / ((1u << bits) - 1));
-         nir_def *snorm = nir_fmax(b, nir_fmul_imm(b, nir_i2f32(b, raw),
-                                                  1.0 / ((1u << (bits - 1)) - 1)),
+         nir_def *unorm = si_be_norm_div(b, nir_u2f32(b, raw), (1u << bits) - 1);
+         nir_def *snorm = nir_fmax(b, si_be_norm_div(b, nir_i2f32(b, raw),
+                                                    (1u << (bits - 1)) - 1),
                                      nir_imm_float(b, -1));
          value = nir_bcsel(b, nir_ieq_imm(b, num_format, V_008F0C_BUF_NUM_FORMAT_SNORM),
                             snorm, unorm);
@@ -884,7 +901,7 @@ static nir_def *si_native_formatted_buffer_load(nir_builder *b, nir_def *desc, n
          unsigned bits = i == 3 ? 2 : 10, max = (1u << bits) - 1;
          parts[i] = nir_ubfe_imm(b, packed, i * 10, bits);
          if (floating)
-            parts[i] = nir_fmul_imm(b, nir_u2f32(b, parts[i]), 1.0 / max);
+            parts[i] = si_be_norm_div(b, nir_u2f32(b, parts[i]), max);
       }
       value10 = nir_vec(b, parts, 4);
    }
@@ -960,8 +977,8 @@ static nir_def *si_lower_native_wide_tex(nir_builder *b, nir_def *raw, nir_def *
                     nir_bcsel(b, nir_ieq_imm(b, kind, 2), si_tbo_bswap(b, x), halves)));
       if (floating) {
          nir_def *sx = nir_ishr_imm(b, nir_ishl_imm(b, x, 16), 16);
-         nir_def *unorm = nir_fmul_imm(b, nir_u2f32(b, x), 1.0 / 65535.0);
-         nir_def *snorm = nir_fmax(b, nir_fmul_imm(b, nir_i2f32(b, sx), 1.0 / 32767.0),
+         nir_def *unorm = si_be_norm_div(b, nir_u2f32(b, x), 65535);
+         nir_def *snorm = nir_fmax(b, si_be_norm_div(b, nir_i2f32(b, sx), 32767),
                                    nir_imm_float(b, -1.0));
          nir_def *half = nir_channel(b, nir_unpack_half_2x16(b, x), 0);
          comp[i] = nir_bcsel(b, nir_ieq_imm(b, type, 3), unorm,
@@ -983,8 +1000,8 @@ static nir_def *si_lower_native_wide_tex(nir_builder *b, nir_def *raw, nir_def *
       nir_def *exponent = nir_iadd_imm(b, nir_ushr_imm(b, w, 27), -24);
       nir_def *scale = nir_ldexp(b, nir_imm_float(b, 1.0), exponent);
       for (unsigned i = 0; i < 4; i++) {
-         nir_def *unorm = nir_fmul_imm(b, nir_u2f32(b, nir_ubfe_imm(b, w, i * 10, i == 3 ? 2 : 10)),
-                                       i == 3 ? 1.0 / 3.0 : 1.0 / 1023.0);
+         nir_def *unorm = si_be_norm_div(b, nir_u2f32(b, nir_ubfe_imm(b, w, i * 10, i == 3 ? 2 : 10)),
+                                         i == 3 ? 3 : 1023);
          nir_def *e5 = i == 3 ? nir_imm_float(b, 1.0)
                               : nir_fmul(b, nir_u2f32(b, nir_ubfe_imm(b, w, i * 9, 9)), scale);
          nir_def *f = i == 3 ? nir_imm_float(b, 1.0) : nir_channel(b, f11, i);
@@ -1244,7 +1261,7 @@ static void si_native_imagebuffer32(nir_builder *b, nir_intrinsic_instr *intrin,
          for (unsigned i = 0; i < 4; i++) {
             unsigned bits = i == 3 ? 2 : 10, max = (1u << bits) - 1;
             nir_def *part = nir_iand_imm(b, nir_ushr_imm(b, word, i * 10), max);
-            components[i] = normalized ? nir_fmul_imm(b, nir_u2f32(b, part), 1.0 / max) : part;
+            components[i] = normalized ? si_be_norm_div(b, nir_u2f32(b, part), max) : part;
          }
          nir_def *value = nir_vec(b, components, 4);
          nir_def_rewrite_uses(&intrin->def, value);

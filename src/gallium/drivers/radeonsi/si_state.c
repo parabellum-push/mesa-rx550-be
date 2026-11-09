@@ -2316,6 +2316,11 @@ bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
 
    if (usage & (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHADER_IMAGE)) {
       if (target == PIPE_BUFFER) {
+         /* GFX8 buffer descriptors have no sRGB number format: an sRGB texel buffer would read
+          * plain UNORM values. Only OpenCL asks (CL_sRGBA/CL_sBGRA image1d_buffer).
+          */
+         if (sscreen->info.gfx_level == GFX8 && util_format_is_srgb(format))
+            return false;
          retval |= si_is_vertex_format_supported(
             screen, format, usage & (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHADER_IMAGE));
       } else {
