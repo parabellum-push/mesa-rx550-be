@@ -69,7 +69,7 @@ unsafe impl CLInfo<cl_program_info> for cl_program {
                 v.write_iter::<cl_device_id>(prog.devs.iter().map(|&d| cl_device_id::from_ptr(d)))
             }
             CL_PROGRAM_IL => match &prog.src {
-                ProgramSourceType::Il(il) => v.write::<&[u8]>(il.to_bin()),
+                ProgramSourceType::Il(il) => v.write::<&[u8]>(&il.to_original_bin()),
                 // The spec _requires_ that we don't touch the buffer here.
                 _ => v.write_len_only::<&[u8]>(0),
             },

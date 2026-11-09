@@ -1516,8 +1516,9 @@ clc_spirv_specialize(const struct clc_binary *in_spirv,
       case CLC_SPEC_CONSTANT_DOUBLE:
       case CLC_SPEC_CONSTANT_INT64:
       case CLC_SPEC_CONSTANT_UINT64:
-         words.resize(2);
-         memcpy(words.data(), &consts->specializations[i].value.u64, 8);
+         /* SPIR-V 64-bit literals are low-order word first, which memcpy gives only on LE. */
+         words.push_back((uint32_t)consts->specializations[i].value.u64);
+         words.push_back((uint32_t)(consts->specializations[i].value.u64 >> 32));
          break;
       case CLC_SPEC_CONSTANT_UNKNOWN:
          assert(0);

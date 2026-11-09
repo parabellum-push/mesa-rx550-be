@@ -28,6 +28,8 @@ pub enum SpecConstant {
 pub struct SPIRVBin {
     spirv: clc_binary,
     info: Option<clc_parsed_spirv>,
+    /// The module was given in the opposite byte order and is stored host-order.
+    byte_swapped: bool,
 }
 
 // Safety: SPIRVBin is not mutable and is therefore Send and Sync, needed due to `clc_binary::data`
@@ -181,6 +183,7 @@ impl SPIRVBin {
             let spirv = SPIRVBin {
                 spirv: out,
                 info: None,
+                byte_swapped: false,
             };
 
             // add cache entry
@@ -225,6 +228,7 @@ impl SPIRVBin {
         let res = res.then_some(SPIRVBin {
             spirv: out,
             info: info,
+            byte_swapped: false,
         });
         (res, msgs.join(c""))
     }
@@ -381,12 +385,26 @@ impl SPIRVBin {
         unsafe { slice::from_raw_parts(self.spirv.data.cast(), self.spirv.size) }
     }
 
+    /// The module in the byte order the application gave it (CL_PROGRAM_IL).
+    pub fn to_original_bin(&self) -> Vec<u8> {
+        let bin = self.to_bin();
+        if !self.byte_swapped {
+            return bin.to_vec();
+        }
+        bin.chunks_exact(4)
+            .flat_map(|w| u32::from_ne_bytes(w.try_into().unwrap()).swap_bytes().to_ne_bytes())
+            .collect()
+    }
+
     pub fn from_bin(bin: &[u8]) -> Self {
         // SPIR-V may come in either byte order (the magic number tells which); SPIRV-Tools and
         // clc expect host-order words. Big-endian hosts commonly get little-endian modules, e.g.
         // the built-in kernels compiled by mesa_clc on the build machine.
         const SPIRV_MAGIC: u32 = 0x07230203;
         let swapped;
+        let byte_swapped = bin.len() >= 4
+            && bin.len() % 4 == 0
+            && u32::from_ne_bytes(bin[0..4].try_into().unwrap()) == SPIRV_MAGIC.swap_bytes();
         let bin = if bin.len() >= 4
             && bin.len() % 4 == 0
             && u32::from_ne_bytes(bin[0..4].try_into().unwrap()) == SPIRV_MAGIC.swap_bytes()
@@ -418,6 +436,7 @@ impl SPIRVBin {
             SPIRVBin {
                 spirv: spirv,
                 info: info,
+                byte_swapped: byte_swapped,
             }
         }
     }
@@ -457,6 +476,7 @@ impl SPIRVBin {
                 None
             },
             spirv: out,
+            byte_swapped: false,
         })
     }
 
@@ -469,7 +489,9 @@ impl SPIRVBin {
 
 impl Clone for SPIRVBin {
     fn clone(&self) -> Self {
-        Self::from_bin(self.to_bin())
+        let mut c = Self::from_bin(self.to_bin());
+        c.byte_swapped = self.byte_swapped;
+        c
     }
 }
 
