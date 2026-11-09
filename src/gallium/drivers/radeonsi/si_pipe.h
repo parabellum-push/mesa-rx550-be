@@ -59,10 +59,22 @@ static inline bool si_gfx8_be_packed16(enum amd_gfx_level gfx_level,
             (d->channel[0].size == 5 && d->channel[3].size == 1)));
 }
 
+/* Alpha-first 2_10_10_10 words (OpenCL CL_UNORM_INT_101010_2 is A2B10G10R10_UNORM). Texture side
+ * only: host-order words, sampled through the numeric (LE-order) description. Not in
+ * si_gfx8_be_packed_10bit, whose colour-buffer path forces COLOR_2_10_10_10.
+ */
+static inline bool si_gfx8_be_packed_10bit_a2(enum amd_gfx_level gfx_level, enum pipe_format format)
+{
+   return UTIL_ARCH_BIG_ENDIAN && gfx_level == GFX8 &&
+          (format == PIPE_FORMAT_A2B10G10R10_UNORM || format == PIPE_FORMAT_A2B10G10R10_UINT ||
+           format == PIPE_FORMAT_A2R10G10B10_UNORM || format == PIPE_FORMAT_A2R10G10B10_UINT);
+}
+
 static inline bool si_gfx8_be_packed_texture(enum amd_gfx_level gfx_level,
                                             enum pipe_format format)
 {
    return si_gfx8_be_packed_10bit(gfx_level, format) ||
+          si_gfx8_be_packed_10bit_a2(gfx_level, format) ||
           si_gfx8_be_packed16(gfx_level, format);
 }
 
