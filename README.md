@@ -8,7 +8,7 @@ data and application buffers.
 | Branch | Mesa | Drivers | Packages |
 |---|---|---|---|
 | [`g5-26`](../../tree/g5-26) (default) | **26.2.6** | radeonsi (OpenGL 4.6 / ES 3.2), RADV (Vulkan 1.3), Rusticl (OpenCL 3.1), VA-API | `26.2.6-1+rx550g5.3` |
-| [`g5-24`](../../tree/g5-24) | **24.1.6** | radeonsi (OpenGL 4.6 / ES 3.2), RADV (Vulkan 1.3), VA-API, VDPAU | `24.1.6-1+rx550g5.1` |
+| [`g5-24`](../../tree/g5-24) | **24.1.6** | radeonsi (OpenGL 4.6 / ES 3.2), RADV (Vulkan 1.3), VA-API, VDPAU (built, untested) | `24.1.6-1+rx550g5.1` |
 
 This is the older **Mesa 24.1.6** port. The current release is Mesa 26.2.6 on the default [`g5-26`](../../tree/g5-26) branch, which adds OpenCL (Rusticl).
 
