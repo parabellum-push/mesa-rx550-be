@@ -1,5 +1,6 @@
 # !Warning! This repo is vibe-coded.
 I am only sharing it since it works on my machine. 
+You should probably visit here instead: https://github.com/parabellum-push/rx550-g5
 
 # Mesa for big-endian PowerPC (PPC BE) with AMD Polaris (GFX8)
 
