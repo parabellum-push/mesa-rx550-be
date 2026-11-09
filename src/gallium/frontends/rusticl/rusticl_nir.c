@@ -178,6 +178,43 @@ create_libclc_config_func_impl(nir_shader *shader, const char *name, bool value)
     nir_store_deref(&b, deref, nir_imm_bool(&b, value), 0x1);
 }
 
+/* libclc 22 imports float __clc_flush_denormal_if_not_supported(float) from the runtime (Debian's
+ * libclc-22 spirv64-mesa3d has it as an Import linkage, so cos/sin/tan/remquo/tgamma ... failed
+ * with "nir_shader not fully linked"). Same meaning as libclc's own definition: a subnormal input
+ * becomes a signed zero unless fp32 subnormals are supported.
+ */
+static void
+create_libclc_flush_denormal_impl(nir_shader *shader, bool dp32)
+{
+    nir_function *func = nir_function_create(shader, "_Z37__clc_flush_denormal_if_not_supportedf");
+
+    func->num_params = 2;
+    func->params = ralloc_array(func, nir_parameter, 2);
+    func->params[0] = (struct nir_parameter) {
+        .num_components = 1,
+        .bit_size = shader->info.cs.ptr_size,
+        .is_return = true,
+        .type = glsl_uintN_t_type(shader->info.cs.ptr_size),
+    };
+    func->params[1] = (struct nir_parameter) {
+        .num_components = 1,
+        .bit_size = 32,
+        .type = glsl_float_type(),
+    };
+
+    nir_function_impl_create(func);
+    nir_builder b = nir_builder_at(nir_before_impl(func->impl));
+    nir_def *ret = nir_load_param(&b, 0);
+    nir_def *x = nir_load_param(&b, 1);
+    nir_def *res = x;
+    if (!dp32) {
+        nir_def *subnormal = nir_ieq_imm(&b, nir_iand_imm(&b, x, 0x7f800000), 0);
+        res = nir_bcsel(&b, subnormal, nir_iand_imm(&b, x, 0x80000000), x);
+    }
+    nir_deref_instr *deref = nir_build_deref_cast(&b, ret, nir_var_function_temp, glsl_float_type(), 0);
+    nir_store_deref(&b, deref, res, 0x1);
+}
+
 bool
 rusticl_insert_libclc_config(nir_shader *shader)
 {
@@ -202,6 +239,8 @@ rusticl_insert_libclc_config(nir_shader *shader)
     create_libclc_config_func_impl(shader, "__clc_denormals_are_zero_fp16", daz16);
     create_libclc_config_func_impl(shader, "__clc_denormals_are_zero_fp32", daz32);
     create_libclc_config_func_impl(shader, "__clc_denormals_are_zero_fp64", daz64);
+
+    create_libclc_flush_denormal_impl(shader, dp32);
 
     return true;
 }

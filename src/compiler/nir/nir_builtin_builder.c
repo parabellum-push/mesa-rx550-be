@@ -75,7 +75,7 @@ nir_nextafter(nir_builder *b, nir_def *x, nir_def *y)
    nir_def *conddir = nir_flt(b, x, y);
    nir_def *condzero = nir_feq(b, x, zero);
 
-   uint64_t sign_mask = 1ull << (x->bit_size - 1);
+   const uint64_t sign_mask = 1ull << (x->bit_size - 1);
    uint64_t min_abs = 1;
 
    if (nir_is_denorm_flush_to_zero(b->shader->info.float_controls_execution_mode, x->bit_size)) {
@@ -91,8 +91,12 @@ nir_nextafter(nir_builder *b, nir_def *x, nir_def *y)
          break;
       }
 
-      /* Flush denorm to zero to avoid returning a denorm when condeq is true. */
-      x = nir_fmul_imm(b, x, 1.0);
+      /* Flush denorm to zero to avoid returning a denorm when condeq is true. Do it on the bits:
+       * x * 1.0 is removed by nir_opt_algebraic, and the FTZ compares then return the denormal x.
+       */
+      uint64_t exp_mask = x->bit_size == 16 ? 0x7c00 : x->bit_size == 32 ? 0x7f800000 : 0x7ff0000000000000ull;
+      nir_def *denorm = nir_ieq_imm(b, nir_iand_imm(b, x, exp_mask), 0);
+      x = nir_bcsel(b, denorm, nir_iand_imm(b, x, sign_mask), x);
    }
 
    /* beware of: +/-0.0 - 1 == NaN */

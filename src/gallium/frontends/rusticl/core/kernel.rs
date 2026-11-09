@@ -729,6 +729,10 @@ fn compile_nir_to_args(
     nir_pass!(nir, rusticl_insert_libclc_config);
 
     nir.inline(lib_clc);
+    if Platform::dbg().nir && !nir.fully_linked() {
+        eprintln!("=== nir shader not fully linked after inlining libclc");
+        nir.print();
+    }
     nir = nir
         .cleanup_functions()
         .ok_or(c"nir_shader not fully linked")?;
