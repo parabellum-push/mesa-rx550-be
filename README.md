@@ -1,3 +1,6 @@
+# !Warning! This repo is vibe-coded.
+I am only sharing it since it works on my machine. 
+
 # Mesa for big-endian PowerPC (PPC BE) with AMD Polaris (GFX8)
 
 This is **Mesa 26.2.6** with fixes that make the AMD drivers work on a **big-endian PowerPC** host:
@@ -21,7 +24,6 @@ other GPUs and CPUs run stock code. The port also needs the patched kernel drive
 - Our commits sit on top of the Mesa release tarball (tag `v26`); see them with
   `git log v26..g5-26`. Release tags: `24.1.6-1+rx550g5.1`, `26.2.6-1+rx550g5.2`, `26.2.6-1+rx550g5.3`.
 
-This is an unofficial port, not the Mesa project: upstream Mesa lives at
-https://gitlab.freedesktop.org/mesa/mesa (see README.rst). Building: as for upstream Mesa
+This is an unofficial port. Building: as for upstream Mesa
 (`docs/meson.rst`); the cross-build setup we use for the packages is in
 [rx550-g5/packaging](https://github.com/parabellum-push/rx550-g5/tree/main/packaging/mesa).
