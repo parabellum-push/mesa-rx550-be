@@ -440,6 +440,12 @@ impl CompileOptions {
             args.push(c"-DCL_VERSION_3_1=310".to_owned());
         }
 
+        // clang compiles for the little-endian spir targets and predefines __ENDIAN_LITTLE__,
+        // which must stay undefined for a big-endian device (OpenCL C 6.12 preprocessor macros).
+        if !dev.little_endian() {
+            args.push(c"-U__ENDIAN_LITTLE__".to_owned());
+        }
+
         args
     }
 }
